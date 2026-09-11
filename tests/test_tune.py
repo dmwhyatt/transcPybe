@@ -627,3 +627,59 @@ def test_cross_validation_counts_the_folds_that_kept_the_defaults(tmp_path):
 
     assert result["kept_default"] == 3, "no fold could improve on the baseline"
     assert result["delta"]["mean"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_the_cache_name_is_the_same_in_a_new_process():
+    """The bug this was written after: the name came from the builtin hash().
+
+    Python salts string hashing per interpreter, so every run built a
+    different name, never found what the previous run wrote, recomputed all
+    of it, and saved the result under a name nothing would look for either.
+    Within one process it looked like a working cache. Only a second process
+    shows it, which is why this test spends one.
+    """
+    import subprocess
+    import sys
+
+    code = ("from transcpybe.tune import cache_name;"
+            " print(cache_name('vocadito_12'))")
+    names = {
+        subprocess.run([sys.executable, "-c", code], check=True,
+                       capture_output=True, text=True).stdout.strip()
+        for _ in range(3)
+    }
+
+    assert len(names) == 1, f"the cache name changed between runs: {names}"
+
+
+def test_ids_that_sanitise_to_the_same_name_still_get_their_own_file():
+    """A corpus laid out one directory per song names every segment 0000."""
+    from transcpybe.tune import cache_name
+
+    assert cache_name("song_a/0000") != cache_name("song_b/0000")
+    # And a title the sanitiser strips entirely must not collapse onto one file.
+    assert cache_name("Alto-1#歌声") != cache_name("Alto-1#心跳")
+
+
+def test_cached_tracks_are_reused_by_a_second_cache_object(tmp_path):
+    """What the user actually cares about: running the command twice does not
+    recompute. A fresh StageCache stands in for a fresh process."""
+    import soundfile as sf
+
+    from transcpybe.synth import case_scale
+    from transcpybe.tune import StageCache
+
+    audio, _ = case_scale()
+    path = tmp_path / "song.wav"
+    sf.write(path, audio, 16000)
+    item = Item(item_id="song", audio=path, annotation=path)
+    config = TranscriptionConfig(f0_backend="pyin", device="cpu")
+
+    StageCache(tmp_path / "cache", config).get(item, config)
+    written = sorted(p.name for p in (tmp_path / "cache").glob("*.npz"))
+
+    StageCache(tmp_path / "cache", config).get(item, config)
+    after = sorted(p.name for p in (tmp_path / "cache").glob("*.npz"))
+
+    assert len(written) == 1
+    assert after == written, "a second run must read the file, not add another"

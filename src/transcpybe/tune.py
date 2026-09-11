@@ -19,6 +19,7 @@ whatever it was scored on. The machinery here exists mostly to stop that:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 from dataclasses import dataclass, field
@@ -159,6 +160,24 @@ DEFAULT_SPACE: Dict[str, Tuple[float, float]] = {
 }
 
 
+def cache_name(item_id: str) -> str:
+    """A filesystem-safe name for one recording's cached tracks.
+
+    The digest is hashlib rather than the builtin hash(): Python salts string
+    hashing per interpreter, so a name built from hash() is different on every
+    run. The cache then never finds what the last run wrote, silently
+    recomputes everything, and writes it under another name nobody will look
+    for either -- a cache that only ever costs.
+    """
+    safe = "".join(c if c.isalnum() or c in "._-#" else "_" for c in item_id)
+    # Unconditional, because the sanitiser above maps distinct ids onto one
+    # name: a corpus laid out one directory per song names every segment
+    # 0000, and M4Singer writes its titles in Chinese, which it strips
+    # entirely.
+    digest = hashlib.sha1(item_id.encode("utf-8")).hexdigest()[:8]
+    return f"{safe[:100] or 'item'}_{digest}.npz"
+
+
 class StageCache:
     """f0 and onset tracks per recording, computed once and replayed."""
 
@@ -179,8 +198,7 @@ class StageCache:
         if item.item_id in self._memory:
             return self._memory[item.item_id]
 
-        safe = "".join(c if c.isalnum() or c in "._-#" else "_" for c in item.item_id)
-        path = self.directory / f"{safe[:100]}_{abs(hash(item.item_id)) % 10**8}.npz"
+        path = self.directory / cache_name(item.item_id)
         if path.exists():
             tracks = load_track(path)
         else:
