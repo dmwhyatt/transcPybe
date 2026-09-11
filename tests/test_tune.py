@@ -13,8 +13,13 @@ from pathlib import Path
 
 import pytest
 
-from transcpybe.benchmark.dataset import Item
-from transcpybe.benchmark.tune import (
+# Tuning borrows the benchmark's metrics and dataset loading, so these tests
+# need it installed. It is an optional extra, and a base install skips them.
+pytest.importorskip("transcription_benchmarking",
+                    reason="needs transcpybe[tune]")
+
+from transcription_benchmarking.dataset import Item
+from transcpybe.tune import (
     DEFAULT_SPACE, Split, StageCache, fbeta, make_split, random_search,
     sample_config, score_config, upstream_fingerprint,
 )
@@ -182,7 +187,7 @@ MELODY = [60, 62, 64, 64, 64, 65, 67, 65, 64, 62, 60, 59, 60, 62, 64]
 
 def test_sequence_score_survives_a_clock_that_does_not_match():
     """The property the whole approach rests on for a notated reference."""
-    from transcpybe.benchmark.metrics import score_sequence
+    from transcription_benchmarking.metrics import score_sequence
 
     exact = score_sequence(_melody(MELODY), _melody(MELODY))
     drifted = score_sequence(_melody(MELODY), _melody(MELODY, drift=0.03, start=2.0))
@@ -193,7 +198,7 @@ def test_sequence_score_survives_a_clock_that_does_not_match():
 
 def test_sequence_score_still_sees_merged_repeated_notes():
     """The defect that matters most here shortens the sequence."""
-    from transcpybe.benchmark.metrics import score_sequence
+    from transcription_benchmarking.metrics import score_sequence
 
     merged = [p for i, p in enumerate(MELODY) if i not in (3, 4)]
 
@@ -204,7 +209,7 @@ def test_sequence_score_still_sees_merged_repeated_notes():
 
 
 def test_interval_score_is_unchanged_by_transposition():
-    from transcpybe.benchmark.metrics import score_sequence
+    from transcription_benchmarking.metrics import score_sequence
 
     score = score_sequence(_melody(MELODY), _melody([p + 7 for p in MELODY]))
 
@@ -214,7 +219,7 @@ def test_interval_score_is_unchanged_by_transposition():
 
 def test_the_chance_floor_is_measured_because_it_is_not_zero():
     """Two pop melodies in a key share most of their notes."""
-    from transcpybe.benchmark.metrics import sequence_chance_floor
+    from transcription_benchmarking.metrics import sequence_chance_floor
 
     melodies = [_melody([60, 62, 64, 65, 67, 69, 71, 72] * 3),
                 _melody([72, 71, 69, 67, 65, 64, 62, 60] * 3),
@@ -274,8 +279,8 @@ def test_tuning_with_alignment_warps_the_references_first(tmp_path, capsys):
     """
     import soundfile as sf
 
-    from transcpybe.benchmark.cli import main
     from transcpybe.synth import synth_phrase
+    from transcpybe.tuning import main
 
     audio_dir = tmp_path / "audio"
     audio_dir.mkdir()
@@ -293,7 +298,7 @@ def test_tuning_with_alignment_warps_the_references_first(tmp_path, capsys):
             "\n".join(f"{a * 0.98 + 0.35:.4f},{b * 0.98 + 0.35:.4f},{p}"
                       for a, b, p in truth))
 
-    common = [str(audio_dir), "--tune", "--tune-trials", "4", "--f0-backend", "pyin",
+    common = [str(audio_dir), "--trials", "4", "--f0-backend", "pyin",
               "--device", "cpu", "--split-file", str(tmp_path / "split.json"),
               "--tuned-config", str(tmp_path / "tuned.json"), "-q"]
 
@@ -317,8 +322,8 @@ def test_an_onset_objective_without_alignment_says_so(tmp_path, capsys):
     """Silence here is how a search against a mismatch looks like a result."""
     import soundfile as sf
 
-    from transcpybe.benchmark.cli import main
     from transcpybe.synth import case_scale
+    from transcpybe.tuning import main
 
     audio_dir = tmp_path / "audio"
     audio_dir.mkdir()
@@ -328,7 +333,7 @@ def test_an_onset_objective_without_alignment_says_so(tmp_path, capsys):
         (audio_dir / f"song_{song}_notes.csv").write_text(
             "\n".join(f"{a},{b},{p}" for a, b, p in truth))
 
-    main([str(audio_dir), "--tune", "--tune-trials", "1", "--f0-backend", "pyin",
+    main([str(audio_dir), "--trials", "1", "--f0-backend", "pyin",
           "--device", "cpu", "--f0-cache", str(tmp_path / "c"),
           "--split-file", str(tmp_path / "s.json"),
           "--tuned-config", str(tmp_path / "t.json"), "-q"])

@@ -27,8 +27,15 @@ hand — scored with `mir_eval` at the usual 50 ms / 50 cent tolerances:
 
 Read those against the last row rather than against 1.0: two people annotating
 the same recordings agree at 0.740 on onset and pitch, so most of the remaining
-gap is a disagreement about what counts as a note. The comparison and how it
-was made are in [docs/benchmarking-rosvot.md](docs/benchmarking-rosvot.md).
+gap is a disagreement about what counts as a note.
+
+Both systems were run on the same audio and scored against the same references
+with the same tolerances, which is the only way that comparison means anything.
+ROSVOT's row is corrected for a difference in what its references call the
+start of a note; uncorrected it scores 0.359 / 0.262 / 0.184, and the
+correction is stated rather than folded in. The procedure, and how to reproduce
+either row, is in
+[the benchmark repository](https://github.com/dmwhyatt/transcription-benchmarking/blob/main/docs/benchmarking-rosvot.md).
 
 ## Install
 
@@ -295,133 +302,44 @@ and read `--print-notes` against it.
 
 ---
 
-## Benchmarking against real annotations
+## Measuring it against real annotations
 
 Everything under [Accuracy](#accuracy) is measured on signals this repository
-generates, scored against ground truth this repository also generates. That
-verifies the implementation does what it claims on the phenomena it models. It
-is **not** a measure of how well it transcribes real singing, and no number from
-it should be quoted as one.
+generates, scored against ground truth it also generates. That verifies the
+implementation does what it claims on the phenomena it models. It is **not** a
+measure of how well it transcribes real singing, and no number from it should
+be quoted as one.
 
-`transcpybe/benchmark/` scores the transcriber against human
-annotations and reports a figure that can be defended.
-
-Check the layout first — it takes seconds and reads no audio:
-
-```shell
-transcpybe-benchmark path/to/dataset --dry-run
-```
-
-That reports which annotation file was paired with which audio, how each was
-interpreted, and the note, time and pitch ranges it read.
-
-Datasets often ship several annotations per recording — a note-level one, an f0
-contour, lyrics, sometimes one per annotator. Audio is matched to any annotation
-whose filename begins with its own, and where several qualify the note-level one
-is chosen and the choice reported as `prefix (1 of 4)`. The dry run names the
-file actually used, and `--annotation-contains notesB` pins a different one. The two ways a
-benchmark silently reports nonsense are a mis-paired file and a misread
-annotation, and both are visible here rather than after an hour of
-transcription. If audio and annotations live in separate directories, pass
-`--annotations`; the runner searches recursively, so pointing at the dataset
-root usually works.
-
-Then run it:
+Scoring against human annotations lives in a separate package,
+**[transcription-benchmarking](https://github.com/dmwhyatt/transcription-benchmarking)**,
+and deliberately not here. A benchmark that ships with the system it measures
+can only ever measure that one; kept apart, the same corpora, tolerances and
+confidence intervals apply to this transcriber and to anything it is compared
+against. Every figure in [How good is it?](#how-good-is-it) came from it, and
+so did ROSVOT's.
 
 ```shell
-transcpybe-benchmark vocadito/audio \
+pip install git+https://github.com/dmwhyatt/transcription-benchmarking.git
+
+# Score a directory of transcriptions this package already wrote
+transcpybe vocadito/audio --out-dir transcriptions/
+transcription-benchmark vocadito/audio \
     --annotations vocadito/annotations \
-    --cache-dir .bench-cache \
-    -o results/vocadito.json
+    --estimates transcriptions/ \
+    -o results/transcpybe.json
 ```
 
-`--limit N` scores only the first N items, which is worth doing once before
-committing to the whole set. `--cache-dir` makes re-scoring instant, and is
-keyed on the configuration so changing a parameter re-transcribes rather than
-scoring the previous settings.
-
-```text
-40 recordings, 3211 reference notes, 3106 transcribed
-
-metric                            P      R      F   95% CI on F
---------------------------------------------------------------------
-COn      (onset)              0.871  0.842  0.856   [0.821-0.889]
-COnP     (onset+pitch)        0.804  0.777  0.790   [0.749-0.828]
-COnPOff  (+offset)            0.612  0.591  0.601   [0.558-0.643]
-
-Macro average over recordings; 95% CI from 2000 bootstrap resamples.
-Micro (pooled over all notes): COnP F = 0.798
-
-Octave errors: 1.4% of notes whose onset was found
-Median best time offset: +0.004s
-```
-
-*(illustrative shape, not a result — run it to get real numbers)*
-
-### The metrics
-
-**COn**, **COnP** and **COnPOff** are the note-transcription measures the
-singing-transcription literature reports, so the numbers can sit beside
-published ones. An onset matches within 50 ms, a pitch within 50 cents, an
-offset within 50 ms or 20% of the reference note's duration. They nest: a note
-counted in COnPOff is counted in COnP and in COn. **COnP is the headline.**
-
-### Why there are error bars
-
-A single number is not a measurement. The interval comes from a bootstrap
-resampled over **recordings**, not notes, because notes within a recording are
-not independent — a singer whose vibrato defeats the decoder defeats it for the
-whole track. Resampling notes would report an interval several times too narrow
-and imply a precision the benchmark does not have.
-
-A benchmark of forty recordings supports a claim like "COnP 0.79, 95% CI
-0.75–0.83". It does not support "0.79 versus 0.78 is an improvement".
-
-### Two diagnostics worth reading first
-
-**Median best time offset.** Reference annotations are often offset from the
-audio by a constant. Scored against one, a perfect transcriber looks broken, and
-no amount of tuning fixes it. The suite searches for the global shift that
-maximises COnP and warns about any item that scores materially better under one.
-**If that warning appears, fix the alignment before believing any score.**
-
-**Octave errors** — notes whose onset was found but which landed a whole number
-of octaves out. A high rate points at the pitch tracker rather than the note
-decoder, and at `--fmin`/`--fmax` in particular.
-
-### Annotation formats
-
-Readers for CSV, TSV, TXT, MIDI, JSON and JAMS. Datasets disagree about whether
-the second column is an offset or a duration and whether pitch is MIDI or Hz, so
-both are inferred and **the inference is reported**. That matters: a duration
-read as an offset gives notes that start correctly and end immediately, which
-scores badly in a way that looks like a poor transcriber rather than a misread
-file. Inference uses the proportion of rows supporting each reading, so a
-handful of corrupt rows cannot reinterpret a whole file.
-
-Audio is paired with annotations by stem, then by stem with a dataset tag such
-as `_notes` stripped, then by substring. How each pair was matched is reported,
-and unpaired audio is listed rather than quietly skipped.
-
-### Reproducibility
-
-Every result records the transcriber configuration, the seed, the versions of
-torch, torchcrepe, librosa and mir_eval, the repository commit, and a SHA-256
-digest of the dataset files. Change the data or a dependency and the digest or
-the version string changes with it.
+This package also registers an adapter, so the benchmark can call it directly
+and cache what it produced:
 
 ```shell
-transcpybe-benchmark --synthetic     # check the harness itself
+transcription-benchmark vocadito/audio --annotations vocadito/annotations \
+    --transcriber transcpybe --cache-dir .bench-cache
 ```
-
-### One discipline worth keeping
-
-If parameters are tuned until the benchmark score improves, that score is no
-longer an estimate of performance on unseen material — it is an estimate of how
-well the parameters fit that benchmark. Tune on one dataset and report on
-another, or split a single one and keep the held-out half genuinely unseen.
 
 ## Tuning
+
+### By hand
 
 | Symptom | Knob | Direction |
 |---|---|---|
@@ -439,13 +357,39 @@ Every parameter in `config.py` is documented in place; the CLI exposes the ones
 worth reaching for most often, and the rest are available through
 `TranscriptionConfig`.
 
+### By search
+
+`transcpybe-tune` fits the parameters on one part of a corpus and reports what
+the fit is worth on a part no trial and no selection touched. It needs the
+benchmark package for its metrics and its dataset loading:
+
+```shell
+pip install -e ".[tune]"
+
+transcpybe-tune bimmuda/audio --annotations bimmuda/midi \
+    --align --trials 60 --beta 1.5
+```
+
+Three sets, not two: one to fit on, one to choose the winner on, and one scored
+once at the end. The fit and select figures are both biased upward by the
+search itself, so the held-out number is the only one worth quoting — and if it
+barely moves, the search found the fit set rather than the problem.
+
+`--beta 1.5` favours recall, which is the safer direction when a reference may
+be incomplete: a note the reference lacks is counted against the transcriber
+whether or not it was sung. `--align` warps notated references onto the audio
+first; tuning against an unaligned score optimises the mismatch, which on
+BiMMuDa scores 0.06 however good the transcription is.
+
 ## Tests
 
 ```shell
 pytest tests/                 # the full suite
 pytest tests/ -m slow         # just the ones that exercise CREPE
-transcpybe --self-test   # full synthetic benchmark
+transcpybe --self-test        # the synthetic suite
 ```
+
+The tuning tests need the benchmark package and skip without it.
 
 The CREPE tests include the one that matters most for the progress machinery:
 transcription drives torchcrepe's `preprocess`/`infer`/`postprocess` directly

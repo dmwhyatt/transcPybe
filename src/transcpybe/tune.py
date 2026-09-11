@@ -27,10 +27,11 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from ..config import TranscriptionConfig
-from .dataset import Item
-from .metrics import (ONSET_TOLERANCE, PITCH_TOLERANCE, RefNote, note_prf,
-                      score_sequence)
+from transcription_benchmarking.dataset import Item
+from transcription_benchmarking.metrics import (
+    ONSET_TOLERANCE, PITCH_TOLERANCE, RefNote, note_prf, score_sequence)
+
+from .config import TranscriptionConfig
 
 # Parameters that change the f0 or onset tracks, and so invalidate a cached one.
 # Everything else runs downstream of them and can be swept for free.
@@ -125,8 +126,8 @@ def save_track(path: Path, track, onsets) -> None:
 
 def load_track(path: Path):
     """Read back what save_track wrote."""
-    from ..f0 import F0Track
-    from ..onsets import OnsetTrack
+    from .f0 import F0Track
+    from .onsets import OnsetTrack
 
     with np.load(path) as data:
         track = F0Track(*(data[f"f0_{name}"] for name in
@@ -183,10 +184,10 @@ class StageCache:
         if path.exists():
             tracks = load_track(path)
         else:
-            from ..audio import load_audio
-            from ..core import resolve_config_device
-            from ..f0 import estimate_f0
-            from ..onsets import detect_onsets
+            from .audio import load_audio
+            from .core import resolve_config_device
+            from .f0 import estimate_f0
+            from .onsets import detect_onsets
 
             audio, _ = load_audio(item.audio, config.sample_rate)
             resolved, _ = resolve_config_device(config)
@@ -217,7 +218,7 @@ def score_config(
     at a nominal tempo -- and it still sees the defect that matters most here,
     since two notes run into one shortens the sequence.
     """
-    from ..core import decode_notes
+    from .core import decode_notes
 
     scores, precisions, recalls = [], [], []
     for item in items:

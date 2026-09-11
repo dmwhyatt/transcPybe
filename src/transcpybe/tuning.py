@@ -3,6 +3,11 @@
 Separated from tune.py, which holds the search itself. The library can be used
 without a command line, and the command can grow options without the search
 growing arguments.
+
+Tuning borrows its metrics and its dataset loading from
+``transcription-benchmarking``, which is why it is an optional extra rather
+than part of the base install. Scoring lives there and only there: this
+package transcribes, and does not ship a benchmark of its own.
 """
 
 from __future__ import annotations
@@ -11,14 +16,111 @@ import json
 import sys
 from pathlib import Path
 
-from ..config import TranscriptionConfig
+from .config import TranscriptionConfig
+
+
+def build_parser():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="transcpybe-tune",
+        description="Fit transcription parameters on one part of a corpus and "
+                    "report what the fit is worth on a part it never saw.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("audio", help="Directory of audio to tune against")
+    parser.add_argument("-a", "--annotations", default=None,
+                        help="Directory of reference annotations "
+                             "(default: alongside the audio)")
+    parser.add_argument("--annotation-contains", default=None,
+                        help="Only consider annotation files whose name contains this")
+    parser.add_argument("--pairs", default=None, metavar="FILE",
+                        help="An explicit audio-to-annotation CSV, for corpora where "
+                             "no name matching can work")
+
+    parser.add_argument("--trials", dest="tune_trials", type=int, default=60)
+    parser.add_argument("--beta", dest="tune_beta", type=float, default=1.5,
+                        help="F-beta weighting. Above 1 favours recall, which is "
+                             "the safer direction when a reference may be "
+                             "incomplete: a note the reference lacks is scored as "
+                             "a false positive whether or not it was sung.")
+    parser.add_argument("--objective", dest="tune_objective",
+                        choices=("onset", "sequence"), default="onset",
+                        help="What to maximise. 'onset' needs references sharing a "
+                             "clock with the audio; 'sequence' ignores time and "
+                             "works on references that do not.")
+    parser.add_argument("--align", action="store_true",
+                        help="Warp each reference onto its recording first, for "
+                             "references notated at a nominal tempo. Fitted once, "
+                             "against an f0 track no searched parameter can change.")
+    parser.add_argument("--split-file", default="split.json",
+                        help="Where the fit/select/report split is kept. An existing "
+                             "one is reused, so the report set cannot quietly become "
+                             "a set the parameters have already seen.")
+    parser.add_argument("--stratify-by", default=None, metavar="FILE:COLUMN",
+                        help="Balance the split across a column of a metadata CSV")
+    parser.add_argument("--tuned-config", default="tuned_config.json",
+                        help="Where to write the winning configuration")
+    parser.add_argument("--f0-cache", default=".f0-cache", metavar="DIR",
+                        help="Cache the f0 and onset tracks here. Each recording is "
+                             "analysed once and every trial replays from it, which is "
+                             "what makes a search of this size affordable.")
+
+    model = parser.add_argument_group("transcriber")
+    model.add_argument("--f0-backend", choices=("crepe", "pyin"), default="crepe")
+    model.add_argument("--crepe-model", choices=("full", "tiny"), default="full")
+    model.add_argument("--device", default="auto")
+    model.add_argument("--seed", type=int, default=0)
+
+    parser.add_argument("--log-file", default=None)
+    parser.add_argument("-q", "--quiet", action="store_true")
+    return parser
+
+
+def main(argv=None) -> int:
+    try:
+        from transcription_benchmarking.dataset import pair_dataset, pair_from_file
+    except ImportError:
+        print("error: tuning needs the benchmark package for its metrics and "
+              "dataset loading.\n  pip install 'transcpybe[tune]'", file=sys.stderr)
+        return 1
+
+    from .progress import ProgressReporter, setup_logging
+
+    args = build_parser().parse_args(argv)
+    logger = setup_logging(log_file=args.log_file)
+    progress = ProgressReporter(enabled=not args.quiet, logger=logger)
+
+    if args.pairs:
+        try:
+            pairing = pair_from_file(Path(args.pairs))
+        except (OSError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    else:
+        audio_dir = Path(args.audio)
+        if not audio_dir.exists():
+            print(f"error: no such directory: {audio_dir}", file=sys.stderr)
+            return 1
+        pairing = pair_dataset(
+            audio_dir, Path(args.annotations) if args.annotations else None,
+            annotation_contains=args.annotation_contains)
+    print(pairing.summary())
+    if not pairing.items:
+        print("error: no audio could be paired with an annotation. Run\n"
+              "  transcription-benchmark <dir> --dry-run\n"
+              "to see what matched what.", file=sys.stderr)
+        return 1
+
+    return run_tuning(pairing, args, progress)
+
 
 def run_tuning(pairing, args, progress) -> int:
     """Fit the parameters, then report what the fit is worth on held-out data."""
     import dataclasses
 
-    from .annotations import load_annotation
-    from .dataset import load_item_metadata
+    from transcription_benchmarking.annotations import load_annotation
+    from transcription_benchmarking.dataset import load_item_metadata
     from .tune import (DEFAULT_SPACE, StageCache, Split, make_split, random_search,
                        score_config)
 
@@ -39,7 +141,7 @@ def run_tuning(pairing, args, progress) -> int:
             # change. Tuning against unaligned references would optimise the
             # mismatch: on this corpus that scores 0.06 however good the
             # transcription is.
-            from .align import align_reference
+            from transcription_benchmarking.align import align_reference
 
             track, _ = cache.get(item, config)
             warp = align_reference(notes, track.f0_hz, track.voicing, track.times,
@@ -151,3 +253,7 @@ def run_tuning(pairing, args, progress) -> int:
     return 0
 
 
+
+
+if __name__ == "__main__":
+    sys.exit(main())

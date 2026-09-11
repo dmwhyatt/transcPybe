@@ -30,19 +30,31 @@ classifiers = [
 dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
-    "librosa>=0.10",      # pYIN, SuperFlux onsets, resampling, DTW
+    "librosa>=0.10",      # pYIN, SuperFlux onsets, resampling
     "soundfile>=0.12",
     "pretty_midi>=0.2.10",
-    "mir_eval>=0.7",      # the metrics, and the self-test
+    "mir_eval>=0.7",      # the synthetic self-test
 ]
 
 [project.optional-dependencies]
 crepe = ["torch>=2.0", "torchcrepe>=0.0.20"]
+# Scoring lives in its own package, and so does anything that needs it. Tuning
+# borrows its metrics and dataset loading; this package ships no benchmark.
+tune = [
+    # Not on PyPI, so named by where it actually is.
+    "transcription-benchmarking @ git+https://github.com/dmwhyatt/transcription-benchmarking.git",
+]
 dev = ["pytest>=7.0", "build>=1.0", "twine>=5.0"]
 
 [project.scripts]
 transcpybe = "transcpybe.cli:main"
-transcpybe-benchmark = "transcpybe.benchmark.cli:main"
+transcpybe-tune = "transcpybe.tuning:main"
+
+# So a benchmark can run this transcriber in process without importing it.
+# Nothing here depends on the benchmark being installed: an entry point that
+# nobody looks for is inert.
+[project.entry-points."transcription_benchmarking.transcribers"]
+transcpybe = "transcpybe.adapter:TranscPybe"
 
 [project.urls]
 Homepage = "https://github.com/dmwhyatt/transcpybe"
