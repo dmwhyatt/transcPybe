@@ -53,12 +53,6 @@ dev = ["pytest>=7.0", "build>=1.0", "twine>=5.0"]
 transcpybe = "transcpybe.cli:main"
 transcpybe-tune = "transcpybe.tuning:main"
 
-# So a benchmark can run this transcriber in process without importing it.
-# Nothing here depends on the benchmark being installed: an entry point that
-# nobody looks for is inert.
-[project.entry-points."transcription_benchmarking.transcribers"]
-transcpybe = "transcpybe.adapter:TranscPybe"
-
 [project.urls]
 Homepage = "https://github.com/dmwhyatt/transcpybe"
 Issues = "https://github.com/dmwhyatt/transcpybe/issues"

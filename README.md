@@ -331,14 +331,6 @@ transcription-benchmark vocadito/audio \
     -o results/transcpybe.json
 ```
 
-This package also registers an adapter, so the benchmark can call it directly
-and cache what it produced:
-
-```shell
-transcription-benchmark vocadito/audio --annotations vocadito/annotations \
-    --transcriber transcpybe --cache-dir .bench-cache
-```
-
 ## Tuning
 
 ### By hand

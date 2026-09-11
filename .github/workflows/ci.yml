@@ -51,7 +51,7 @@ jobs:
       - name: Say why the tuning tests are not running
         if: steps.benchmark.outcome != 'success'
         run: |
-          echo "::warning::Tuning and adapter tests skipped: could not check out \
+          echo "::warning::Tuning tests skipped: could not check out \
           dmwhyatt/transcription-benchmarking. Add a token with read access to it \
           as the BENCHMARK_REPO_TOKEN secret to run them."
       # Installed from the checkout rather than the git URL in the tune extra,
@@ -59,4 +59,4 @@ jobs:
       - if: steps.benchmark.outcome == 'success'
         run: pip install -e .benchmark && pip install -e ".[dev]"
       - if: steps.benchmark.outcome == 'success'
-        run: pytest -q -m "not slow" tests/test_tune.py tests/test_adapter.py
+        run: pytest -q -m "not slow" tests/test_tune.py
