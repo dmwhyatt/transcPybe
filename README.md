@@ -393,20 +393,32 @@ Out-of-fold over all 40 recordings, onset F-beta at beta=1.5:
   change       +0.431   95% CI [+0.271, +0.586]   better on 12, worse on 0
 
 What each fold chose:
-  parameter                    default   median            range  spread  agree
-  onset_split_strength_ratio       1.6   0.4299  0.2373 to 0.6989     71%   100%
-  pitch_sigma_semitones           0.55   0.5523  0.5322 to 0.5949     14%    67%
+  parameter                  default   median            range  moved  spread  agree
+  onset_split_strength_ratio     1.6   0.4299  0.2373 to 0.6989    3/3     71%   100%
+  pitch_sigma_semitones         0.55   0.5523  0.5322 to 0.5949    3/3     14%    67%
 ```
 
 *(that table is from a test corpus with one knob deliberately detuned, which
 is why the first row is so clear)*
 
-Read the fold table before the score. Five folds choosing one value are
-evidence; five choosing five scattered values are the search fitting noise —
-and in a single run those look identical, because both print as one chosen
-number. **Spread** is how much of the searched range the folds covered, so near
-100% is what drawing at random looks like. **Agree** is how many moved the
-parameter the same way, so near 50% is disagreement about even the direction.
+Read the fold table before the score, and read **moved** before anything else
+in it. A fold whose search beat nothing keeps the defaults and contributes no
+value at all, so a row moved by one fold of five is one opinion — and one value
+has zero range and agrees with itself perfectly, which is the most flattering
+possible rendering of the weakest possible evidence. In a single run it would
+have printed as a chosen value.
+
+Among the folds that did move a parameter: **spread** is how much of the
+searched range they covered, so near 100% is what drawing at random looks like
+(undefined below two folds, and shown as `-` rather than as zero). **Agree** is
+how many went the same way, so near 50% is disagreement about even the
+direction. A parameter can agree on direction and still be scattered, so read
+both.
+
+Folds keeping the defaults is itself the clearest result the search can
+produce, and it is reported above the interval. It happens during fitting, on
+data the fold chose freely, so it says more than a held-out interval can: the
+interval can only report that whatever was found failed to carry.
 
 Cross-validation spends the corpus. Every recording has been fitted on in some
 fold, so afterwards it cannot report an unseen number, and the folds are

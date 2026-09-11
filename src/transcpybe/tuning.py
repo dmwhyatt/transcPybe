@@ -199,6 +199,18 @@ def _run_cross_validation(pairing, args, progress, config, cache, references) ->
           f"[{delta['low']:+.3f}, {delta['high']:+.3f}]"
           f"   better on {delta['better']}, worse on {delta['worse']}")
 
+    kept = result["kept_default"]
+    folds = len(result["folds"])
+    if kept:
+        print(f"\n  {kept} of {folds} folds found nothing that beat the defaults, and "
+              "kept them.\n"
+              "  That happens during fitting, on data the fold chose freely -- so it is\n"
+              "  a stronger statement than the interval below, which can only say that\n"
+              "  what one fold did find failed to carry.")
+        if kept == folds:
+            print("  No fold moved anything. There is nothing to read in the table "
+                  "below.")
+
     crosses_zero = delta["low"] <= 0.0 <= delta["high"]
     if crosses_zero:
         print("\n  The interval includes zero, so this is consistent with the "
@@ -216,20 +228,24 @@ def _run_cross_validation(pairing, args, progress, config, cache, references) ->
         return _write_cv_result(args, config, result, delta)
 
     print("\nWhat each fold chose:")
-    print(f"  {'parameter':<32}{'default':>9}{'median':>9}{'range':>20}"
-          f"{'spread':>8}{'agree':>7}")
+    print(f"  {'parameter':<30}{'default':>9}{'median':>9}{'range':>20}"
+          f"{'moved':>8}{'spread':>8}{'agree':>7}")
     for name, stats in sorted(result["stability"].items()):
-        window = f"{stats['low']:.4g} to {stats['high']:.4g}"
+        window = (f"{stats['low']:.4g}" if stats["moved"] < 2
+                  else f"{stats['low']:.4g} to {stats['high']:.4g}")
         spread = "-" if stats["spread"] != stats["spread"] else f"{stats['spread']:.0%}"
-        print(f"  {name:<32}{stats['baseline']:>9.4g}{stats['median']:>9.4g}"
-              f"{window:>20}{spread:>8}{stats['agreement']:>7.0%}")
+        moved = f"{stats['moved']}/{stats['folds']}"
+        print(f"  {name:<30}{stats['baseline']:>9.4g}{stats['median']:>9.4g}"
+              f"{window:>20}{moved:>8}{spread:>8}{stats['agreement']:>7.0%}")
     print(
-        "\n  Spread is how much of the searched range the folds' choices cover:\n"
-        "  near 100% they used all of it, which is what drawing at random looks\n"
-        "  like. Agree is how many moved the parameter the same way; near 50%\n"
-        "  they disagree about even the direction. A parameter can agree on\n"
-        "  direction and still be scattered, so read both. In a single run either\n"
-        "  one would have printed as a chosen value."
+        "\n  Moved is how many folds changed the parameter at all; the rest kept\n"
+        "  the default, and are the strongest evidence in the table. Spread is how\n"
+        "  much of the searched range the choices cover, so near 100% is what\n"
+        "  drawing at random looks like -- it needs two folds and is shown as - \n"
+        "  below that, since one value has no spread rather than none. Agree is how\n"
+        "  many of the folds that moved it went the same way.\n"
+        "\n  Read moved first. A row moved by one fold of five is one opinion, and\n"
+        "  in a single run it would have printed as a chosen value."
     )
 
     _print_cv_caveat(args)

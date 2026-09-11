@@ -572,3 +572,58 @@ def test_cross_validation_finds_a_real_parameter_and_not_the_others(tmp_path):
     # pitch_sigma was never the problem. It must not read like the one that was.
     noise = result["stability"]["pitch_sigma_semitones"]
     assert noise["spread"] < real["spread"] or noise["agreement"] < 1.0
+
+
+def test_a_fold_that_kept_the_defaults_is_counted_not_dropped():
+    """The failure this was written after: four folds of five found nothing,
+    the fifth found something, and the table read as unanimous agreement.
+
+    A fold whose search beat nothing contributes no value, so averaging over
+    the folds that spoke turns one opinion into a consensus -- a single value
+    has zero range and agrees with itself perfectly. That is the most
+    flattering possible reading of the weakest possible evidence.
+    """
+    from transcpybe.tune import parameter_stability
+
+    space = {"min_note_duration_s": (0.02, 0.12)}
+    per_fold = [{"changes": {}} for _ in range(4)]
+    per_fold.append({"changes": {"min_note_duration_s": 0.0476}})
+
+    stats = parameter_stability(_BASE, per_fold, space)["min_note_duration_s"]
+
+    assert stats["moved"] == 1 and stats["folds"] == 5, (
+        "the four silent folds have to be visible somewhere")
+    assert stats["spread"] != stats["spread"], (
+        "spread from one value is undefined, not zero -- zero reads as perfect "
+        "agreement, which is the opposite of what one value means")
+
+
+def test_spread_is_measured_once_two_folds_have_spoken():
+    from transcpybe.tune import parameter_stability
+
+    space = {"min_note_duration_s": (0.02, 0.12)}
+    per_fold = [{"changes": {}}, {"changes": {"min_note_duration_s": 0.03}},
+                {"changes": {"min_note_duration_s": 0.11}}]
+
+    stats = parameter_stability(_BASE, per_fold, space)["min_note_duration_s"]
+
+    assert stats["moved"] == 2 and stats["folds"] == 3
+    assert stats["spread"] == pytest.approx(0.8), "0.08 of a 0.10 range"
+
+
+def test_cross_validation_counts_the_folds_that_kept_the_defaults(tmp_path):
+    """Folds keeping the defaults is a result, and it is invisible in the
+    interval: it happens during fitting, on data the fold chose freely."""
+    from transcpybe.tune import cross_validate
+
+    items, references, cache = _detuned_corpus(tmp_path, songs=12)
+
+    # A space of one parameter pinned to its current value: no trial can beat
+    # the baseline, so every fold must keep it.
+    pinned = {"pitch_sigma_semitones": (_BASE.pitch_sigma_semitones,
+                                        _BASE.pitch_sigma_semitones)}
+    result = cross_validate(_BASE, items, references, cache, folds=3, trials=3,
+                            space=pinned, seed=0)
+
+    assert result["kept_default"] == 3, "no fold could improve on the baseline"
+    assert result["delta"]["mean"] == pytest.approx(0.0, abs=1e-9)

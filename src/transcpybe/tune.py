@@ -428,6 +428,7 @@ def cross_validate(
 
     return {
         "folds": per_fold,
+        "kept_default": sum(1 for fold in per_fold if not fold["changes"]),
         "baseline": float(np.mean(list(baseline_by_item.values()))),
         "tuned": float(np.mean(list(tuned_by_item.values()))),
         "delta": paired_delta(baseline_by_item, tuned_by_item, seed=seed),
@@ -446,14 +447,26 @@ def parameter_stability(
     values are the search fitting noise, and in any single run the two look
     identical -- one chosen number either way.
 
-    Two things separate them, and both are needed. ``spread`` is how much of
-    the searched range the folds' choices cover: near 1 they used the whole
-    range, which is what drawing at random looks like. ``agreement`` is how
-    many folds moved the parameter the same way; near 0.5 they disagree about
-    even the direction. A parameter can agree on direction and still be
-    scattered, so a table showing only the second would call that stable.
+    Three things separate them, and all three are needed.
+
+    ``moved`` is how many folds changed the parameter at all. A fold whose
+    search beat nothing keeps the defaults and contributes no value, and
+    counting only the folds that spoke turns one fold's opinion into a
+    unanimous one: a single value has a range of zero and agrees with itself
+    perfectly. That is the most flattering possible reading of the weakest
+    possible evidence, so abstentions are counted here rather than dropped.
+
+    ``spread`` is how much of the searched range the choices cover, near 1
+    meaning the folds used all of it -- what drawing at random looks like. It
+    is undefined below two values, and reported as such rather than as zero.
+
+    ``agreement`` is how many of the folds that moved it went the same way;
+    near 0.5 they disagree about even the direction. A parameter can agree on
+    direction and still be scattered, so a table showing only this would call
+    that stable.
     """
     stability: Dict[str, Dict[str, float]] = {}
+    n_folds = len(per_fold)
     names = sorted({name for fold in per_fold for name in fold["changes"]})
     for name in names:
         values = [float(fold["changes"][name]) for fold in per_fold
@@ -469,7 +482,10 @@ def parameter_stability(
             "low": low,
             "high": high,
             "baseline": current,
-            "spread": (high - low) / width if width > 0 else float("nan"),
+            "moved": len(values),
+            "folds": n_folds,
+            "spread": ((high - low) / width
+                       if width > 0 and len(values) > 1 else float("nan")),
             "agreement": max(
                 sum(1 for v in values if v > current),
                 sum(1 for v in values if v < current),
