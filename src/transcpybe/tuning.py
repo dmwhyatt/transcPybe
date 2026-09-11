@@ -115,9 +115,65 @@ def main(argv=None) -> int:
     return run_tuning(pairing, args, progress)
 
 
+
+def describe_refusals(aligned: int, refused) -> str:
+    """What the alignment could not place, and whether that is a problem.
+
+    A bare count reads as incidental whether it is 5 or 150, so this reports a
+    share. Refusals are also not a random sample -- they are the recordings
+    whose references fit worst -- so past a quarter of the corpus it says what
+    tuning on the remainder actually means.
+    """
+    attempted = aligned + len(refused)
+    share = len(refused) / attempted if attempted else 0.0
+    lines = [f"\nAligned {aligned} references; {len(refused)} refused "
+             f"({share:.0%}) and left out of the split."]
+
+    # Grouped: one reason repeated 140 times and seven scattered ones are
+    # different problems, and the first five lines of either look alike.
+    kinds = {}
+    for item_id, reason in refused:
+        if "covers only" in reason:
+            kind = "the reference covers only part of the recording"
+        elif "not a tempo" in reason:
+            kind = "the warp is not a single tempo"
+        else:
+            kind = reason
+        kinds.setdefault(kind, []).append(item_id)
+    for kind, ids in sorted(kinds.items(), key=lambda kv: -len(kv[1])):
+        lines.append(f"  {len(ids):>4}  {kind}")
+        lines.append(f"        e.g. {', '.join(ids[:3])}")
+
+    if share > 0.25:
+        lines.append(
+            "\n  That is a large share to discard, and the refusals are not a\n"
+            "  random sample: they are the recordings whose references fit worst.\n"
+            "  Tuning on what is left fits the agreeable part of the corpus. Read\n"
+            "  a refusal or two before trusting the result -- a vocal that stops\n"
+            "  for an instrumental section covers only part of its recording\n"
+            "  legitimately, and would be refused for being right.")
+    return "\n".join(lines)
+
+
 def run_tuning(pairing, args, progress) -> int:
     """Fit the parameters, then report what the fit is worth on held-out data."""
     import dataclasses
+
+    if args.tune_objective == "onset" and not args.align:
+        print(
+            "\nNote: tuning on onsets assumes the references share a clock with the\n"
+            "  audio. If they were notated rather than aligned, pass --align, or use\n"
+            "  --objective sequence. A benchmark run says which you have.",
+        )
+    elif args.tune_objective == "onset" and args.align:
+        print(
+            "\nNote: a warp fixes global drift, not local timing. An onset counts\n"
+            "  only within 50 ms, so if what the warp leaves behind is wider than\n"
+            "  that, this objective is mostly noise and no setting will move it --\n"
+            "  the search will report a flat surface and a null result. Against a\n"
+            "  notated reference, --objective sequence asks what notes rather than\n"
+            "  when, which a warp does not have to get right.",
+        )
 
     from transcription_benchmarking.annotations import load_annotation
     from transcription_benchmarking.dataset import load_item_metadata
@@ -153,10 +209,8 @@ def run_tuning(pairing, args, progress) -> int:
         references[item.item_id] = notes
 
     if args.align:
-        print(f"Aligned {len(references)} references; {len(refused)} refused "
-              "and left out of the split.")
-        for item_id, reason in refused[:5]:
-            print(f"  {item_id}: {reason}")
+        print(describe_refusals(len(references), refused))
+
     if len(references) < 6:
         print(f"error: only {len(references)} recordings have readable references; "
               "a split needs more than that", file=sys.stderr)
@@ -168,21 +222,20 @@ def run_tuning(pairing, args, progress) -> int:
         try:
             groups, id_column = load_item_metadata(args.stratify_by, item_ids)
             stratified_by = args.stratify_by
+            matched = len(groups) / len(item_ids) if item_ids else 0.0
             print(f"Stratifying by {args.stratify_by} (joined on {id_column}, "
-                  f"{len(groups)} of {len(item_ids)} matched)")
+                  f"{len(groups)} of {len(item_ids)} matched, {matched:.0%})")
+            if matched < 0.8:
+                print(f"  Only {matched:.0%} joined, so the split is mostly unstratified "
+                      "and the\n  balance this was meant to guarantee is not there. "
+                      "Check how the\n  metadata names its rows against how the corpus "
+                      "names its files.")
         except (OSError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
     # Reuse an existing split rather than drawing a new one, so the report set
     # cannot quietly become a set the parameters have already seen.
-    if args.tune_objective == "onset" and not args.align:
-        print(
-            "\nNote: tuning on onsets assumes the references share a clock with the\n"
-            "  audio. If they were notated rather than aligned, pass --align, or use\n"
-            "  --tune-objective sequence. A benchmark run says which you have.",
-        )
-
     split_path = Path(args.split_file)
     if split_path.exists():
         split = Split.from_dict(json.loads(split_path.read_text()))

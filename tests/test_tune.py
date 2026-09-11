@@ -339,3 +339,98 @@ def test_an_onset_objective_without_alignment_says_so(tmp_path, capsys):
           "--tuned-config", str(tmp_path / "t.json"), "-q"])
 
     assert "pass --align" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------
+# What the tuning run says before it spends an hour
+# --------------------------------------------------------------------------
+
+class _Args:
+    """The tuning arguments, defaulted, so a test can set the one it is about."""
+
+    def __init__(self, **kwargs):
+        defaults = dict(
+            f0_backend="pyin", crepe_model="full", device="cpu", seed=0,
+            f0_cache=".f0-cache", align=False, tune_objective="onset",
+            tune_trials=1, tune_beta=1.5, split_file="split.json",
+            stratify_by=None, tuned_config="tuned.json")
+        defaults.update(kwargs)
+        for name, value in defaults.items():
+            setattr(self, name, value)
+
+
+def _run_until_it_gives_up(args, tmp_path, capsys, items=0):
+    """Drive run_tuning far enough to print its preamble, then let it stop.
+
+    With no readable references it bails before searching, which is what makes
+    this cheap enough to assert on.
+    """
+    from transcpybe.tuning import run_tuning
+
+    class _Pairing:
+        pass
+
+    pairing = _Pairing()
+    pairing.items = []
+    args.f0_cache = str(tmp_path / "cache")
+    args.split_file = str(tmp_path / "split.json")
+    run_tuning(pairing, args, _null_progress())
+    return capsys.readouterr().out
+
+
+def _null_progress():
+    from transcpybe.progress import ProgressReporter
+
+    return ProgressReporter(enabled=False)
+
+
+def test_an_onset_objective_with_alignment_still_warns(tmp_path, capsys):
+    """--align used to silence this warning entirely, as though a warp made
+    onsets trustworthy. It fixes drift, not local timing, and a residual wider
+    than the 50 ms tolerance leaves nothing for a search to find."""
+    out = _run_until_it_gives_up(
+        _Args(align=True, tune_objective="onset"), tmp_path, capsys)
+
+    assert "not local timing" in out
+    assert "--objective sequence" in out
+
+
+def test_a_sequence_objective_is_not_warned_about(tmp_path, capsys):
+    """It is the answer the warning points at; repeating it there is noise."""
+    out = _run_until_it_gives_up(
+        _Args(align=True, tune_objective="sequence"), tmp_path, capsys)
+
+    assert "not local timing" not in out
+
+
+def test_a_large_refusal_share_is_called_out(tmp_path, capsys):
+    """A count reads as incidental whether it is 5 or 150. A share does not,
+    and refusals are not a random sample of the corpus."""
+    from transcpybe import tuning
+
+    args = _Args(align=True)
+    args.f0_cache = str(tmp_path / "cache")
+    args.split_file = str(tmp_path / "split.json")
+
+    # Reach the reporting block directly: what it says is the point, and
+    # aligning 200 real recordings to find out is not.
+    refused = [(f"song_{i}", "reference covers only 40% of the recording")
+               for i in range(140)]
+    refused += [(f"other_{i}", "the warp is not a tempo: only 80% of it runs "
+                 "at a plausible rate") for i in range(7)]
+    captured = tuning.describe_refusals(211, refused)
+
+    assert "41%" in captured
+    assert "140" in captured and "covers only part" in captured
+    assert "large share to discard" in captured
+    assert "would be refused for being right" in captured
+
+
+def test_a_small_refusal_share_is_reported_without_the_lecture(tmp_path):
+    from transcpybe import tuning
+
+    captured = tuning.describe_refusals(
+        200, [("song_1", "reference covers only 40% of the recording")])
+
+    assert "0%" in captured or "1%" in captured
+    assert "large share to discard" not in captured
