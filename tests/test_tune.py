@@ -434,3 +434,141 @@ def test_a_small_refusal_share_is_reported_without_the_lecture(tmp_path):
 
     assert "0%" in captured or "1%" in captured
     assert "large share to discard" not in captured
+
+
+# --------------------------------------------------------------------------
+# Cross-validation, for corpora too small to hold out a fifth of
+# --------------------------------------------------------------------------
+
+# Detuned the same way as the single-split test: a split gate so strict that
+# repeated notes all merge, which the search can recover.
+_BASE = TranscriptionConfig(f0_backend="pyin", device="cpu",
+                            onset_split_strength_ratio=1.6)
+_SMALL_SPACE = {"onset_split_strength_ratio": (0.2, 1.6)}
+
+
+def _detuned_corpus(tmp_path, songs):
+    """Recordings with known ground truth, and a cache to replay them from."""
+    import soundfile as sf
+
+    from transcpybe.synth import (case_rearticulated, case_rearticulated_fast,
+                                  case_scale)
+
+    items, references = [], {}
+    for i in range(songs):
+        make_case = (case_rearticulated, case_rearticulated_fast, case_scale)[i % 3]
+        audio, truth = make_case()
+        path = tmp_path / f"song_{i:02d}.wav"
+        sf.write(path, audio, 16000)
+        item_id = f"song_{i:02d}"
+        items.append(Item(item_id=item_id, audio=path, annotation=path))
+        references[item_id] = [(a, b, float(p)) for a, b, p in truth]
+    return items, references, StageCache(tmp_path / "cache", _BASE)
+
+def test_cross_validation_scores_every_recording_out_of_fold(tmp_path):
+    """A single split of forty recordings reports on eight, which cannot show
+    an improvement of the size a search produces. All forty can."""
+    from transcpybe.tune import cross_validate
+
+    items, references, cache = _detuned_corpus(tmp_path, songs=15)
+
+    result = cross_validate(_BASE, items, references, cache, folds=3, trials=4,
+                            space=_SMALL_SPACE, seed=0)
+
+    scored = set(result["per_item"]["baseline"])
+    assert scored == {i.item_id for i in items}, (
+        "every recording is reported on, by a fold that did not fit it")
+    assert len(result["folds"]) == 3
+    assert sum(f["n_report"] for f in result["folds"]) == len(items)
+
+
+def test_a_corpus_too_small_for_the_folds_is_refused(tmp_path):
+    from transcpybe.tune import cross_validate
+
+    items, references, cache = _detuned_corpus(tmp_path, songs=5)
+
+    with pytest.raises(ValueError, match="cannot support"):
+        cross_validate(_BASE, items, references, cache, folds=5, trials=2,
+                       space=_SMALL_SPACE)
+
+
+def test_the_paired_interval_answers_whether_a_change_helped():
+    """Two means do not. The difficulty of a recording is shared by both
+    configurations and has to cancel before the question can be asked."""
+    from transcpybe.tune import paired_delta
+
+    # Hard and easy recordings, each improved by the same small amount. The
+    # spread between recordings is ten times the improvement.
+    baseline = {f"s{i}": 0.1 + 0.08 * i for i in range(10)}
+    tuned = {k: v + 0.02 for k, v in baseline.items()}
+
+    delta = paired_delta(baseline, tuned, seed=0)
+
+    assert delta["mean"] == pytest.approx(0.02, abs=1e-9)
+    assert delta["low"] > 0.0, (
+        "a consistent gain must be detectable through a spread that dwarfs it")
+    assert delta["better"] == 10 and delta["worse"] == 0
+
+
+def test_an_inconsistent_change_is_not_called_a_gain():
+    from transcpybe.tune import paired_delta
+
+    baseline = {f"s{i}": 0.5 for i in range(20)}
+    tuned = {f"s{i}": 0.5 + (0.2 if i % 2 else -0.2) for i in range(20)}
+
+    delta = paired_delta(baseline, tuned, seed=0)
+
+    assert delta["low"] < 0.0 < delta["high"], "the interval must include zero"
+
+
+def test_stability_separates_an_agreed_parameter_from_a_scattered_one():
+    """Five folds choosing one value and five choosing five look identical in
+    any single run, which is the whole reason to look across folds.
+
+    Both fold sets here move the parameter the same way, so direction
+    agreement calls both stable. Only the spread across the searched range
+    tells them apart.
+    """
+    from transcpybe.tune import parameter_stability
+
+    # Both sets sit entirely above their default (p_self 0.985, sigma 0.55),
+    # so every fold moves each parameter the same way and direction agreement
+    # is 1.0 for both. One set is four thousandths wide; the other is half the
+    # searched range.
+    space = {"p_self": (0.9, 0.999), "pitch_sigma_semitones": (0.2, 1.2)}
+    per_fold = [{"changes": {"p_self": 0.990 + 0.001 * k,
+                             "pitch_sigma_semitones": 0.6 + 0.55 * (k % 2)}}
+                for k in range(5)]
+
+    stability = parameter_stability(_BASE, per_fold, space)
+
+    assert stability["p_self"]["agreement"] == 1.0
+    assert stability["pitch_sigma_semitones"]["agreement"] == 1.0, (
+        "precondition: direction agreement cannot tell these apart")
+
+    assert stability["p_self"]["spread"] < 0.1
+    assert stability["pitch_sigma_semitones"]["spread"] > 0.5, (
+        "half the searched range is what a search fitting noise looks like")
+
+
+def test_cross_validation_finds_a_real_parameter_and_not_the_others(tmp_path):
+    """The point of the fold table: one parameter was genuinely detuned and the
+    rest were not, and a single run cannot tell those apart."""
+    from transcpybe.tune import cross_validate
+
+    items, references, cache = _detuned_corpus(tmp_path, songs=18)
+
+    result = cross_validate(_BASE, items, references, cache, folds=3, trials=10,
+                            seed=0)
+
+    delta = result["delta"]
+    assert delta["low"] > 0.0, "a real gain must show an interval clear of zero"
+    assert delta["worse"] == 0
+
+    real = result["stability"]["onset_split_strength_ratio"]
+    assert real["agreement"] == 1.0, "every fold moved the detuned knob the same way"
+    assert real["median"] < 1.0, "and moved it down, which is where the fault was"
+
+    # pitch_sigma was never the problem. It must not read like the one that was.
+    noise = result["stability"]["pitch_sigma_semitones"]
+    assert noise["spread"] < real["spread"] or noise["agreement"] < 1.0

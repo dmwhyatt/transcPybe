@@ -375,6 +375,45 @@ whether or not it was sung. `--align` warps notated references onto the audio
 first; tuning against an unaligned score optimises the mismatch, which on
 BiMMuDa scores 0.06 however good the transcription is.
 
+#### Corpora too small for a held-out fifth
+
+A three-way split of forty recordings reports on eight, and eight cannot
+distinguish any improvement a search of this kind produces. `--cv K` scores
+every recording instead, each by a search that never saw it:
+
+```shell
+transcpybe-tune vocadito/audio --annotations vocadito/annotations \
+    --annotation-contains notesA1 --cv 5 --trials 60
+```
+
+```text
+Out-of-fold over all 40 recordings, onset F-beta at beta=1.5:
+  baseline      0.518
+  tuned         0.949
+  change       +0.431   95% CI [+0.271, +0.586]   better on 12, worse on 0
+
+What each fold chose:
+  parameter                    default   median            range  spread  agree
+  onset_split_strength_ratio       1.6   0.4299  0.2373 to 0.6989     71%   100%
+  pitch_sigma_semitones           0.55   0.5523  0.5322 to 0.5949     14%    67%
+```
+
+*(that table is from a test corpus with one knob deliberately detuned, which
+is why the first row is so clear)*
+
+Read the fold table before the score. Five folds choosing one value are
+evidence; five choosing five scattered values are the search fitting noise —
+and in a single run those look identical, because both print as one chosen
+number. **Spread** is how much of the searched range the folds covered, so near
+100% is what drawing at random looks like. **Agree** is how many moved the
+parameter the same way, so near 50% is disagreement about even the direction.
+
+Cross-validation spends the corpus. Every recording has been fitted on in some
+fold, so afterwards it cannot report an unseen number, and the folds are
+several answers rather than one configuration to keep. Use it to find out
+whether there is anything in the parameters at all, then fit properly on a
+corpus you can afford to hold out from.
+
 ## Tests
 
 ```shell

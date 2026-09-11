@@ -53,6 +53,15 @@ def build_parser():
                         help="Warp each reference onto its recording first, for "
                              "references notated at a nominal tempo. Fitted once, "
                              "against an f0 track no searched parameter can change.")
+    parser.add_argument("--cv", type=int, default=None, metavar="K",
+                        help="Cross-validate over K folds instead of using one "
+                             "fit/select/report split. Every recording is scored by "
+                             "a search that never saw it, so the estimate rests on "
+                             "the whole corpus rather than the fifth of it a single "
+                             "split reports on. Worth it below a few hundred "
+                             "recordings, where a held-out fifth is too small to "
+                             "show anything. It spends the corpus: afterwards no "
+                             "part of it is unseen.")
     parser.add_argument("--split-file", default="split.json",
                         help="Where the fit/select/report split is kept. An existing "
                              "one is reused, so the report set cannot quietly become "
@@ -155,6 +164,104 @@ def describe_refusals(aligned: int, refused) -> str:
     return "\n".join(lines)
 
 
+def _run_cross_validation(pairing, args, progress, config, cache, references) -> int:
+    """Tune and report across folds, and say what the resulting number is not."""
+    import dataclasses
+
+    from .tune import DEFAULT_SPACE, cross_validate
+
+    items = [i for i in pairing.items if i.item_id in references]
+    print(f"\nCross-validating over {args.cv} folds of {len(items)} recordings, "
+          f"{args.tune_trials} configurations each.")
+    print("Each fold fits and selects on the others and is scored by a search that\n"
+          "never saw it, so every recording contributes to the estimate.")
+
+    total = args.cv * args.tune_trials
+    with progress.stage("cross-validation", total=total) as stage:
+        try:
+            result = cross_validate(
+                config, items, references, cache, folds=args.cv,
+                space=DEFAULT_SPACE, trials=args.tune_trials, beta=args.tune_beta,
+                seed=args.seed, objective=args.tune_objective,
+                on_fold=lambda k, f: stage.advance(
+                    args.tune_trials,
+                    detail=f"fold {k + 1}: {f['baseline']:.3f} -> {f['tuned']:.3f}"))
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+    delta = result["delta"]
+    print(f"\nOut-of-fold over all {delta['n']} recordings, {args.tune_objective} "
+          f"F-beta at beta={args.tune_beta}:")
+    print(f"  {'baseline':<10}{result['baseline']:>9.3f}")
+    print(f"  {'tuned':<10}{result['tuned']:>9.3f}")
+    print(f"  {'change':<10}{delta['mean']:>+9.3f}   95% CI "
+          f"[{delta['low']:+.3f}, {delta['high']:+.3f}]"
+          f"   better on {delta['better']}, worse on {delta['worse']}")
+
+    crosses_zero = delta["low"] <= 0.0 <= delta["high"]
+    if crosses_zero:
+        print("\n  The interval includes zero, so this is consistent with the "
+              "parameters\n  making no difference at all on this corpus.")
+    else:
+        print("\n  The interval excludes zero, so the parameters do carry a real "
+              "difference\n  on this corpus. Whether it transfers is a question for "
+              "another one.")
+
+    if not result["stability"]:
+        print("\nNo fold found a configuration that beat the default on its own "
+              "selection\n  set, so there is nothing to show here. The defaults won "
+              "every fold.")
+        _print_cv_caveat(args)
+        return _write_cv_result(args, config, result, delta)
+
+    print("\nWhat each fold chose:")
+    print(f"  {'parameter':<32}{'default':>9}{'median':>9}{'range':>20}"
+          f"{'spread':>8}{'agree':>7}")
+    for name, stats in sorted(result["stability"].items()):
+        window = f"{stats['low']:.4g} to {stats['high']:.4g}"
+        spread = "-" if stats["spread"] != stats["spread"] else f"{stats['spread']:.0%}"
+        print(f"  {name:<32}{stats['baseline']:>9.4g}{stats['median']:>9.4g}"
+              f"{window:>20}{spread:>8}{stats['agreement']:>7.0%}")
+    print(
+        "\n  Spread is how much of the searched range the folds' choices cover:\n"
+        "  near 100% they used all of it, which is what drawing at random looks\n"
+        "  like. Agree is how many moved the parameter the same way; near 50%\n"
+        "  they disagree about even the direction. A parameter can agree on\n"
+        "  direction and still be scattered, so read both. In a single run either\n"
+        "  one would have printed as a chosen value."
+    )
+
+    _print_cv_caveat(args)
+    return _write_cv_result(args, config, result, delta)
+
+
+def _print_cv_caveat(args) -> None:
+    print(
+        "\n  This answers whether there is anything in these parameters, not what\n"
+        "  the tuned model scores. Every recording has been fitted on in some\n"
+        "  fold, so this corpus is spent: it can no longer report an unseen number,\n"
+        "  and the folds are several answers rather than one configuration to keep."
+    )
+
+
+def _write_cv_result(args, config, result, delta) -> int:
+    import dataclasses
+
+    Path(args.tuned_config).write_text(json.dumps({
+        "cross_validation": {
+            "folds": result["folds"], "delta": delta,
+            "stability": result["stability"],
+            "baseline": result["baseline"], "tuned": result["tuned"],
+        },
+        "beta": args.tune_beta, "trials": args.tune_trials,
+        "objective": args.tune_objective,
+        "base_config": dataclasses.asdict(config),
+    }, indent=2, default=str))
+    print(f"\nFull result: {args.tuned_config}")
+    return 0
+
+
 def run_tuning(pairing, args, progress) -> int:
     """Fit the parameters, then report what the fit is worth on held-out data."""
     import dataclasses
@@ -215,6 +322,10 @@ def run_tuning(pairing, args, progress) -> int:
         print(f"error: only {len(references)} recordings have readable references; "
               "a split needs more than that", file=sys.stderr)
         return 1
+
+    if args.cv:
+        return _run_cross_validation(pairing, args, progress, config, cache,
+                                     references)
 
     item_ids = [i.item_id for i in pairing.items if i.item_id in references]
     groups, stratified_by = {}, ""

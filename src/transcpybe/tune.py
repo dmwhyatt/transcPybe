@@ -221,6 +221,7 @@ def score_config(
     from .core import decode_notes
 
     scores, precisions, recalls = [], [], []
+    per_item: Dict[str, float] = {}
     for item in items:
         reference = references.get(item.item_id)
         if not reference:
@@ -233,17 +234,19 @@ def score_config(
             scores.append(sequence.f)
             precisions.append(sequence.precision)
             recalls.append(sequence.recall)
+            per_item[item.item_id] = sequence.f
         else:
             prf = note_prf(reference, estimated, pitch_tolerance=PITCH_TOLERANCE,
                        offset_ratio=None, onset_tolerance=onset_tolerance)
             scores.append(fbeta(prf.precision, prf.recall, beta))
             precisions.append(prf.precision)
             recalls.append(prf.recall)
+            per_item[item.item_id] = fbeta(prf.precision, prf.recall, beta)
 
     if not scores:
-        return {"fbeta": 0.0, "precision": 0.0, "recall": 0.0, "n": 0}
+        return {"fbeta": 0.0, "precision": 0.0, "recall": 0.0, "n": 0, "per_item": {}}
     return {"fbeta": float(np.mean(scores)), "precision": float(np.mean(precisions)),
-            "recall": float(np.mean(recalls)), "n": len(scores)}
+            "recall": float(np.mean(recalls)), "n": len(scores), "per_item": per_item}
 
 
 def sample_config(
@@ -319,3 +322,157 @@ def random_search(
     return {"best": best, "baseline_fit": baseline_fit,
             "baseline_select": baseline_select, "trials": trials_log,
             "beta": beta, "objective": objective, "space": {k: list(v) for k, v in space.items()}}
+
+
+def paired_delta(
+    baseline: Dict[str, float], tuned: Dict[str, float], *,
+    samples: int = 2000, seed: int = 0, confidence: float = 0.95,
+) -> Dict[str, Any]:
+    """Bootstrap the per-recording difference, not the two means separately.
+
+    Each recording is scored under both configurations, so the difficulty of
+    the recording -- which both share -- cancels. Two separate intervals do not
+    answer whether a change helped; the interval on the difference does.
+    """
+    shared = sorted(set(baseline) & set(tuned))
+    deltas = np.array([tuned[k] - baseline[k] for k in shared], dtype=float)
+    if deltas.size < 2:
+        mean = float(deltas.mean()) if deltas.size else 0.0
+        return {"mean": mean, "low": mean, "high": mean, "n": int(deltas.size),
+                "better": 0, "worse": 0}
+
+    rng = np.random.default_rng(seed)
+    draws = rng.integers(0, deltas.size, size=(samples, deltas.size))
+    means = deltas[draws].mean(axis=1)
+    tail = (1.0 - confidence) / 2.0
+    return {
+        "mean": float(deltas.mean()),
+        "low": float(np.quantile(means, tail)),
+        "high": float(np.quantile(means, 1.0 - tail)),
+        "n": int(deltas.size),
+        "better": int((deltas > 0).sum()),
+        "worse": int((deltas < 0).sum()),
+    }
+
+
+def cross_validate(
+    base: TranscriptionConfig,
+    items: Sequence[Item],
+    references: Dict[str, Sequence[RefNote]],
+    cache: StageCache,
+    *,
+    folds: int = 5,
+    space: Optional[Dict[str, Tuple[float, float]]] = None,
+    trials: int = 60,
+    beta: float = DEFAULT_BETA,
+    seed: int = 0,
+    objective: str = "onset",
+    select_fraction: float = 0.25,
+    on_fold: Optional[Callable[[int, Dict[str, Any]], None]] = None,
+) -> Dict[str, Any]:
+    """Tune and report on every recording, none of them in the same fold.
+
+    A single three-way split of a small corpus leaves too few recordings to
+    report on: forty items split 60/20/20 report on eight, and eight cannot
+    distinguish any improvement a search of this kind produces. Cross
+    validation scores all forty, each by a search that never saw it, so the
+    estimate rests on the whole corpus instead of a fifth of it.
+
+    The search inside each fold still selects on data it did not fit on, so the
+    winner is not chosen by the number being reported. What this buys is power,
+    not a licence to select on the report set.
+
+    It answers "is there anything here", not "here is the tuned model". Every
+    recording has been fitted on in some fold, so the corpus is spent: a number
+    from it is not an estimate of performance on unseen material, and the
+    per-fold configurations are five answers rather than one.
+    """
+    scorable = [item for item in items if references.get(item.item_id)]
+    if len(scorable) < folds * 3:
+        raise ValueError(
+            f"{len(scorable)} recordings cannot support {folds} folds; each fold "
+            "needs enough left over to fit and select on")
+
+    ordered = sorted(scorable, key=lambda item: item.item_id)
+    random.Random(seed).shuffle(ordered)
+    parts = [ordered[k::folds] for k in range(folds)]
+
+    baseline_by_item: Dict[str, float] = {}
+    tuned_by_item: Dict[str, float] = {}
+    per_fold: List[Dict[str, Any]] = []
+
+    for k in range(folds):
+        report = parts[k]
+        rest = [item for j, part in enumerate(parts) if j != k for item in part]
+        n_select = max(1, round(len(rest) * select_fraction))
+        select, fit = rest[:n_select], rest[n_select:]
+
+        # A different seed per fold: five searches down the same random path
+        # would agree with each other about nothing but the path.
+        result = random_search(base, fit, select, references, cache, space=space,
+                               trials=trials, beta=beta, seed=seed + k,
+                               objective=objective)
+        best = result["best"]
+        before = score_config(base, report, references, cache, beta=beta,
+                              objective=objective)
+        after = score_config(best["config"], report, references, cache, beta=beta,
+                             objective=objective)
+        baseline_by_item.update(before["per_item"])
+        tuned_by_item.update(after["per_item"])
+
+        fold = {"fold": k, "n_report": before["n"], "changes": best["changes"],
+                "baseline": before["fbeta"], "tuned": after["fbeta"]}
+        per_fold.append(fold)
+        if on_fold:
+            on_fold(k, fold)
+
+    return {
+        "folds": per_fold,
+        "baseline": float(np.mean(list(baseline_by_item.values()))),
+        "tuned": float(np.mean(list(tuned_by_item.values()))),
+        "delta": paired_delta(baseline_by_item, tuned_by_item, seed=seed),
+        "stability": parameter_stability(base, per_fold, space or DEFAULT_SPACE),
+        "per_item": {"baseline": baseline_by_item, "tuned": tuned_by_item},
+    }
+
+
+def parameter_stability(
+    base: TranscriptionConfig, per_fold: Sequence[Dict[str, Any]],
+    space: Optional[Dict[str, Tuple[float, float]]] = None,
+) -> Dict[str, Dict[str, float]]:
+    """How much the folds agreed about each parameter.
+
+    Five folds choosing one value are evidence; five choosing five scattered
+    values are the search fitting noise, and in any single run the two look
+    identical -- one chosen number either way.
+
+    Two things separate them, and both are needed. ``spread`` is how much of
+    the searched range the folds' choices cover: near 1 they used the whole
+    range, which is what drawing at random looks like. ``agreement`` is how
+    many folds moved the parameter the same way; near 0.5 they disagree about
+    even the direction. A parameter can agree on direction and still be
+    scattered, so a table showing only the second would call that stable.
+    """
+    stability: Dict[str, Dict[str, float]] = {}
+    names = sorted({name for fold in per_fold for name in fold["changes"]})
+    for name in names:
+        values = [float(fold["changes"][name]) for fold in per_fold
+                  if name in fold["changes"]]
+        if not values:
+            continue
+        low, high = min(values), max(values)
+        current = float(getattr(base, name, 0.0))
+        searched = (space or {}).get(name)
+        width = (searched[1] - searched[0]) if searched else 0.0
+        stability[name] = {
+            "median": float(np.median(values)),
+            "low": low,
+            "high": high,
+            "baseline": current,
+            "spread": (high - low) / width if width > 0 else float("nan"),
+            "agreement": max(
+                sum(1 for v in values if v > current),
+                sum(1 for v in values if v < current),
+            ) / len(values),
+        }
+    return stability
