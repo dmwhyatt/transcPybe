@@ -320,6 +320,8 @@ so did ROSVOT's.
 
 ```shell
 pip install git+https://github.com/dmwhyatt/transcription-benchmarking.git
+# (both repositories are private; from local checkouts,
+#  pip install -e ../transcription-benchmarking does the same)
 
 # Score a directory of transcriptions this package already wrote
 transcpybe vocadito/audio --out-dir transcriptions/

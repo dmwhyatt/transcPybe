@@ -41,7 +41,10 @@ crepe = ["torch>=2.0", "torchcrepe>=0.0.20"]
 # Scoring lives in its own package, and so does anything that needs it. Tuning
 # borrows its metrics and dataset loading; this package ships no benchmark.
 tune = [
-    # Not on PyPI, so named by where it actually is.
+    # Not on PyPI, so named by where it actually is. That repository is
+    # private, so this resolves only for someone whose git already has access
+    # to it; from a local checkout, "pip install -e ../transcription-benchmarking"
+    # does the same job.
     "transcription-benchmarking @ git+https://github.com/dmwhyatt/transcription-benchmarking.git",
 ]
 dev = ["pytest>=7.0", "build>=1.0", "twine>=5.0"]
