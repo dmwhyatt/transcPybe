@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "transcpybe"
+version = "0.1.0"
+description = "Transcribe sung melody to MIDI: onsets and pitches from monophonic vocal audio"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "David Whyatt" }]
+keywords = ["music information retrieval", "transcription", "midi", "singing",
+            "melody", "pitch tracking"]
+classifiers = [
+    # PyPI refuses any upload carrying this classifier. It is here on purpose:
+    # the package is not published, and until someone decides otherwise a
+    # mistaken "twine upload" should fail rather than claim the name. Remove
+    # this line deliberately, as the act of deciding to publish.
+    "Private :: Do Not Upload",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Sound/Audio :: Analysis",
+]
+
+# The pYIN backend needs none of torch, so the default install stays light.
+# CREPE is more accurate and is an extra rather than a default, because pulling
+# torch into every environment that wants a melody is not a kindness.
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "librosa>=0.10",      # pYIN, SuperFlux onsets, resampling, DTW
+    "soundfile>=0.12",
+    "pretty_midi>=0.2.10",
+    "mir_eval>=0.7",      # the metrics, and the self-test
+]
+
+[project.optional-dependencies]
+crepe = ["torch>=2.0", "torchcrepe>=0.0.20"]
+dev = ["pytest>=7.0", "build>=1.0", "twine>=5.0"]
+
+[project.scripts]
+transcpybe = "transcpybe.cli:main"
+transcpybe-benchmark = "transcpybe.benchmark.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/dmwhyatt/transcpybe"
+Issues = "https://github.com/dmwhyatt/transcpybe/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: exercises the CREPE backend"]

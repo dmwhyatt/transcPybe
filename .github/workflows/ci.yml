@@ -1,0 +1,26 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor is what the package claims to support, and the ceiling is
+        # what people will actually install it under.
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: sudo apt-get update && sudo apt-get install -y libsndfile1
+      - run: pip install -e ".[dev]"
+      # Without the crepe extra, so CI does not download torch on every run.
+      # The tests that need it are marked slow and deselected here.
+      - run: pytest -q -m "not slow"
