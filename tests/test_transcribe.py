@@ -451,11 +451,17 @@ def test_split_threshold_comes_from_onsets_not_the_envelope():
 
 
 def test_release_is_not_counted_as_note():
-    """Sound continuing past the annotation must not extend the note."""
+    """Sound continuing past the annotation must not extend the note.
+
+    Opt-in, because the trim is off by default: it ends notes at the top of the
+    decay, and vocadito's annotators mark them later -- enabling it cost 0.161
+    COnPOff there, on all forty recordings. What this test pins is that the
+    mechanism works, not that the default should use it.
+    """
     from transcpybe.synth import case_release_tails
 
     audio, ground_truth = case_release_tails()
-    notes = transcribe_audio(audio, pyin_config()).notes
+    notes = transcribe_audio(audio, pyin_config(trim_note_releases=True)).notes
 
     assert len(notes) == len(ground_truth)
     for note, (_, true_end, _) in zip(notes, ground_truth):
@@ -468,7 +474,7 @@ def test_breath_after_a_note_is_not_part_of_it():
     from transcpybe.synth import case_breath_ends
 
     audio, ground_truth = case_breath_ends()
-    notes = transcribe_audio(audio, pyin_config()).notes
+    notes = transcribe_audio(audio, pyin_config(trim_note_releases=True)).notes
 
     assert len(notes) == len(ground_truth)
     for note, (_, true_end, _) in zip(notes, ground_truth):
@@ -479,7 +485,7 @@ def test_release_trim_only_ever_shortens():
     """A decoder that already ended a note early must be left alone."""
     from transcpybe.notes import trim_note_releases
 
-    config = pyin_config()
+    config = pyin_config(trim_note_releases=True)
     audio, _ = case_scale()
     result = transcribe_audio(audio, pyin_config(trim_note_releases=False))
     untrimmed = result.notes
@@ -492,14 +498,21 @@ def test_release_trim_only_ever_shortens():
         assert after.duration >= config.min_note_duration_s
 
 
-def test_release_trim_can_be_switched_off():
+def test_release_trim_is_off_by_default():
+    """The default must leave note ends where the decoder put them.
+
+    Trimming them scored better on every synthetic case and worse on every one
+    of vocadito's forty recordings, so the default follows the real corpus.
+    """
     from transcpybe.synth import case_release_tails
 
+    assert TranscriptionConfig().trim_note_releases is False
+
     audio, ground_truth = case_release_tails()
-    kept = transcribe_audio(audio, pyin_config(trim_note_releases=False)).notes
+    kept = transcribe_audio(audio, pyin_config()).notes
 
     overshoot = [n.offset - end for n, (_, end, _) in zip(kept, ground_truth)]
-    assert min(overshoot) > 0.11, "without the trim these should all run long"
+    assert min(overshoot) > 0.11, "untrimmed, these run long -- and that is the default"
 
 
 # ---------------------------------------------------------------------------

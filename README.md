@@ -8,9 +8,9 @@ No GPU required and no checkpoint downloads: both pitch models ship their
 weights inside their PyPI wheels.
 
 ```
-audio ─▶ f0 + voicing ─▶ note HMM ─▶ glide handling ─▶ onset refinement ─▶ release trim ─▶ notes ─▶ .mid
-         CREPE / pYIN     Viterbi     portamento        spectral flux       note ends       pitch    .json
-                                                        (starts)                            measure  .csv
+audio ──▶ f0 + voicing ──▶ note HMM ──▶ glide handling ──▶ onset refinement ──▶ notes ──▶ .mid
+          CREPE / pYIN      Viterbi      portamento         spectral flux        pitch     .json
+                                                            (note starts)        measure   .csv
 ```
 
 ## How good is it?
@@ -256,8 +256,8 @@ pitch tolerance.
 
 | Backend | Cases perfect | Onset F | Note F (onset+pitch) | Note F (+offset) | Speed (4 CPU cores) |
 |---|---|---|---|---|---|
-| `crepe` (`full`, default) | **19 / 22** | 1.000 | **0.968** | 0.953 | ~1.6x realtime |
-| `pyin` | 18 / 22 | 0.938 | 0.944 | 0.944 | ~0.34x realtime |
+| `crepe` (`full`, default) | **17 / 22** | 1.000 | **0.968** | 0.862 | ~1.6x realtime |
+| `pyin` | 16 / 22 | 0.938 | 0.944 | 0.853 | ~0.34x realtime |
 | `crepe` (`tiny`) | — | — | — | — | ~0.11x realtime |
 
 Four of those cases exist to keep the suite honest rather than to be passed,
@@ -271,11 +271,21 @@ vowel rather than behind a consonant, which is what singing mostly does and
 what a spectral-flux detector finds hardest.
 
 Read the first row against the suite it is measured on. Over these 22 cases
-CREPE scored 0.943 / 0.936 / 0.814 before the onset envelope and release trim
-were fixed, and 1.000 / 0.968 / 0.953 after. Over the 18 cases that existed
-before, it scored 1.000 / 0.978 / 0.978 both before and after -- which is the
-reason the four cases were added rather than a point against them. A suite at
-its ceiling cannot rank two configurations, and this one was.
+CREPE scored 0.943 / 0.936 / 0.814 before the onset envelope was fixed and
+1.000 / 0.968 / 0.862 after; over the 18 cases that existed before, it scored
+1.000 / 0.978 / 0.978 either way. That is the reason the four were added rather
+than a point against them: a suite at its ceiling cannot rank two
+configurations, and this one was.
+
+**And read the whole table against vocadito, because it did not predict it.**
+The onset work above is worth 0.057 onset F here and, on forty real
+recordings, +0.005 with a 95% interval of [-0.006, +0.018] -- better on 19,
+worse on 19, which is the shape of a change that rearranges rather than
+improves. `release_tails` and `breath_ends` still score 0.000, because the
+trim that fixed them is now off by default: it scored 1.000 on both and cost
+0.161 COnPOff on every one of those forty recordings. Synthetic signals with
+exact ground truth are the right place to find a defect and a poor place to
+confirm a cure.
 
 The backends fail differently, which is why both are kept:
 
@@ -475,12 +485,14 @@ remain bit-identical.
 
 - **Monophonic only.** One pitch at a time. Harmonies or overlapping vocal
   layers in the same stem will be transcribed as one wandering line.
-- **Offsets are softer than onsets.** Where a sung note ends is genuinely
-  ambiguous, and the release is often breath rather than pitch. The release
-  trim picks one answer -- a note ends where its level leaves the sustain --
-  and `--release-drop` is the dial that moves it. A corpus whose annotators
-  drew the line later will want a larger value, and `transcpybe-tune
-  --objective offset` will fit it.
+- **Offsets are softer than onsets, and nothing here refines them.** Every
+  stage in the pipeline works on note starts; a note ends wherever the pitch
+  decoder stopped hearing pitch. `--release-trim` ends it at the top of the
+  decay instead, which is right on signals whose notes are annotated where the
+  pitch stops and wrong on vocadito, where it cost 0.161 COnPOff across all
+  forty recordings. It is off by default for that reason. Where a note ends is
+  a convention, so fit `--release-drop` against your own corpus with
+  `transcpybe-tune --objective offset` before trusting either answer.
 - **Loud separation residue** is transcribed as notes at the default level
   floor — see the dial above.
 - **Validated on synthetic audio.** See the caveat above.

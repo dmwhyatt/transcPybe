@@ -116,9 +116,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Disable spectral-flux onset refinement")
     tuning.add_argument("--no-glides", action="store_true",
                         help="Disable portamento handling")
-    tuning.add_argument("--no-release-trim", action="store_true",
-                        help="Report note ends where the pitch decoder left them, "
-                             "without trimming the release")
+    tuning.add_argument("--release-trim", action="store_true",
+                        help="End notes where their level leaves the sustain rather "
+                             "than where the decoder stops hearing pitch. Off by "
+                             "default: it ends notes earlier than vocadito's "
+                             "annotators do, and cost 0.161 COnPOff there. Fit "
+                             "--release-drop for your corpus before enabling it")
 
     batch = parser.add_argument_group("batch mode (directory input)")
     batch.add_argument("--no-recursive", action="store_true",
@@ -163,7 +166,7 @@ def config_from_args(args: argparse.Namespace) -> TranscriptionConfig:
         release_drop_db=args.release_drop_db,
         use_onsets=not args.no_onsets,
         absorb_glides=not args.no_glides,
-        trim_note_releases=not args.no_release_trim,
+        trim_note_releases=args.release_trim,
         midi_program=args.midi_program,
         midi_tempo=args.midi_tempo,
     )

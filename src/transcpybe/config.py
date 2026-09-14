@@ -261,15 +261,29 @@ class TranscriptionConfig:
     onset separates them."""
 
     # ---------------- Note ends ----------------
-    trim_note_releases: bool = True
+    trim_note_releases: bool = False
     """End a note where its own level collapses, rather than where the decoder
-    stops hearing pitch.
+    stops hearing pitch. Off by default, and the reason is worth the space.
 
-    Everything else in the pipeline refines note *starts*; the end was left
+    Everything else in the pipeline refines note *starts*; the end is left
     wherever the Viterbi path happened to leave the pitch state, which the
     adaptive gate holds open until the frame is ``loudness_dynamic_range_db``
-    below the whole track. That is far past where an annotator stops marking
-    pitch, so a note with any release at all is reported long."""
+    below the whole track. On synthetic signals whose notes keep sounding past
+    their annotated end, that reports every note long, and trimming fixes it
+    completely -- COnPOff 0.000 to 1.000 on those cases.
+
+    On vocadito it made things worse on all forty recordings: COnPOff 0.410 to
+    0.248, a paired difference of -0.161 with a 95% interval of [-0.191,
+    -0.134], while COn and COnP did not move. So the defect the trim addresses
+    is real and the trim's answer to it is wrong, at least for these
+    annotators. It ends a note where the level departs from sustain -- the top
+    of the decay -- and vocadito marks note ends later than that.
+
+    Turning it off is therefore not a retraction of the finding, only of the
+    constant. Where a note ends is a convention, and a convention has to be
+    fitted rather than guessed: enable this and fit ``release_drop_db`` with
+    ``transcpybe-tune --objective offset``, which is the machinery that had to
+    exist before the question could be asked at all."""
 
     release_drop_db: float = 1.0
     """How far a frame must sit below the note's own sustained level to count
