@@ -159,13 +159,53 @@ class TranscriptionConfig:
     """Use spectral-flux onsets to split repeated same-pitch notes and to align
     note starts to the audible attack."""
 
-    onset_max_size: int = 3
-    """Frequency-domain max-filter size for SuperFlux vibrato suppression."""
+    onset_n_fft: int = 512
+    """FFT window for the onset envelope, in samples at ``sample_rate``.
+
+    512 samples is 32 ms at the default 16 kHz. librosa's own default is 2048,
+    which this deliberately overrides: 2048 samples is 46 ms at the 44.1 kHz
+    SuperFlux was formulated for, but 128 ms here, and an attack smeared over
+    128 ms cannot be localised to the 50 ms the scoring convention allows.
+    Leaving it unset cost roughly two thirds of the detector's onset F."""
+
+    onset_aggregate: str = "mean"
+    """How the spectral flux is combined across frequency: 'mean' or 'median'.
+
+    The median asks for rising energy in more than half of the mel bands at
+    once. A sung syllable raises energy in a few formant regions, so broadband
+    consonants clear that bar and vowel-initial onsets -- most of real singing
+    -- do not. Vibrato suppression is ``onset_max_size``'s job, not this one."""
+
+    onset_max_size: int = 9
+    """Frequency-domain max-filter size for SuperFlux vibrato suppression.
+
+    Three mel bands is far less than an operatic vibrato's excursion, so a
+    steadily wobbling note still registers as flux. With ``onset_delta_ratio``
+    scaling the peak threshold by the envelope's median, that costs recall
+    rather than precision: vibrato flux raises the median, the bar rises with
+    it, and genuine onsets end up underneath. At a width of 1 the
+    re-articulation cases collapse from eight notes to one. 5 to 9 is a
+    plateau; 9 leaves margin for wider vibrato than the suite contains."""
 
     onset_lag: int = 2
     """Frame lag for the SuperFlux difference."""
 
-    onset_split_strength_ratio: float = 0.35
+    onset_delta_ratio: float = 1.0
+    """Peak-picking threshold, as a multiple of the envelope's own median.
+
+    librosa's ``delta`` is an absolute margin above a local mean, and an
+    absolute number cannot serve this envelope: its scale varies by two orders
+    of magnitude across recordings. On a breathy take the envelope is close to
+    flat noise -- its peak is seven times its median -- and an absolute
+    threshold admits most of that noise as onsets; on a take with consonants
+    the peak is seven hundred times the median and the same number sits far
+    below every real onset. Scaling the threshold by the median asks each
+    recording's peaks to stand out from that recording's own noise floor.
+
+    Raise it if noisy input is over-segmented; lower it if quiet
+    re-articulations are missed."""
+
+    onset_split_strength_ratio: float = 0.70
     """How strong a detected onset must be, relative to the median detected
     onset in the same recording, to split an existing note.
 
@@ -174,6 +214,12 @@ class TranscriptionConfig:
     singing those frames are loud, so its upper percentiles sit above most
     genuine onsets: the gate then asks each peak to clear a bar set by the
     material between the peaks, and re-articulated notes never split at all.
+
+    The bar moved up when the detector stopped being inert. A ratio is taken
+    against the median detected onset, so making the detector find every real
+    onset also changed what that median means: the same 0.35 now admits peaks
+    that are weak against a much richer field, and on breathy input it split
+    every note in two. 0.70 is where nothing in the suite regresses.
 
     Lower splits more. Raise it if the output is over-segmented."""
 
@@ -214,6 +260,43 @@ class TranscriptionConfig:
     """Adjacent notes of equal pitch closer than this are merged, unless an
     onset separates them."""
 
+    # ---------------- Note ends ----------------
+    trim_note_releases: bool = True
+    """End a note where its own level collapses, rather than where the decoder
+    stops hearing pitch.
+
+    Everything else in the pipeline refines note *starts*; the end was left
+    wherever the Viterbi path happened to leave the pitch state, which the
+    adaptive gate holds open until the frame is ``loudness_dynamic_range_db``
+    below the whole track. That is far past where an annotator stops marking
+    pitch, so a note with any release at all is reported long."""
+
+    release_drop_db: float = 1.0
+    """How far a frame must sit below the note's own sustained level to count
+    as release rather than note.
+
+    Small on purpose. This is not "how quiet is inaudible" -- it is "how far
+    from sustain is no longer sustaining", so what it locates is the top of the
+    decay, not a point part-way down it. That distinction decides whether the
+    trim works at all: a threshold set well down the ramp lands at a fixed
+    *fraction* of the release, so its error grows with the release and a long
+    one overshoots however the threshold is set. Measured across releases from
+    50 ms to 450 ms, every value from 3 dB up failed the longest of them and
+    1 dB passed all five.
+
+    Measured against the note, not the track, because a quiet note's release is
+    quiet too. The floor under it is vibrato: singers ripple their level by a
+    decibel or so, and at 0.5 dB the walk goes back through those dips and ends
+    notes early -- it cost two cases in the suite. Raise it if note ends come
+    out early, lower it if notes run on."""
+
+    release_min_fraction: float = 0.5
+    """A release trim may never take more than this fraction of a note.
+
+    A note that fades throughout -- a deliberate diminuendo -- is below its own
+    75th percentile for most of its length, and without this floor the trim
+    would report it as a fraction of its true duration."""
+
     # ---------------- MIDI output ----------------
     midi_program: int = 0
     """General MIDI program for the output track (0 = Acoustic Grand Piano)."""
@@ -250,6 +333,11 @@ class TranscriptionConfig:
             raise ValueError("Require 0 < fmin_hz < fmax_hz")
         if self.f0_median_filter_frames % 2 == 0:
             raise ValueError("f0_median_filter_frames must be odd")
+        if self.onset_aggregate not in ("mean", "median"):
+            raise ValueError("onset_aggregate must be 'mean' or 'median', "
+                             f"got {self.onset_aggregate!r}")
+        if self.onset_n_fft <= 0:
+            raise ValueError("onset_n_fft must be positive")
         if not 0.0 < self.p_self < 1.0:
             raise ValueError("p_self must be in (0, 1)")
         if self.p_self + self.p_voiced_to_unvoiced >= 1.0:

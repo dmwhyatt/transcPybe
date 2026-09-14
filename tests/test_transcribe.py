@@ -437,3 +437,144 @@ def test_split_threshold_comes_from_onsets_not_the_envelope():
     out = split_segments_on_onsets(segments, onsets, frame_times, config)
 
     assert len(out) == 5, "four onsets inside one segment must yield five notes"
+
+
+# ---------------------------------------------------------------------------
+# Note ends.
+#
+# Nothing in the pipeline used to touch them. Every other refinement stage acts
+# on note starts, and the end was wherever the Viterbi path left the pitch
+# state -- which the adaptive gate holds open until a frame is 45 dB below the
+# whole performance. A note with a release was reported for as long as it
+# remained audible rather than for as long as it was a note.
+# ---------------------------------------------------------------------------
+
+
+def test_release_is_not_counted_as_note():
+    """Sound continuing past the annotation must not extend the note."""
+    from transcpybe.synth import case_release_tails
+
+    audio, ground_truth = case_release_tails()
+    notes = transcribe_audio(audio, pyin_config()).notes
+
+    assert len(notes) == len(ground_truth)
+    for note, (_, true_end, _) in zip(notes, ground_truth):
+        # The tail is 180 ms; tolerance is 20% of the note or 50 ms, whichever
+        # is larger. Untrimmed, every one of these overshoots by the full tail.
+        assert note.offset - true_end < 0.11
+
+
+def test_breath_after_a_note_is_not_part_of_it():
+    from transcpybe.synth import case_breath_ends
+
+    audio, ground_truth = case_breath_ends()
+    notes = transcribe_audio(audio, pyin_config()).notes
+
+    assert len(notes) == len(ground_truth)
+    for note, (_, true_end, _) in zip(notes, ground_truth):
+        assert abs(note.offset - true_end) <= 0.10
+
+
+def test_release_trim_only_ever_shortens():
+    """A decoder that already ended a note early must be left alone."""
+    from transcpybe.notes import trim_note_releases
+
+    config = pyin_config()
+    audio, _ = case_scale()
+    result = transcribe_audio(audio, pyin_config(trim_note_releases=False))
+    untrimmed = result.notes
+    trimmed = trim_note_releases(list(untrimmed), result.f0_track, config)
+
+    assert len(trimmed) == len(untrimmed)
+    for before, after in zip(untrimmed, trimmed):
+        assert after.offset <= before.offset
+        assert after.onset == before.onset
+        assert after.duration >= config.min_note_duration_s
+
+
+def test_release_trim_can_be_switched_off():
+    from transcpybe.synth import case_release_tails
+
+    audio, ground_truth = case_release_tails()
+    kept = transcribe_audio(audio, pyin_config(trim_note_releases=False)).notes
+
+    overshoot = [n.offset - end for n, (_, end, _) in zip(kept, ground_truth)]
+    assert min(overshoot) > 0.11, "without the trim these should all run long"
+
+
+# ---------------------------------------------------------------------------
+# Onset envelope.
+#
+# Three librosa defaults were being inherited. At 16 kHz n_fft=2048 is a 128 ms
+# window; median aggregation across 128 mel bands only fires when half the
+# spectrum rises at once; and a 3-band max filter is too narrow to be the
+# vibrato defence the other two were relying on.
+# ---------------------------------------------------------------------------
+
+
+def test_vowel_rearticulation_is_found_without_a_consonant():
+    """The commoner case: a syllable boundary with no transient on it."""
+    from transcpybe.synth import case_soft_rearticulation
+
+    audio, ground_truth = case_soft_rearticulation()
+    notes = transcribe_audio(audio, pyin_config()).notes
+
+    assert len(notes) == len(ground_truth) == 8
+
+
+def test_repeated_pitches_in_a_legato_phrase_are_separated():
+    from transcpybe.synth import case_soft_legato_repeats
+
+    audio, ground_truth = case_soft_legato_repeats()
+    notes = transcribe_audio(audio, pyin_config()).notes
+
+    assert len(notes) == len(ground_truth) == 8
+
+
+def test_onset_window_is_set_rather_than_inherited():
+    """librosa's 2048 default is 128 ms here, and smears the attack away."""
+    from transcpybe.onsets import detect_onsets
+
+    config = pyin_config()
+    assert config.onset_n_fft == 512
+
+    audio, ground_truth = case_scale()
+    sharp = detect_onsets(audio, config)
+    blunt = detect_onsets(audio, pyin_config(onset_n_fft=2048,
+                                             onset_aggregate="median",
+                                             onset_max_size=3))
+
+    assert len(sharp) >= len(ground_truth)
+    assert len(blunt) < len(ground_truth)
+
+
+def test_peak_threshold_scales_with_the_envelope():
+    """An absolute delta cannot serve an envelope whose scale spans decades."""
+    from transcpybe.onsets import detect_onsets
+    from transcpybe.synth import case_breathy
+
+    audio, ground_truth = case_breathy()
+    strict = detect_onsets(audio, pyin_config(onset_delta_ratio=3.0))
+    loose = detect_onsets(audio, pyin_config(onset_delta_ratio=1e-9))
+
+    assert len(loose) > 3 * len(ground_truth)
+    assert len(strict) < len(loose)
+
+
+def test_vibrato_suppression_buys_onset_recall():
+    """What the max filter is for, once the peak threshold is relative.
+
+    A narrow filter lets a wobbling sustain register as flux. That does not
+    show up as spurious splits, because the threshold scales with the
+    envelope's median and the extra flux simply raises it -- it shows up as
+    genuine onsets falling underneath the raised bar.
+    """
+    from transcpybe.synth import case_heavy_vibrato, case_rearticulated
+
+    audio, ground_truth = case_heavy_vibrato()
+    assert len(transcribe_audio(audio, pyin_config()).notes) == len(ground_truth)
+
+    audio, ground_truth = case_rearticulated()
+    assert len(transcribe_audio(audio, pyin_config()).notes) == len(ground_truth)
+    narrow = transcribe_audio(audio, pyin_config(onset_max_size=1)).notes
+    assert len(narrow) < len(ground_truth), "a 1-band filter should lose onsets"

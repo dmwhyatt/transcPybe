@@ -6,6 +6,7 @@ cleaning up the note list afterwards.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional
 
@@ -227,6 +228,75 @@ def merge_same_pitch(
     return merged
 
 
+def trim_note_releases(
+    notes: List[Note], track: F0Track, config: TranscriptionConfig
+) -> List[Note]:
+    """Pull each note's end back to where the note's own level collapses.
+
+    This is the only stage that touches a note's end. Everything else --
+    fragment absorption, glide backtracking, onset splitting, start snapping --
+    refines note starts, and the end was simply wherever the decoder left the
+    pitch state. The adaptive gate holds that state open until a frame is
+    ``loudness_dynamic_range_db`` below the whole performance, which is a good
+    threshold for "is anyone singing" and much too generous for "is this note
+    still sounding". A note with a half-second release is reported half a
+    second long.
+
+    So: find the note's sustained level, walk back from its end while frames
+    sit below that level by ``release_drop_db``, and end the note there. The
+    threshold is per-note because a quiet note's release is quiet too, and it
+    is small because what it has to find is where the level *departed* from
+    sustain rather than where it became inaudible. A threshold set further down
+    the ramp lands at a fixed fraction of the release instead of at its top, so
+    the error it leaves grows with the release and long ones overshoot whatever
+    value is chosen.
+
+    Two things this deliberately does not do. It never lengthens a note, only
+    shortens one, so a decoder that already ended a note early is left alone.
+    And it does not re-measure pitch: the release frames were already the
+    least confident in the note and the weighted median had all but discarded
+    them, so the measurement stands and only the reported end moves.
+    """
+    if not config.trim_note_releases or not notes:
+        return notes
+
+    hop_s = config.hop_length / config.sample_rate
+    min_frames = max(1, int(round(config.min_note_duration_s / hop_s)))
+
+    trimmed: List[Note] = []
+    for note in notes:
+        start = note.start_frame
+        end = min(note.end_frame, track.n_frames)
+        levels = track.loudness_db[start:end]
+        finite = levels[np.isfinite(levels)]
+        if finite.size < 3 or end - start <= min_frames:
+            trimmed.append(note)
+            continue
+
+        floor = float(np.percentile(finite, 75)) - config.release_drop_db
+        # Never take more than release_min_fraction of the note: a note that
+        # fades throughout sits below its own 75th percentile for most of its
+        # length, and is a diminuendo rather than a release.
+        keep_at_least = max(min_frames,
+                            int(round((end - start) * config.release_min_fraction)))
+        limit = start + keep_at_least
+
+        cut = end
+        while cut - 1 >= limit:
+            level = levels[cut - 1 - start]
+            if not np.isfinite(level) or level >= floor:
+                break
+            cut -= 1
+
+        if cut < end:
+            trimmed.append(dataclasses.replace(
+                note, offset=cut * hop_s, end_frame=cut))
+        else:
+            trimmed.append(note)
+
+    return trimmed
+
+
 def drop_short_notes(notes: List[Note], config: TranscriptionConfig) -> List[Note]:
     """Discard notes too short to be a deliberate sung pitch."""
     return [n for n in notes if n.duration >= config.min_note_duration_s]
@@ -270,12 +340,18 @@ def postprocess_notes(
     config: TranscriptionConfig,
     onsets: Optional[OnsetTrack] = None,
 ) -> List[Note]:
-    """Merge fragments first, then drop what is still too short.
+    """Merge fragments first, then trim releases, then drop what is too short.
 
-    Order matters: merging can rescue a fragment that would not survive the
-    duration filter on its own.
+    Order matters twice over. Merging can rescue a fragment that would not
+    survive the duration filter on its own, so it goes first -- and it must see
+    untrimmed ends, because the gap it measures is the decoder's silence
+    between two notes, not the silence a release trim would manufacture.
+    Trimming then goes before the duration filter rather than after it, so that
+    a note which is only long enough because of its release is judged on the
+    length it is actually reported with.
     """
     notes = merge_same_pitch(notes, track, config, onsets)
+    notes = trim_note_releases(notes, track, config)
     notes = drop_short_notes(notes, config)
     notes = drop_quiet_notes(notes, config)
     return sorted(notes, key=lambda n: (n.onset, n.pitch))

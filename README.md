@@ -8,9 +8,9 @@ No GPU required and no checkpoint downloads: both pitch models ship their
 weights inside their PyPI wheels.
 
 ```
-audio ──▶ f0 + voicing ──▶ note HMM ──▶ glide handling ──▶ onset refinement ──▶ notes ──▶ .mid
-          CREPE / pYIN      Viterbi      portamento         spectral flux        pitch     .json
-                                                                                 measure   .csv
+audio ─▶ f0 + voicing ─▶ note HMM ─▶ glide handling ─▶ onset refinement ─▶ release trim ─▶ notes ─▶ .mid
+         CREPE / pYIN     Viterbi     portamento        spectral flux       note ends       pitch    .json
+                                                        (starts)                            measure  .csv
 ```
 
 ## How good is it?
@@ -250,26 +250,49 @@ than the rest of the performance are discarded.
 
 ## Accuracy
 
-Measured on the built-in synthetic benchmark (`--self-test`): 16 cases, 127
+Measured on the built-in synthetic benchmark (`--self-test`): 22 cases, 174
 notes, scored with `mir_eval` at the MIREX 50 ms onset tolerance and quarter-tone
 pitch tolerance.
 
 | Backend | Cases perfect | Onset F | Note F (onset+pitch) | Note F (+offset) | Speed (4 CPU cores) |
 |---|---|---|---|---|---|
-| `crepe` (`full`, default) | **15 / 16** | 1.000 | **0.979** | 0.979 | ~1.6x realtime |
-| `pyin` | 13 / 16 | 0.914 | 0.923 | 0.923 | ~0.34x realtime |
+| `crepe` (`full`, default) | **19 / 22** | 1.000 | **0.968** | 0.953 | ~1.6x realtime |
+| `pyin` | 18 / 22 | 0.938 | 0.944 | 0.944 | ~0.34x realtime |
 | `crepe` (`tiny`) | — | — | — | — | ~0.11x realtime |
+
+Four of those cases exist to keep the suite honest rather than to be passed,
+and they were added because the suite could not see two defects the vocadito
+run had already found. `release_tails` and `breath_ends` let a note keep
+sounding after the annotation ends it, which is the only way the offset column
+carries information at all -- before them it was identical to the note column
+on every case, and 145 of 145 matched notes passed the offset tolerance.
+`soft_rearticulation` and `soft_legato_repeats` re-articulate a pitch on a
+vowel rather than behind a consonant, which is what singing mostly does and
+what a spectral-flux detector finds hardest.
+
+Read the first row against the suite it is measured on. Over these 22 cases
+CREPE scored 0.943 / 0.936 / 0.814 before the onset envelope and release trim
+were fixed, and 1.000 / 0.968 / 0.953 after. Over the 18 cases that existed
+before, it scored 1.000 / 0.978 / 0.978 both before and after -- which is the
+reason the four cases were added rather than a point against them. A suite at
+its ceiling cannot rank two configurations, and this one was.
 
 The backends fail differently, which is why both are kept:
 
 - **pYIN** finds *nothing* in the `breathy` case (broadband noise only 12 dB
   below the voice) and loses 3 of 8 notes in `low_register`. It is markedly less
   noise-robust, and struggles where harmonics are closely spaced.
-- **CREPE** handles both, but confidently transcribes loud separation residue as
-  notes, where pYIN correctly reports it unvoiced.
+- **CREPE** tracks both, but confidently transcribes loud separation residue as
+  notes, where pYIN correctly reports it unvoiced. It also over-segments
+  `breathy` -- 11 notes where there are 7 -- because at that noise level the
+  onset envelope is nearly flat, and the peaks a detector sensitive enough to
+  find vowel onsets picks out of it are partly noise. `--onset-delta` raises
+  the bar a peak must clear relative to that recording's own floor, and is the
+  dial for it.
 
-So: use CREPE on clean stems and anything breathy or low; if a stem is badly
-separated and full of bleed, pYIN is worth a try as a second opinion.
+So: use CREPE on clean stems and anything low; if a stem is badly separated and
+full of bleed, pYIN is worth a try as a second opinion, and on a very noisy one
+raise `--onset-delta` before reaching for the backend switch.
 
 ### The one failing case, and why it is a dial rather than a bug
 
@@ -344,6 +367,10 @@ transcription-benchmark vocadito/audio \
 | Notes appearing in silent passages | `--note-level-floor` | lower (e.g. 22) |
 | Quiet real notes being dropped | `--note-level-floor` | raise, or `reject_quiet_notes=False` |
 | Repeated same-pitch notes merged | keep onsets on; **lower** `onset_split_strength_ratio` |  |
+| Sustained notes shredded into many | `--onset-max-size`, then `onset_split_strength_ratio` | raise |
+| Noisy input over-segmented | `--onset-delta` | raise |
+| Note ends late, running into the rest | `--release-drop` | lower |
+| Note ends early, clipping the sung note | `--release-drop` | raise |
 | Onsets landing early on breathy audio | `glide_min_periodicity` | raise |
 | Voice outside the tracked range | `--fmin` / `--fmax` | widen |
 
@@ -449,7 +476,11 @@ remain bit-identical.
 - **Monophonic only.** One pitch at a time. Harmonies or overlapping vocal
   layers in the same stem will be transcribed as one wandering line.
 - **Offsets are softer than onsets.** Where a sung note ends is genuinely
-  ambiguous, and the release is often breath rather than pitch.
+  ambiguous, and the release is often breath rather than pitch. The release
+  trim picks one answer -- a note ends where its level leaves the sustain --
+  and `--release-drop` is the dial that moves it. A corpus whose annotators
+  drew the line later will want a larger value, and `transcpybe-tune
+  --objective offset` will fit it.
 - **Loud separation residue** is transcribed as notes at the default level
   floor — see the dial above.
 - **Validated on synthetic audio.** See the caveat above.

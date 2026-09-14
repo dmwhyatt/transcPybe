@@ -41,19 +41,42 @@ class OnsetTrack:
 
 
 def detect_onsets(audio: np.ndarray, config: TranscriptionConfig) -> OnsetTrack:
-    """Compute a SuperFlux onset envelope and pick peaks from it."""
+    """Compute a SuperFlux onset envelope and pick peaks from it.
+
+    Three of librosa's defaults are overridden here rather than inherited, and
+    all three matter enough to name. ``n_fft`` is librosa's 2048, which is the
+    46 ms SuperFlux assumes only at 44.1 kHz; at this package's 16 kHz it is a
+    128 ms window, and an attack smeared across it cannot be placed inside the
+    50 ms the scoring convention allows. ``aggregate`` was the median, which
+    requires more than half the mel bands to rise together -- a bar broadband
+    consonants clear and vowel onsets do not. And ``max_size``, which is the
+    actual vibrato defence, was too narrow to be one.
+
+    Those three interact, which is why they are set together: a sensitive
+    envelope with a narrow max filter reads vibrato as a stream of onsets, and
+    the median was hiding that by suppressing nearly every onset as well.
+    """
     import librosa
 
     hop = config.hop_length
+    aggregate = np.mean if config.onset_aggregate == "mean" else np.median
 
     envelope = librosa.onset.onset_strength(
         y=audio,
         sr=config.sample_rate,
         hop_length=hop,
+        n_fft=config.onset_n_fft,
         lag=config.onset_lag,
         max_size=config.onset_max_size,
-        aggregate=np.median,
+        aggregate=aggregate,
     )
+
+    # A peak has to stand out from this recording's own noise floor. librosa's
+    # default delta is an absolute margin, and this envelope's scale spans two
+    # orders of magnitude across recordings, so an absolute one is far too
+    # strict on a quiet take and far too loose on a noisy one -- on breathy
+    # input it admitted fifty-six onsets where there were seven notes.
+    delta = max(config.onset_delta_ratio * float(np.median(envelope)), 1e-6)
 
     frames = librosa.onset.onset_detect(
         onset_envelope=envelope,
@@ -61,6 +84,7 @@ def detect_onsets(audio: np.ndarray, config: TranscriptionConfig) -> OnsetTrack:
         hop_length=hop,
         backtrack=False,
         units="frames",
+        delta=delta,
     )
 
     envelope_times = librosa.frames_to_time(

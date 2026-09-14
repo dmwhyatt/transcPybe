@@ -45,10 +45,13 @@ def build_parser():
                              "incomplete: a note the reference lacks is scored as "
                              "a false positive whether or not it was sung.")
     parser.add_argument("--objective", dest="tune_objective",
-                        choices=("onset", "sequence"), default="onset",
+                        choices=("onset", "offset", "sequence"), default="onset",
                         help="What to maximise. 'onset' needs references sharing a "
-                             "clock with the audio; 'sequence' ignores time and "
-                             "works on references that do not.")
+                             "clock with the audio; 'offset' is 'onset' with the "
+                             "note end required too, and needs the same clock and "
+                             "a reference whose note ends are meant seriously; "
+                             "'sequence' ignores time and works on references "
+                             "that do not.")
     parser.add_argument("--align", action="store_true",
                         help="Warp each reference onto its recording first, for "
                              "references notated at a nominal tempo. Fitted once, "
@@ -282,13 +285,22 @@ def run_tuning(pairing, args, progress) -> int:
     """Fit the parameters, then report what the fit is worth on held-out data."""
     import dataclasses
 
-    if args.tune_objective == "onset" and not args.align:
+    if args.tune_objective == "offset":
+        print(
+            "\nNote: tuning on offsets asks more of the reference than tuning on\n"
+            "  onsets does. Where a note ends is the softest thing an annotator\n"
+            "  marks, and some corpora set offsets to the following onset by\n"
+            "  convention rather than by ear. Against one of those, this objective\n"
+            "  is measuring the convention.",
+        )
+
+    if args.tune_objective in ("onset", "offset") and not args.align:
         print(
             "\nNote: tuning on onsets assumes the references share a clock with the\n"
             "  audio. If they were notated rather than aligned, pass --align, or use\n"
             "  --objective sequence. A benchmark run says which you have.",
         )
-    elif args.tune_objective == "onset" and args.align:
+    elif args.tune_objective in ("onset", "offset") and args.align:
         print(
             "\nNote: a warp fixes global drift, not local timing. An onset counts\n"
             "  only within 50 ms, so if what the warp leaves behind is wider than\n"
