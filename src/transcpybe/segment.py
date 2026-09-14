@@ -93,7 +93,8 @@ def build_transition_matrix(n_pitches: int, config: TranscriptionConfig) -> np.n
 
 
 def build_emission_matrix(
-    track: F0Track, pitch_lo: int, n_pitches: int, config: TranscriptionConfig
+    track: F0Track, pitch_lo: int, n_pitches: int, config: TranscriptionConfig,
+    tuning_offset: float = 0.0,
 ) -> np.ndarray:
     """Log emission matrix of shape (T, S).
 
@@ -109,7 +110,13 @@ def build_emission_matrix(
     log_voiced = np.log(voicing + _EPS)
     log_unvoiced = np.log(1.0 - voicing + _EPS) + config.unvoiced_offset
 
-    pitches = pitch_lo + np.arange(n_pitches, dtype=np.float64)
+    # The state centres move with the recording's own pitch centre. Leaving
+    # them on the A440 grid when the performance is not on it puts every frame
+    # the same distance off its correct state, which both weakens that state's
+    # emission and narrows the margin over its neighbour -- so a performance
+    # near the quarter-tone boundary does not merely round the wrong way, it
+    # decodes unstably, flipping between two states inside one held note.
+    pitches = pitch_lo + np.arange(n_pitches, dtype=np.float64) + tuning_offset
     # Frames with no f0 get a flat (uninformative) pitch profile; their very low
     # log_voiced term already rules the voiced states out.
     filled = np.where(np.isfinite(measured), measured, pitches[0])
@@ -176,12 +183,19 @@ def path_to_segments(path: np.ndarray, pitch_lo: int) -> List[Segment]:
     return segments
 
 
-def segment_notes(track: F0Track, config: TranscriptionConfig) -> List[Segment]:
-    """Decode an f0 track into pitch segments."""
+def segment_notes(track: F0Track, config: TranscriptionConfig,
+                  tuning_offset: float = 0.0) -> List[Segment]:
+    """Decode an f0 track into pitch segments.
+
+    ``tuning_offset`` shifts the pitch states onto the recording's own centre;
+    see ``f0.estimate_tuning_offset``. It moves where the states sit, not which
+    states exist, so a segment's integer pitch is unchanged in meaning.
+    """
     pitch_lo, pitch_hi = pitch_range(config)
     n_pitches = pitch_hi - pitch_lo + 1
 
-    log_emission = build_emission_matrix(track, pitch_lo, n_pitches, config)
+    log_emission = build_emission_matrix(track, pitch_lo, n_pitches, config,
+                                         tuning_offset)
     log_transition = build_transition_matrix(n_pitches, config)
     path = viterbi(log_emission, log_transition)
     return path_to_segments(path, pitch_lo)

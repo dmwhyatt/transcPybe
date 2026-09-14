@@ -311,6 +311,72 @@ class TranscriptionConfig:
     75th percentile for most of its length, and without this floor the trim
     would report it as a fraction of its true duration."""
 
+    # ---------------- Tuning reference ----------------
+    estimate_tuning: bool = True
+    """Find the recording's own pitch centre before deciding what a note is.
+
+    The decoder's pitch states and the rounding that produces an integer MIDI
+    number both sit on the A440 semitone grid. A performance that sits well off
+    that grid -- no reference pitch, an instrument tuned by ear, a tape running
+    slow -- is then read against the wrong centres: notes land between two
+    states rather than on one, and the ones nearest the boundary round to the
+    neighbouring semitone. The transcription comes out a semitone wrong in
+    places while the singing was perfectly in tune with itself.
+
+    Measured on synthetic phrases with ordinary intonation scatter, a
+    performance 35 cents off the grid loses a quarter of its note F-measure to
+    this and nothing else. Correcting for it is not a preference about
+    temperament: it is reading the recording in the tuning it was actually sung
+    in. Turn it off to force the A440 grid."""
+
+    tuning_min_concentration: float = 0.20
+    """How concentrated the pitch deviations must be before the estimate is used.
+
+    The resultant length of the circular mean, in [0, 1]. It answers "is there a
+    pitch centre here at all" -- deviations spread evenly around the circle have
+    none, and their mean angle is noise that would shift every note by an
+    arbitrary amount. Ordinary singing measures 0.4 to 0.8 even with a quarter
+    tone of scatter, so this floor rejects only the genuinely unidentifiable."""
+
+    tuning_min_notes: int = 5
+    """How many notes a tuning estimate needs before it is worth acting on.
+
+    Below this the estimate rests on too little material and the A440 grid is
+    the better guess."""
+
+    tuning_max_offset_semitones: float = 0.40
+    """Offsets beyond this are refused rather than applied.
+
+    A quarter tone is where the question stops having an answer. Deviations
+    spread symmetrically about the grid -- a singer who is simply scattered,
+    landing 40 cents sharp as often as 40 cents flat -- sit, on a circle whose
+    period is one semitone, nearest to the point half a semitone away. So the
+    scattered performance is not merely mistaken for an offset one: it is
+    genuinely better explained by one, because shifting everything by half a
+    semitone really does pull those deviations into a tighter band. The suite's
+    ``mistuned`` case is exactly this, and its notes are 49 cents from the grid
+    by that reckoning while the pitches its singer intended are the ones on it.
+
+    No statistic of the deviations can separate those two readings, because
+    they fit the same numbers. What separates them is a prior: tuning
+    references cluster near A440 -- the range in practical use spans about
+    -40 to +25 cents -- whereas the artefact lands near 50 by construction,
+    being the antipode of a distribution centred on zero. Refusing the far half
+    of the circle therefore costs the offsets nobody has and rejects the
+    artefact structurally rather than by a threshold fitted to one case."""
+
+    tuning_min_offset_semitones: float = 0.05
+    """Offsets smaller than this are treated as zero.
+
+    A note is lost to rounding when it ends up more than half a semitone from
+    the pitch intended, so a correction of five cents can only ever move a note
+    that was already within five cents of the boundary -- one that was a coin
+    toss whichever way it fell. Acting on estimates that small is therefore all
+    risk and no reward, and it is where a noisy estimate lives: a performance
+    already on the grid but scattered reports a few cents in one direction or
+    the other, and this declines to chase it. Nearly every recording lands here
+    and skips the second decoding pass entirely."""
+
     # ---------------- MIDI output ----------------
     midi_program: int = 0
     """General MIDI program for the output track (0 = Acoustic Grand Piano)."""
@@ -352,6 +418,14 @@ class TranscriptionConfig:
                              f"got {self.onset_aggregate!r}")
         if self.onset_n_fft <= 0:
             raise ValueError("onset_n_fft must be positive")
+        if not 0.0 <= self.tuning_min_concentration <= 1.0:
+            raise ValueError("tuning_min_concentration must be in [0, 1]")
+        if self.tuning_min_notes < 1:
+            raise ValueError("tuning_min_notes must be at least 1")
+        if self.tuning_min_offset_semitones < 0:
+            raise ValueError("tuning_min_offset_semitones must be non-negative")
+        if not 0.0 <= self.tuning_max_offset_semitones <= 0.5:
+            raise ValueError("tuning_max_offset_semitones must be in [0, 0.5]")
         if not 0.0 < self.p_self < 1.0:
             raise ValueError("p_self must be in (0, 1)")
         if self.p_self + self.p_voiced_to_unvoiced >= 1.0:

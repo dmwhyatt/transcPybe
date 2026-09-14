@@ -8,6 +8,8 @@ evaluate it properly.
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -25,7 +27,7 @@ from transcpybe import (
 from transcpybe.evaluate import score
 from transcpybe.f0 import F0Track, estimate_f0
 from transcpybe.fragments import absorb_short_fragments
-from transcpybe.notes import weighted_median, weighted_quantile
+from transcpybe.notes import Note, weighted_median, weighted_quantile
 from transcpybe.segment import (
     Segment,
     build_transition_matrix,
@@ -591,3 +593,125 @@ def test_vibrato_suppression_buys_onset_recall():
     assert len(transcribe_audio(audio, pyin_config()).notes) == len(ground_truth)
     narrow = transcribe_audio(audio, pyin_config(onset_max_size=1)).notes
     assert len(narrow) < len(ground_truth), "a 1-band filter should lose onsets"
+
+
+# --------------------------------------------------------------------------
+# Tuning reference
+# --------------------------------------------------------------------------
+
+def _detuned_phrase(offset_cents, scatter_cents=0.0, seed=5):
+    """A phrase sung ``offset_cents`` away from the grid, plus scatter."""
+    from transcpybe.synth import _sequence, synth_phrase
+
+    pitches = [62, 64, 66, 67, 69, 67, 66, 64, 62, 60, 62, 64]
+    rng = np.random.default_rng(seed)
+    detune = [offset_cents + rng.normal(0.0, scatter_cents) for _ in pitches]
+    return synth_phrase(_sequence(pitches, 0.5, 0.15), 16000,
+                        vibrato_cents=20.0, detune_cents=detune, seed=seed)
+
+
+def test_tuning_offset_is_found_and_reported():
+    """A phrase sung a third of a semitone flat is recognised as such."""
+    audio, _ = _detuned_phrase(-33.0)
+    result = transcribe_audio(audio, pyin_config())
+
+    assert result.tuning_offset == pytest.approx(-0.33, abs=0.08)
+
+
+def test_a_phrase_on_the_grid_is_left_alone():
+    """No offset means no correction, and no second decoding pass."""
+    audio, _ = _detuned_phrase(0.0)
+    result = transcribe_audio(audio, pyin_config())
+
+    assert result.tuning_offset == 0.0
+
+
+def test_tuning_correction_recovers_notes_lost_to_rounding():
+    """The point of the whole exercise: the notes the singer meant.
+
+    A third of a semitone off the grid, with ordinary intonation scatter on
+    top, is enough to round a share of notes to the neighbouring semitone.
+    """
+    audio, truth = _detuned_phrase(35.0, scatter_cents=15.0, seed=11)
+
+    corrected = score(transcribe_audio(audio, pyin_config()).notes, truth)
+    forced = score(
+        transcribe_audio(audio, pyin_config(estimate_tuning=False)).notes, truth)
+
+    assert corrected.note_f1 > forced.note_f1
+
+
+def test_scattered_intonation_is_not_a_tuning_offset():
+    """Singing that wanders either side of the grid must not be re-gridded.
+
+    This is the failure that makes the correction dangerous rather than merely
+    useless. Deviations spread symmetrically about zero sit, on a circle one
+    semitone around, nearest the point half a semitone away -- so a scattered
+    singer looks like a well-tuned one half a semitone off, and shifting them
+    there moves every sharp note into the next semitone up.
+    """
+    audio, truth = ALL_CASES["mistuned"]()
+    config = pyin_config()
+    result = transcribe_audio(audio, config)
+
+    assert result.tuning_offset == 0.0
+    assert score(result.notes, truth).note_f1 == pytest.approx(
+        score(transcribe_audio(audio, pyin_config(estimate_tuning=False)).notes,
+              truth).note_f1)
+
+
+def test_vibrato_does_not_masquerade_as_a_tuning_offset():
+    """Measured per frame rather than per note, this case reports 49 cents."""
+    audio, _ = ALL_CASES["vibrato"]()
+
+    assert transcribe_audio(audio, pyin_config()).tuning_offset == 0.0
+
+
+def test_tuning_estimate_can_be_switched_off():
+    audio, _ = _detuned_phrase(-33.0)
+
+    assert transcribe_audio(
+        audio, pyin_config(estimate_tuning=False)).tuning_offset == 0.0
+
+
+def test_offsets_past_a_quarter_tone_are_refused():
+    from transcpybe.notes import estimate_tuning_offset
+
+    config = pyin_config()
+    notes = [
+        Note(onset=i * 0.5, offset=i * 0.5 + 0.4, pitch=60, velocity=80,
+             confidence=0.9, loudness_db=-12.0, pitch_range_semitones=0.1,
+             pitch_hz=261.0, pitch_midi_float=60.0 + 0.45, hmm_pitch=60,
+             start_frame=0, end_frame=40)
+        for i in range(8)
+    ]
+    assert estimate_tuning_offset(notes, config) == 0.0
+
+    within = [dataclasses.replace(n, pitch_midi_float=60.3) for n in notes]
+    assert estimate_tuning_offset(within, config) == pytest.approx(0.3, abs=0.02)
+
+
+def test_tuning_estimate_needs_enough_notes():
+    from transcpybe.notes import estimate_tuning_offset
+
+    config = pyin_config()
+    notes = [
+        Note(onset=i * 0.5, offset=i * 0.5 + 0.4, pitch=60, velocity=80,
+             confidence=0.9, loudness_db=-12.0, pitch_range_semitones=0.1,
+             pitch_hz=261.0, pitch_midi_float=60.3, hmm_pitch=60,
+             start_frame=0, end_frame=40)
+        for i in range(config.tuning_min_notes - 1)
+    ]
+    assert estimate_tuning_offset(notes, config) == 0.0
+
+
+def test_self_test_uses_the_requested_backend():
+    """--self-test built its own default config and ignored every flag.
+
+    That made the one command offered for checking an install fail with an
+    ImportError on the torch-free install the pyin flag exists to serve.
+    """
+    from transcpybe.cli import build_parser, config_from_args
+
+    args = build_parser().parse_args(["--self-test", "--f0-backend", "pyin"])
+    assert config_from_args(args).f0_backend == "pyin"

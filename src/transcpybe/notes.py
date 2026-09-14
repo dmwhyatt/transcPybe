@@ -124,9 +124,18 @@ def _velocity(note_db: float, reference_db: float, config: TranscriptionConfig) 
 
 
 def segments_to_notes(
-    segments: List[Segment], track: F0Track, config: TranscriptionConfig
+    segments: List[Segment], track: F0Track, config: TranscriptionConfig,
+    tuning_offset: float = 0.0,
 ) -> List[Note]:
-    """Measure pitch, timing, confidence and velocity for each segment."""
+    """Measure pitch, timing, confidence and velocity for each segment.
+
+    ``tuning_offset`` is the recording's own pitch centre, in semitones away
+    from the A440 grid (see ``f0.estimate_tuning_offset``). Rounding happens
+    relative to it, so a performance sung consistently a third of a semitone
+    flat reports the notes it meant rather than the ones it was nearest to.
+    ``pitch_midi_float`` stays as measured, in absolute MIDI, so the deviation
+    a caller reads off it remains the real distance from A440.
+    """
     hop_s = config.hop_length / config.sample_rate
     n_frames = track.n_frames
 
@@ -147,7 +156,7 @@ def segments_to_notes(
             # No usable f0 anywhere in the segment; trust the decoder's state.
             measured = float(seg.pitch)
 
-        pitch = int(np.clip(round(measured), 0, 127))
+        pitch = int(np.clip(round(measured - tuning_offset), 0, 127))
         voiced = track.voicing[indices]
         hz = track.f0_hz[indices]
         hz_valid = hz[np.isfinite(hz)]
@@ -176,6 +185,88 @@ def segments_to_notes(
             )
         )
     return notes
+
+
+def estimate_tuning_offset(
+    notes: List[Note], config: TranscriptionConfig
+) -> float:
+    """How far this performance's pitch centre sits from the A440 semitone grid.
+
+    Returned in semitones, in [-0.5, 0.5]; zero means leave the grid alone.
+
+    Both the decoder's pitch states and the rounding that produces an integer
+    MIDI number assume a note's centre lies on an integer. That is an
+    assumption about the *recording*: a phone take sung with no reference
+    pitch, or against an instrument tuned by ear, sits wherever it sits. Offset
+    the whole performance by more than a quarter tone and every note is nearer
+    the wrong semitone than the right one -- the transcription comes out a
+    semitone adrift while the singing was perfectly in tune with itself.
+
+    Measured across notes rather than across frames, which is the whole
+    difficulty. A vibrato sweeps its frames across the entire deviation range
+    several times a second, so a frame-weighted estimate is dominated by
+    material that carries no tuning information at all: measured per frame,
+    the suite's vibrato case reports a 49-cent offset where the true one is
+    zero, which is the most damaging answer available. Nor can the sweep be
+    filtered out by holding on to frames whose pitch is momentarily still --
+    the still points of a vibrato are the extremes of its swing, so that
+    selects precisely the frames furthest from the centre. Averaging inside
+    each note first collapses the swing to the pitch the note was aiming at,
+    and only then is there something to take a centre of.
+
+    Weighted by duration and confidence, because a held, confident note says
+    where the singer thinks a pitch is and a 60 ms fragment does not.
+
+    The average is circular, not arithmetic: these deviations live on a circle,
+    where a performance 49 cents sharp and one 49 cents flat are nearly the
+    same performance sitting at opposite ends of [-0.5, 0.5]. Averaging those
+    linearly returns zero, the one answer that is certainly wrong. The circular
+    mean also yields a concentration R in [0, 1] for free, and that is what
+    decides whether to act: it asks whether this performance has a pitch centre
+    at all. Singing scattered evenly around the circle has none -- intonation
+    that wanders by a quarter tone note to note is not an offset and must not
+    be corrected as one -- and its mean angle is noise that would shift every
+    note by an arbitrary amount.
+    """
+    if not config.estimate_tuning or len(notes) < config.tuning_min_notes:
+        return 0.0
+
+    values, weights = [], []
+    for note in notes:
+        if not np.isfinite(note.pitch_midi_float):
+            continue
+        weight = max(note.duration, 0.0) * max(note.confidence, 0.0)
+        if weight <= 0.0:
+            continue
+        values.append(note.pitch_midi_float)
+        weights.append(weight)
+
+    if len(values) < config.tuning_min_notes:
+        return 0.0
+
+    values = np.asarray(values, dtype=np.float64)
+    weights = np.asarray(weights, dtype=np.float64)
+    total = float(np.sum(weights))
+    if total <= 0.0:
+        return 0.0
+
+    # Deviation from the nearest semitone, mapped onto a full turn so that the
+    # wrap at +/-0.5 is a continuity rather than a cliff.
+    theta = 2.0 * np.pi * (values - np.round(values))
+    cosine = float(np.sum(weights * np.cos(theta)))
+    sine = float(np.sum(weights * np.sin(theta)))
+
+    concentration = float(np.hypot(cosine, sine) / total)
+    if concentration < config.tuning_min_concentration:
+        return 0.0
+
+    offset = float(np.arctan2(sine, cosine) / (2.0 * np.pi))
+    # Near the far side of the circle the reading is ambiguous rather than
+    # merely uncertain, and the ambiguity resolves the wrong way: see
+    # tuning_max_offset_semitones.
+    if abs(offset) > config.tuning_max_offset_semitones:
+        return 0.0
+    return offset
 
 
 def merge_same_pitch(

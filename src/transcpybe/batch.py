@@ -302,6 +302,7 @@ def _write_outputs(
     if json_:
         write_json(result.notes, outputs["json"], config,
                    extra={"source": result.source, "duration": result.duration,
-                          "device": result.device})
+                          "device": result.device,
+                          "tuning_offset_cents": 100.0 * result.tuning_offset})
     if csv:
         write_csv(result.notes, outputs["csv"])

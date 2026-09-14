@@ -134,7 +134,7 @@ def test_replay_from_cached_tracks_matches_the_full_transcription():
     for make_case in (case_scale, case_rearticulated):
         audio, _ = make_case()
         full = transcribe_audio(audio, config)
-        replayed, _, _ = decode_notes(full.f0_track, config, onsets=full.onsets)
+        replayed, _, _, _ = decode_notes(full.f0_track, config, onsets=full.onsets)
 
         assert [(n.onset, n.offset, n.pitch) for n in replayed] == \
                [(n.onset, n.offset, n.pitch) for n in full.notes]

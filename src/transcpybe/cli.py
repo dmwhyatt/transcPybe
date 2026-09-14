@@ -116,6 +116,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Disable spectral-flux onset refinement")
     tuning.add_argument("--no-glides", action="store_true",
                         help="Disable portamento handling")
+    tuning.add_argument("--no-tuning-estimate", action="store_true",
+                        help="Force the A440 semitone grid instead of finding the "
+                             "one this recording is actually sung on. The estimate "
+                             "already declines when a performance has no clear "
+                             "pitch centre, so this is for when you know the grid")
     tuning.add_argument("--release-trim", action="store_true",
                         help="End notes where their level leaves the sustain rather "
                              "than where the decoder stops hearing pitch. Off by "
@@ -165,6 +170,7 @@ def config_from_args(args: argparse.Namespace) -> TranscriptionConfig:
         onset_delta_ratio=args.onset_delta_ratio,
         release_drop_db=args.release_drop_db,
         use_onsets=not args.no_onsets,
+        estimate_tuning=not args.no_tuning_estimate,
         absorb_glides=not args.no_glides,
         trim_note_releases=args.release_trim,
         midi_program=args.midi_program,
@@ -174,13 +180,19 @@ def config_from_args(args: argparse.Namespace) -> TranscriptionConfig:
     return config
 
 
-def run_self_test(progress: ProgressReporter) -> int:
-    """Transcribe the synthetic suite and report accuracy."""
+def run_self_test(progress: ProgressReporter, config: TranscriptionConfig) -> int:
+    """Transcribe the synthetic suite and report accuracy.
+
+    Takes the configuration the command line asked for rather than building a
+    default one. Ignoring it meant ``--self-test --f0-backend pyin`` silently
+    ran CREPE, so the one command offered for checking an install failed with
+    an ImportError on precisely the torch-free install the flag exists to
+    serve -- and any other flag passed alongside it was quietly discarded.
+    """
     from .core import transcribe_audio
     from .evaluate import format_scores, score
     from .synth import ALL_CASES
 
-    config = TranscriptionConfig()
     rows = []
     with progress.stage("self-test", total=len(ALL_CASES)) as stage:
         for name, make_case in ALL_CASES.items():
@@ -211,7 +223,10 @@ def _run_single(args, config, progress) -> int:
         written.append(write_json(
             result.notes, output_dir / f"{stem}.notes.json", config,
             extra={"source": str(audio_path), "duration": result.duration,
-                   "device": result.device},
+                   "device": result.device,
+                   # In cents, because that is the unit the note table's own
+                   # deviation column is in and the two are read together.
+                   "tuning_offset_cents": 100.0 * result.tuning_offset},
         ))
     if not args.no_csv:
         written.append(write_csv(result.notes, output_dir / f"{stem}.notes.csv"))
@@ -267,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.self_test:
-        return run_self_test(progress)
+        return run_self_test(progress, config_from_args(args))
 
     if not args.audio:
         build_parser().print_help()
