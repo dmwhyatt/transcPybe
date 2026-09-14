@@ -382,14 +382,27 @@ class TranscriptionConfig:
     tuning_min_offset_semitones: float = 0.05
     """Offsets smaller than this are treated as zero.
 
-    A note is lost to rounding when it ends up more than half a semitone from
-    the pitch intended, so a correction of five cents can only ever move a note
-    that was already within five cents of the boundary -- one that was a coin
-    toss whichever way it fell. Acting on estimates that small is therefore all
-    risk and no reward, and it is where a noisy estimate lives: a performance
-    already on the grid but scattered reports a few cents in one direction or
-    the other, and this declines to chase it. Nearly every recording lands here
-    and skips the second decoding pass entirely."""
+    A note survives rounding until it sits more than half a semitone from the
+    pitch intended, so a five-cent correction can only move a note that was
+    already within five cents of the boundary -- one that was a coin toss
+    whichever way it fell. Below that there is nothing to win, and it is where
+    a noisy estimate lives: a performance already on the grid but scattered
+    reports a few cents one way or the other, and this declines to chase it.
+
+    Raising it further looks like the safer choice and measures worse. The
+    argument for 0.15 was that a performance 15 cents off still scores a clean
+    1.000 against the A440 grid, so there is no loss to recover at that size and
+    the correction is pure risk. Both halves of that are true and the setting
+    still lost: it cut the gain at 25 cents from +0.083 to +0.056, because the
+    estimate shrinks as scatter wraps and real offsets of 20-odd cents are read
+    as 17 and refused, while the case it was meant to protect stayed at -0.028
+    -- that loss is one note in one recording whose estimate cleared 15 cents
+    anyway. A floor cannot separate them, because the sizes overlap. So the
+    floor stays where it only excludes what is certainly noise, and the
+    aggregate is left to carry the rest: better on 7 recordings, worse on 1.
+
+    Nearly every recording lands below this and skips the second decoding pass
+    entirely."""
 
     # ---------------- MIDI output ----------------
     midi_program: int = 0

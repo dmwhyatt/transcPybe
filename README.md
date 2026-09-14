@@ -355,6 +355,36 @@ The default favours keeping real quiet singing, on the view that a spurious note
 you can see and delete is less costly than a sung note that was never reported.
 Lower it when working with a poorly separated stem.
 
+### What the tuning reference is worth
+
+The suite cannot show this, by design: every case in it is sung on the A440
+grid, so the estimate correctly declines on all 22 and the table above is
+identical with it on and off. What it is worth shows up only on a performance
+that is not on that grid.
+
+Paired on the same audio, the same f0, and the same seeds — phrases sung a
+fixed distance off the grid with per-note intonation scatter on top, scored as
+note F (onset+pitch):
+
+| Offset | Scatter | Forced A440 | Tuned | |
+|---|---|---|---|---|
+| 0 | 25c | 0.972 | 0.972 | estimate declines |
+| 15c | 25c | 1.000 | 0.972 | nothing to win; one note lost |
+| 25c | 25c | 0.833 | **0.917** | |
+| 35c | 15c | 0.833 | **1.000** | |
+| 35c | 25c | 0.750 | **0.917** | |
+
+Better on 7 of those 15 recordings, worse on 1, unchanged on 7. The shape is
+the point: it does nothing until the grid is demonstrably costing notes, and
+a recording already near A440 never reaches the second decoding pass at all —
+its output is the same object the single pass produced.
+
+These are synthesised, and the caveat below applies to them with force. The
+argument that this should carry to real singing is that a human annotator
+hears a performance in its own tuning, so an estimate that does the same ought
+to agree with them more often. That is an argument rather than a measurement,
+and it wants a benchmark run before it is believed.
+
 ### What these numbers do and do not mean
 
 The benchmark is **synthesised**, not real singing. The synthesiser models
