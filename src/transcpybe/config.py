@@ -221,6 +221,20 @@ class TranscriptionConfig:
     that are weak against a much richer field, and on breathy input it split
     every note in two. 0.70 is where nothing in the suite regresses.
 
+    That raise and the envelope's new sensitivity landed together and were
+    never separated, which left it open whether the one was quietly cancelling
+    the other -- whether the detector's extra reach was ever arriving at the
+    notes. Separated since, by putting the ratio back to 0.35 with everything
+    else as shipped: across all 22 cases only ``breathy`` moves, from 11 notes
+    to 13 against a true 7, and every other case is identical to the digit. The
+    bar is therefore doing one job, rejecting noise peaks on breathy input, and
+    is not holding back anything that reaches a note.
+
+    The same run says why that is worth little. Onset F is already 1.000 on
+    every case here, so the suite cannot show a missed onset being found, and
+    cannot say whether the sensitivity reaches notes on real audio -- only that
+    this ratio is not what would be stopping it.
+
     Lower splits more. Raise it if the output is over-segmented."""
 
     onset_split_min_gap_s: float = 0.06
