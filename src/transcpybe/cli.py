@@ -99,6 +99,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="How spectral flux is combined across frequency. "
                              "median only fires when most of the spectrum rises, "
                              "which misses vowel-initial onsets")
+    tuning.add_argument("--onset-split-strength", type=float, default=0.70,
+                        dest="onset_split_strength_ratio",
+                        help="How strong an onset must be, relative to the median "
+                             "detected onset, to split a note in two. Lower splits "
+                             "more; raise it if the output is over-segmented")
     tuning.add_argument("--onset-delta", type=float, default=1.0,
                         dest="onset_delta_ratio",
                         help="Peak threshold as a multiple of the onset envelope's "
@@ -163,6 +168,7 @@ def config_from_args(args: argparse.Namespace) -> TranscriptionConfig:
         onset_aggregate=args.onset_aggregate,
         onset_max_size=args.onset_max_size,
         onset_delta_ratio=args.onset_delta_ratio,
+        onset_split_strength_ratio=args.onset_split_strength_ratio,
         release_drop_db=args.release_drop_db,
         use_onsets=not args.no_onsets,
         absorb_glides=not args.no_glides,
