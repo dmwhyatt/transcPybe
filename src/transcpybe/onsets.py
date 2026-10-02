@@ -169,16 +169,28 @@ def snap_segment_starts(
 ) -> List[Segment]:
     """Pull each segment start to a nearby detected onset.
 
-    A start is only moved if the shift does not collide with the previous
-    segment and does not shrink this segment below one frame.
+    A start may move later, or earlier into silence, as long as the segment
+    keeps at least one frame. Where the segment begins exactly where the one
+    before it ends -- a legato transition -- the boundary is shared, and a
+    start that moves earlier takes the previous segment's end with it, as long
+    as that segment keeps ``min_note_duration_s``.
+
+    That last case is the one that matters. The decoder places a legato
+    boundary where the pitch has crossed over, which lags the attack that
+    starts the new syllable: a pitch tracker holds the old pitch for a few
+    frames, and a reverberant room holds it for longer. Snapping exists to pull
+    such a start back onto the attack, and it used to be forbidden from doing
+    so, because a start could never move before the previous segment's end --
+    which, for contiguous segments, is the start itself.
     """
     if len(onsets) == 0 or not segments:
         return segments
 
-    window_frames = int(round(config.onset_snap_window_s
-                              * config.sample_rate / config.hop_length))
+    hop_s = config.hop_length / config.sample_rate
+    window_frames = int(round(config.onset_snap_window_s / hop_s))
     if window_frames < 1:
         return segments
+    min_frames = max(1, int(round(config.min_note_duration_s / hop_s)))
 
     onset_frames = np.searchsorted(frame_times, onsets.times)
     onset_frames = np.clip(onset_frames, 0, frame_times.shape[0] - 1)
@@ -186,21 +198,25 @@ def snap_segment_starts(
         return segments
 
     out: List[Segment] = []
-    previous_end = 0
     for seg in segments:
         distances = np.abs(onset_frames - seg.start_frame)
         nearest = int(np.argmin(distances))
         candidate = int(onset_frames[nearest])
 
-        if (
-            distances[nearest] <= window_frames
-            and candidate >= previous_end
-            and candidate < seg.end_frame
-        ):
-            seg = Segment(start_frame=candidate, end_frame=seg.end_frame, pitch=seg.pitch)
+        if distances[nearest] > window_frames or candidate >= seg.end_frame:
+            out.append(seg)
+            continue
 
-        out.append(seg)
-        previous_end = seg.end_frame
+        previous = out[-1] if out else None
+        if previous is not None and candidate < previous.end_frame:
+            shared = previous.end_frame == seg.start_frame
+            if not shared or candidate - previous.start_frame < min_frames:
+                out.append(seg)
+                continue
+            out[-1] = Segment(start_frame=previous.start_frame, end_frame=candidate,
+                              pitch=previous.pitch)
+
+        out.append(Segment(start_frame=candidate, end_frame=seg.end_frame, pitch=seg.pitch))
 
     return out
 

@@ -313,6 +313,17 @@ def test_a_short_note_between_rests_is_not_a_passing_tone():
     assert len(absorb_passing_tones(list(contiguous), TranscriptionConfig())) == 2
 
 
+def test_snapping_can_move_a_legato_boundary_onto_the_attack():
+    """Snapping used to be forbidden from moving a contiguous start earlier."""
+    from transcpybe.onsets import OnsetTrack, snap_segment_starts
+
+    config = TranscriptionConfig()
+    frame_times = np.arange(200) / 100.0
+    onsets = OnsetTrack(np.array([0.96]), np.array([5.0]), np.zeros(200), frame_times)
+    segments = [Segment(20, 100, 60), Segment(100, 180, 62)]
+
+    out = snap_segment_starts(segments, onsets, frame_times, config)
+    assert out[1].start_frame == 96 and out[0].end_frame == 96
 
 
 # --------------------------------------------------------------------------
