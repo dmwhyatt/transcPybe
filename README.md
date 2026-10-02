@@ -438,12 +438,11 @@ transcription-benchmark vocadito/audio \
 | Genuine fast runs merged together | `--p-self` | lower (e.g. 0.97) |
 | Notes appearing in silent passages | `--note-level-floor` | lower (e.g. 22) |
 | Quiet real notes being dropped | `--note-level-floor` | raise, or `reject_quiet_notes=False` |
-| Repeated same-pitch notes merged | keep onsets on; **lower** `onset_split_strength_ratio` |  |
+| Repeated same-pitch notes merged | keep onsets on; `--onset-split-strength` | lower |
 | Sustained notes shredded into many | `--onset-max-size`, then `--onset-split-strength` | raise |
-| Re-articulated syllables merged | `--onset-split-strength` | lower |
 | Noisy input over-segmented | `--onset-delta` | raise |
-| Note ends late, running into the rest | `--release-drop` | lower |
-| Note ends early, clipping the sung note | `--release-drop` | raise |
+| Note ends late, running into the rest | `--release-trim`, then tune `--release-drop` | enable; lower |
+| Note ends early, with `--release-trim` on | `--release-drop` | raise |
 | Onsets landing early on breathy audio | `glide_min_periodicity` | raise |
 | Voice outside the tracked range | `--fmin` / `--fmax` | widen |
 
