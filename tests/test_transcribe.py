@@ -8,6 +8,8 @@ evaluate it properly.
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -25,7 +27,7 @@ from transcpybe import (
 from transcpybe.evaluate import score
 from transcpybe.f0 import F0Track, estimate_f0
 from transcpybe.fragments import absorb_short_fragments
-from transcpybe.notes import weighted_median, weighted_quantile
+from transcpybe.notes import Note, weighted_median, weighted_quantile
 from transcpybe.segment import (
     Segment,
     build_transition_matrix,
@@ -437,3 +439,279 @@ def test_split_threshold_comes_from_onsets_not_the_envelope():
     out = split_segments_on_onsets(segments, onsets, frame_times, config)
 
     assert len(out) == 5, "four onsets inside one segment must yield five notes"
+
+
+# ---------------------------------------------------------------------------
+# Note ends.
+#
+# Nothing in the pipeline used to touch them. Every other refinement stage acts
+# on note starts, and the end was wherever the Viterbi path left the pitch
+# state -- which the adaptive gate holds open until a frame is 45 dB below the
+# whole performance. A note with a release was reported for as long as it
+# remained audible rather than for as long as it was a note.
+# ---------------------------------------------------------------------------
+
+
+def test_release_is_not_counted_as_note():
+    """Sound continuing past the annotation must not extend the note.
+
+    Opt-in, because the trim is off by default: it ends notes at the top of the
+    decay, and vocadito's annotators mark them later -- enabling it cost 0.161
+    COnPOff there, on all forty recordings. What this test pins is that the
+    mechanism works, not that the default should use it.
+    """
+    from transcpybe.synth import case_release_tails
+
+    audio, ground_truth = case_release_tails()
+    notes = transcribe_audio(audio, pyin_config(trim_note_releases=True)).notes
+
+    assert len(notes) == len(ground_truth)
+    for note, (_, true_end, _) in zip(notes, ground_truth):
+        # The tail is 180 ms; tolerance is 20% of the note or 50 ms, whichever
+        # is larger. Untrimmed, every one of these overshoots by the full tail.
+        assert note.offset - true_end < 0.11
+
+
+def test_breath_after_a_note_is_not_part_of_it():
+    from transcpybe.synth import case_breath_ends
+
+    audio, ground_truth = case_breath_ends()
+    notes = transcribe_audio(audio, pyin_config(trim_note_releases=True)).notes
+
+    assert len(notes) == len(ground_truth)
+    for note, (_, true_end, _) in zip(notes, ground_truth):
+        assert abs(note.offset - true_end) <= 0.10
+
+
+def test_release_trim_only_ever_shortens():
+    """A decoder that already ended a note early must be left alone."""
+    from transcpybe.notes import trim_note_releases
+
+    config = pyin_config(trim_note_releases=True)
+    audio, _ = case_scale()
+    result = transcribe_audio(audio, pyin_config(trim_note_releases=False))
+    untrimmed = result.notes
+    trimmed = trim_note_releases(list(untrimmed), result.f0_track, config)
+
+    assert len(trimmed) == len(untrimmed)
+    for before, after in zip(untrimmed, trimmed):
+        assert after.offset <= before.offset
+        assert after.onset == before.onset
+        assert after.duration >= config.min_note_duration_s
+
+
+def test_release_trim_is_off_by_default():
+    """The default must leave note ends where the decoder put them.
+
+    Trimming them scored better on every synthetic case and worse on every one
+    of vocadito's forty recordings, so the default follows the real corpus.
+    """
+    from transcpybe.synth import case_release_tails
+
+    assert TranscriptionConfig().trim_note_releases is False
+
+    audio, ground_truth = case_release_tails()
+    kept = transcribe_audio(audio, pyin_config()).notes
+
+    overshoot = [n.offset - end for n, (_, end, _) in zip(kept, ground_truth)]
+    assert min(overshoot) > 0.11, "untrimmed, these run long -- and that is the default"
+
+
+# ---------------------------------------------------------------------------
+# Onset envelope.
+#
+# Three librosa defaults were being inherited. At 16 kHz n_fft=2048 is a 128 ms
+# window; median aggregation across 128 mel bands only fires when half the
+# spectrum rises at once; and a 3-band max filter is too narrow to be the
+# vibrato defence the other two were relying on.
+# ---------------------------------------------------------------------------
+
+
+def test_vowel_rearticulation_is_found_without_a_consonant():
+    """The commoner case: a syllable boundary with no transient on it."""
+    from transcpybe.synth import case_soft_rearticulation
+
+    audio, ground_truth = case_soft_rearticulation()
+    notes = transcribe_audio(audio, pyin_config()).notes
+
+    assert len(notes) == len(ground_truth) == 8
+
+
+def test_repeated_pitches_in_a_legato_phrase_are_separated():
+    from transcpybe.synth import case_soft_legato_repeats
+
+    audio, ground_truth = case_soft_legato_repeats()
+    notes = transcribe_audio(audio, pyin_config()).notes
+
+    assert len(notes) == len(ground_truth) == 8
+
+
+def test_onset_window_is_set_rather_than_inherited():
+    """librosa's 2048 default is 128 ms here, and smears the attack away."""
+    from transcpybe.onsets import detect_onsets
+
+    config = pyin_config()
+    assert config.onset_n_fft == 512
+
+    audio, ground_truth = case_scale()
+    sharp = detect_onsets(audio, config)
+    blunt = detect_onsets(audio, pyin_config(onset_n_fft=2048,
+                                             onset_aggregate="median",
+                                             onset_max_size=3))
+
+    assert len(sharp) >= len(ground_truth)
+    assert len(blunt) < len(ground_truth)
+
+
+def test_peak_threshold_scales_with_the_envelope():
+    """An absolute delta cannot serve an envelope whose scale spans decades."""
+    from transcpybe.onsets import detect_onsets
+    from transcpybe.synth import case_breathy
+
+    audio, ground_truth = case_breathy()
+    strict = detect_onsets(audio, pyin_config(onset_delta_ratio=3.0))
+    loose = detect_onsets(audio, pyin_config(onset_delta_ratio=1e-9))
+
+    assert len(loose) > 3 * len(ground_truth)
+    assert len(strict) < len(loose)
+
+
+def test_vibrato_suppression_buys_onset_recall():
+    """What the max filter is for, once the peak threshold is relative.
+
+    A narrow filter lets a wobbling sustain register as flux. That does not
+    show up as spurious splits, because the threshold scales with the
+    envelope's median and the extra flux simply raises it -- it shows up as
+    genuine onsets falling underneath the raised bar.
+    """
+    from transcpybe.synth import case_heavy_vibrato, case_rearticulated
+
+    audio, ground_truth = case_heavy_vibrato()
+    assert len(transcribe_audio(audio, pyin_config()).notes) == len(ground_truth)
+
+    audio, ground_truth = case_rearticulated()
+    assert len(transcribe_audio(audio, pyin_config()).notes) == len(ground_truth)
+    narrow = transcribe_audio(audio, pyin_config(onset_max_size=1)).notes
+    assert len(narrow) < len(ground_truth), "a 1-band filter should lose onsets"
+
+
+# --------------------------------------------------------------------------
+# Tuning reference
+# --------------------------------------------------------------------------
+
+def _detuned_phrase(offset_cents, scatter_cents=0.0, seed=5):
+    """A phrase sung ``offset_cents`` away from the grid, plus scatter."""
+    from transcpybe.synth import _sequence, synth_phrase
+
+    pitches = [62, 64, 66, 67, 69, 67, 66, 64, 62, 60, 62, 64]
+    rng = np.random.default_rng(seed)
+    detune = [offset_cents + rng.normal(0.0, scatter_cents) for _ in pitches]
+    return synth_phrase(_sequence(pitches, 0.5, 0.15), 16000,
+                        vibrato_cents=20.0, detune_cents=detune, seed=seed)
+
+
+def test_tuning_offset_is_found_and_reported():
+    """A phrase sung a third of a semitone flat is recognised as such."""
+    audio, _ = _detuned_phrase(-33.0)
+    result = transcribe_audio(audio, pyin_config())
+
+    assert result.tuning_offset == pytest.approx(-0.33, abs=0.08)
+
+
+def test_a_phrase_on_the_grid_is_left_alone():
+    """No offset means no correction, and no second decoding pass."""
+    audio, _ = _detuned_phrase(0.0)
+    result = transcribe_audio(audio, pyin_config())
+
+    assert result.tuning_offset == 0.0
+
+
+def test_tuning_correction_recovers_notes_lost_to_rounding():
+    """The point of the whole exercise: the notes the singer meant.
+
+    A third of a semitone off the grid, with ordinary intonation scatter on
+    top, is enough to round a share of notes to the neighbouring semitone.
+    """
+    audio, truth = _detuned_phrase(35.0, scatter_cents=15.0, seed=11)
+
+    corrected = score(transcribe_audio(audio, pyin_config()).notes, truth)
+    forced = score(
+        transcribe_audio(audio, pyin_config(estimate_tuning=False)).notes, truth)
+
+    assert corrected.note_f1 > forced.note_f1
+
+
+def test_scattered_intonation_is_not_a_tuning_offset():
+    """Singing that wanders either side of the grid must not be re-gridded.
+
+    This is the failure that makes the correction dangerous rather than merely
+    useless. Deviations spread symmetrically about zero sit, on a circle one
+    semitone around, nearest the point half a semitone away -- so a scattered
+    singer looks like a well-tuned one half a semitone off, and shifting them
+    there moves every sharp note into the next semitone up.
+    """
+    audio, truth = ALL_CASES["mistuned"]()
+    config = pyin_config()
+    result = transcribe_audio(audio, config)
+
+    assert result.tuning_offset == 0.0
+    assert score(result.notes, truth).note_f1 == pytest.approx(
+        score(transcribe_audio(audio, pyin_config(estimate_tuning=False)).notes,
+              truth).note_f1)
+
+
+def test_vibrato_does_not_masquerade_as_a_tuning_offset():
+    """Measured per frame rather than per note, this case reports 49 cents."""
+    audio, _ = ALL_CASES["vibrato"]()
+
+    assert transcribe_audio(audio, pyin_config()).tuning_offset == 0.0
+
+
+def test_tuning_estimate_can_be_switched_off():
+    audio, _ = _detuned_phrase(-33.0)
+
+    assert transcribe_audio(
+        audio, pyin_config(estimate_tuning=False)).tuning_offset == 0.0
+
+
+def test_offsets_past_a_quarter_tone_are_refused():
+    from transcpybe.notes import estimate_tuning_offset
+
+    config = pyin_config()
+    notes = [
+        Note(onset=i * 0.5, offset=i * 0.5 + 0.4, pitch=60, velocity=80,
+             confidence=0.9, loudness_db=-12.0, pitch_range_semitones=0.1,
+             pitch_hz=261.0, pitch_midi_float=60.0 + 0.45, hmm_pitch=60,
+             start_frame=0, end_frame=40)
+        for i in range(8)
+    ]
+    assert estimate_tuning_offset(notes, config) == 0.0
+
+    within = [dataclasses.replace(n, pitch_midi_float=60.3) for n in notes]
+    assert estimate_tuning_offset(within, config) == pytest.approx(0.3, abs=0.02)
+
+
+def test_tuning_estimate_needs_enough_notes():
+    from transcpybe.notes import estimate_tuning_offset
+
+    config = pyin_config()
+    notes = [
+        Note(onset=i * 0.5, offset=i * 0.5 + 0.4, pitch=60, velocity=80,
+             confidence=0.9, loudness_db=-12.0, pitch_range_semitones=0.1,
+             pitch_hz=261.0, pitch_midi_float=60.3, hmm_pitch=60,
+             start_frame=0, end_frame=40)
+        for i in range(config.tuning_min_notes - 1)
+    ]
+    assert estimate_tuning_offset(notes, config) == 0.0
+
+
+def test_self_test_uses_the_requested_backend():
+    """--self-test built its own default config and ignored every flag.
+
+    That made the one command offered for checking an install fail with an
+    ImportError on the torch-free install the pyin flag exists to serve.
+    """
+    from transcpybe.cli import build_parser, config_from_args
+
+    args = build_parser().parse_args(["--self-test", "--f0-backend", "pyin"])
+    assert config_from_args(args).f0_backend == "pyin"

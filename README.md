@@ -10,7 +10,7 @@ weights inside their PyPI wheels.
 ```
 audio ──▶ f0 + voicing ──▶ note HMM ──▶ glide handling ──▶ onset refinement ──▶ notes ──▶ .mid
           CREPE / pYIN      Viterbi      portamento         spectral flux        pitch     .json
-                                                                                 measure   .csv
+                                                            (note starts)        measure   .csv
 ```
 
 ## How good is it?
@@ -246,30 +246,95 @@ estimate, then rounded to the nearest integer. Finally, fragments of one note
 are rejoined, notes below the duration floor are dropped, and notes far quieter
 than the rest of the performance are discarded.
 
+**7. Tuning reference.** Steps 2 and 6 both assume a note's centre sits on an
+integer MIDI number, which is an assumption about the recording rather than
+about music: a take sung with no reference pitch, or against an instrument tuned
+by ear, sits wherever it sits. Offset the whole performance by more than a
+quarter tone and every note is nearer the wrong semitone than the right one, so
+the transcription comes out a semitone adrift while the singing was perfectly in
+tune with itself. So the notes from a first pass are used to find where this
+performance's semitones actually fall, and if that is not the standard grid the
+decode is run again against the one it is on. The second pass is the cheap half
+— estimating f0 dominates the cost and is already done — and a negligible offset
+skips it, which is nearly every recording.
+
+The estimate is taken across notes rather than across frames. A vibrato sweeps
+its frames over the whole deviation range several times a second, so a
+frame-weighted estimate is dominated by material carrying no tuning information:
+measured that way, the suite's `vibrato` case reports a 49-cent offset where the
+true one is zero. Averaging inside each note first collapses the swing to the
+pitch the note was aiming at.
+
+Two things it deliberately refuses. Deviations spread evenly around the circle
+mean the performance has no pitch centre to find, and their average is noise
+that would shift every note by an arbitrary amount. And deviations spread
+symmetrically about the grid — a singer landing 40 cents sharp as often as 40
+cents flat — sit, on a circle one semitone around, nearest the point *half* a
+semitone away: such a performance is not merely mistaken for a well-tuned one a
+quarter tone off, it is genuinely better explained by one, since shifting
+everything by half a semitone really does pull those deviations into a tighter
+band. No statistic of the deviations separates those two readings. What
+separates them is a prior — tuning references cluster near A440, while that
+artefact lands near 50 cents by construction — so offsets past 40 cents are
+refused rather than applied. `--no-tuning-estimate` forces the A440 grid.
+
 ---
 
 ## Accuracy
 
-Measured on the built-in synthetic benchmark (`--self-test`): 16 cases, 127
+Measured on the built-in synthetic benchmark (`--self-test`): 22 cases, 174
 notes, scored with `mir_eval` at the MIREX 50 ms onset tolerance and quarter-tone
 pitch tolerance.
 
 | Backend | Cases perfect | Onset F | Note F (onset+pitch) | Note F (+offset) | Speed (4 CPU cores) |
 |---|---|---|---|---|---|
-| `crepe` (`full`, default) | **15 / 16** | 1.000 | **0.979** | 0.979 | ~1.6x realtime |
-| `pyin` | 13 / 16 | 0.914 | 0.923 | 0.923 | ~0.34x realtime |
+| `crepe` (`full`, default) | **17 / 22** | 1.000 | **0.968** | 0.862 | ~1.6x realtime |
+| `pyin` | 16 / 22 | 0.938 | 0.944 | 0.853 | ~0.34x realtime |
 | `crepe` (`tiny`) | — | — | — | — | ~0.11x realtime |
+
+Four of those cases exist to keep the suite honest rather than to be passed,
+and they were added because the suite could not see two defects the vocadito
+run had already found. `release_tails` and `breath_ends` let a note keep
+sounding after the annotation ends it, which is the only way the offset column
+carries information at all -- before them it was identical to the note column
+on every case, and 145 of 145 matched notes passed the offset tolerance.
+`soft_rearticulation` and `soft_legato_repeats` re-articulate a pitch on a
+vowel rather than behind a consonant, which is what singing mostly does and
+what a spectral-flux detector finds hardest.
+
+Read the first row against the suite it is measured on. Over these 22 cases
+CREPE scored 0.943 / 0.936 / 0.814 before the onset envelope was fixed and
+1.000 / 0.968 / 0.862 after; over the 18 cases that existed before, it scored
+1.000 / 0.978 / 0.978 either way. That is the reason the four were added rather
+than a point against them: a suite at its ceiling cannot rank two
+configurations, and this one was.
+
+**And read the whole table against vocadito, because it did not predict it.**
+The onset work above is worth 0.057 onset F here and, on forty real
+recordings, +0.005 with a 95% interval of [-0.006, +0.018] -- better on 19,
+worse on 19, which is the shape of a change that rearranges rather than
+improves. `release_tails` and `breath_ends` still score 0.000, because the
+trim that fixed them is now off by default: it scored 1.000 on both and cost
+0.161 COnPOff on every one of those forty recordings. Synthetic signals with
+exact ground truth are the right place to find a defect and a poor place to
+confirm a cure.
 
 The backends fail differently, which is why both are kept:
 
 - **pYIN** finds *nothing* in the `breathy` case (broadband noise only 12 dB
   below the voice) and loses 3 of 8 notes in `low_register`. It is markedly less
   noise-robust, and struggles where harmonics are closely spaced.
-- **CREPE** handles both, but confidently transcribes loud separation residue as
-  notes, where pYIN correctly reports it unvoiced.
+- **CREPE** tracks both, but confidently transcribes loud separation residue as
+  notes, where pYIN correctly reports it unvoiced. It also over-segments
+  `breathy` -- 11 notes where there are 7 -- because at that noise level the
+  onset envelope is nearly flat, and the peaks a detector sensitive enough to
+  find vowel onsets picks out of it are partly noise. `--onset-delta` raises
+  the bar a peak must clear relative to that recording's own floor, and is the
+  dial for it.
 
-So: use CREPE on clean stems and anything breathy or low; if a stem is badly
-separated and full of bleed, pYIN is worth a try as a second opinion.
+So: use CREPE on clean stems and anything low; if a stem is badly separated and
+full of bleed, pYIN is worth a try as a second opinion, and on a very noisy one
+raise `--onset-delta` before reaching for the backend switch.
 
 ### The one failing case, and why it is a dial rather than a bug
 
@@ -289,6 +354,36 @@ Sweeping `--note-level-floor`:
 The default favours keeping real quiet singing, on the view that a spurious note
 you can see and delete is less costly than a sung note that was never reported.
 Lower it when working with a poorly separated stem.
+
+### What the tuning reference is worth
+
+The suite cannot show this, by design: every case in it is sung on the A440
+grid, so the estimate correctly declines on all 22 and the table above is
+identical with it on and off. What it is worth shows up only on a performance
+that is not on that grid.
+
+Paired on the same audio, the same f0, and the same seeds — phrases sung a
+fixed distance off the grid with per-note intonation scatter on top, scored as
+note F (onset+pitch):
+
+| Offset | Scatter | Forced A440 | Tuned | |
+|---|---|---|---|---|
+| 0 | 25c | 0.972 | 0.972 | estimate declines |
+| 15c | 25c | 1.000 | 0.972 | nothing to win; one note lost |
+| 25c | 25c | 0.833 | **0.917** | |
+| 35c | 15c | 0.833 | **1.000** | |
+| 35c | 25c | 0.750 | **0.917** | |
+
+Better on 7 of those 15 recordings, worse on 1, unchanged on 7. The shape is
+the point: it does nothing until the grid is demonstrably costing notes, and
+a recording already near A440 never reaches the second decoding pass at all —
+its output is the same object the single pass produced.
+
+These are synthesised, and the caveat below applies to them with force. The
+argument that this should carry to real singing is that a human annotator
+hears a performance in its own tuning, so an estimate that does the same ought
+to agree with them more often. That is an argument rather than a measurement,
+and it wants a benchmark run before it is believed.
 
 ### What these numbers do and do not mean
 
@@ -343,7 +438,11 @@ transcription-benchmark vocadito/audio \
 | Genuine fast runs merged together | `--p-self` | lower (e.g. 0.97) |
 | Notes appearing in silent passages | `--note-level-floor` | lower (e.g. 22) |
 | Quiet real notes being dropped | `--note-level-floor` | raise, or `reject_quiet_notes=False` |
-| Repeated same-pitch notes merged | keep onsets on; **lower** `onset_split_strength_ratio` |  |
+| Repeated same-pitch notes merged | keep onsets on; `--onset-split-strength` | lower |
+| Sustained notes shredded into many | `--onset-max-size`, then `--onset-split-strength` | raise |
+| Noisy input over-segmented | `--onset-delta` | raise |
+| Note ends late, running into the rest | `--release-trim`, then tune `--release-drop` | enable; lower |
+| Note ends early, with `--release-trim` on | `--release-drop` | raise |
 | Onsets landing early on breathy audio | `glide_min_periodicity` | raise |
 | Voice outside the tracked range | `--fmin` / `--fmax` | widen |
 
@@ -448,10 +547,25 @@ remain bit-identical.
 
 - **Monophonic only.** One pitch at a time. Harmonies or overlapping vocal
   layers in the same stem will be transcribed as one wandering line.
-- **Offsets are softer than onsets.** Where a sung note ends is genuinely
-  ambiguous, and the release is often breath rather than pitch.
+- **Offsets are softer than onsets, and nothing here refines them.** Every
+  stage in the pipeline works on note starts; a note ends wherever the pitch
+  decoder stopped hearing pitch. `--release-trim` ends it at the top of the
+  decay instead, which is right on signals whose notes are annotated where the
+  pitch stops and wrong on vocadito, where it cost 0.161 COnPOff across all
+  forty recordings. It is off by default for that reason. Where a note ends is
+  a convention, so fit `--release-drop` against your own corpus with
+  `transcpybe-tune --objective offset` before trusting either answer.
 - **Loud separation residue** is transcribed as notes at the default level
   floor — see the dial above.
+- **A tuning reference can only be found when there is one.** The grid a
+  recording is sung on is read off its own notes, and a performance whose
+  intonation wanders either side of the grid does not have one to read. Worse,
+  scattered singing is *better explained* by a well-tuned performance a quarter
+  tone away than by the grid it meant, because shifting it there really does
+  tighten the spread — so the estimate is refused past 40 cents rather than
+  believed. A recording genuinely sung more than 40 cents from A440 is
+  therefore left on the wrong grid, which is the deliberate cost of not
+  re-gridding a singer who is merely imprecise.
 - **Validated on synthetic audio.** See the caveat above.
 - **Unquantised.** Output is in seconds, with no beat tracking or rhythmic
   quantisation. That is deliberate: quantising is lossy and belongs downstream.

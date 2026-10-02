@@ -159,13 +159,53 @@ class TranscriptionConfig:
     """Use spectral-flux onsets to split repeated same-pitch notes and to align
     note starts to the audible attack."""
 
-    onset_max_size: int = 3
-    """Frequency-domain max-filter size for SuperFlux vibrato suppression."""
+    onset_n_fft: int = 512
+    """FFT window for the onset envelope, in samples at ``sample_rate``.
+
+    512 samples is 32 ms at the default 16 kHz. librosa's own default is 2048,
+    which this deliberately overrides: 2048 samples is 46 ms at the 44.1 kHz
+    SuperFlux was formulated for, but 128 ms here, and an attack smeared over
+    128 ms cannot be localised to the 50 ms the scoring convention allows.
+    Leaving it unset cost roughly two thirds of the detector's onset F."""
+
+    onset_aggregate: str = "mean"
+    """How the spectral flux is combined across frequency: 'mean' or 'median'.
+
+    The median asks for rising energy in more than half of the mel bands at
+    once. A sung syllable raises energy in a few formant regions, so broadband
+    consonants clear that bar and vowel-initial onsets -- most of real singing
+    -- do not. Vibrato suppression is ``onset_max_size``'s job, not this one."""
+
+    onset_max_size: int = 9
+    """Frequency-domain max-filter size for SuperFlux vibrato suppression.
+
+    Three mel bands is far less than an operatic vibrato's excursion, so a
+    steadily wobbling note still registers as flux. With ``onset_delta_ratio``
+    scaling the peak threshold by the envelope's median, that costs recall
+    rather than precision: vibrato flux raises the median, the bar rises with
+    it, and genuine onsets end up underneath. At a width of 1 the
+    re-articulation cases collapse from eight notes to one. 5 to 9 is a
+    plateau; 9 leaves margin for wider vibrato than the suite contains."""
 
     onset_lag: int = 2
     """Frame lag for the SuperFlux difference."""
 
-    onset_split_strength_ratio: float = 0.35
+    onset_delta_ratio: float = 1.0
+    """Peak-picking threshold, as a multiple of the envelope's own median.
+
+    librosa's ``delta`` is an absolute margin above a local mean, and an
+    absolute number cannot serve this envelope: its scale varies by two orders
+    of magnitude across recordings. On a breathy take the envelope is close to
+    flat noise -- its peak is seven times its median -- and an absolute
+    threshold admits most of that noise as onsets; on a take with consonants
+    the peak is seven hundred times the median and the same number sits far
+    below every real onset. Scaling the threshold by the median asks each
+    recording's peaks to stand out from that recording's own noise floor.
+
+    Raise it if noisy input is over-segmented; lower it if quiet
+    re-articulations are missed."""
+
+    onset_split_strength_ratio: float = 0.70
     """How strong a detected onset must be, relative to the median detected
     onset in the same recording, to split an existing note.
 
@@ -174,6 +214,26 @@ class TranscriptionConfig:
     singing those frames are loud, so its upper percentiles sit above most
     genuine onsets: the gate then asks each peak to clear a bar set by the
     material between the peaks, and re-articulated notes never split at all.
+
+    The bar moved up when the detector stopped being inert. A ratio is taken
+    against the median detected onset, so making the detector find every real
+    onset also changed what that median means: the same 0.35 now admits peaks
+    that are weak against a much richer field, and on breathy input it split
+    every note in two. 0.70 is where nothing in the suite regresses.
+
+    That raise and the envelope's new sensitivity landed together and were
+    never separated, which left it open whether the one was quietly cancelling
+    the other -- whether the detector's extra reach was ever arriving at the
+    notes. Separated since, by putting the ratio back to 0.35 with everything
+    else as shipped: across all 22 cases only ``breathy`` moves, from 11 notes
+    to 13 against a true 7, and every other case is identical to the digit. The
+    bar is therefore doing one job, rejecting noise peaks on breathy input, and
+    is not holding back anything that reaches a note.
+
+    The same run says why that is worth little. Onset F is already 1.000 on
+    every case here, so the suite cannot show a missed onset being found, and
+    cannot say whether the sensitivity reaches notes on real audio -- only that
+    this ratio is not what would be stopping it.
 
     Lower splits more. Raise it if the output is over-segmented."""
 
@@ -214,6 +274,136 @@ class TranscriptionConfig:
     """Adjacent notes of equal pitch closer than this are merged, unless an
     onset separates them."""
 
+    # ---------------- Note ends ----------------
+    trim_note_releases: bool = False
+    """End a note where its own level collapses, rather than where the decoder
+    stops hearing pitch. Off by default, and the reason is worth the space.
+
+    Everything else in the pipeline refines note *starts*; the end is left
+    wherever the Viterbi path happened to leave the pitch state, which the
+    adaptive gate holds open until the frame is ``loudness_dynamic_range_db``
+    below the whole track. On synthetic signals whose notes keep sounding past
+    their annotated end, that reports every note long, and trimming fixes it
+    completely -- COnPOff 0.000 to 1.000 on those cases.
+
+    On vocadito it made things worse on all forty recordings: COnPOff 0.410 to
+    0.248, a paired difference of -0.161 with a 95% interval of [-0.191,
+    -0.134], while COn and COnP did not move. So the defect the trim addresses
+    is real and the trim's answer to it is wrong, at least for these
+    annotators. It ends a note where the level departs from sustain -- the top
+    of the decay -- and vocadito marks note ends later than that.
+
+    Turning it off is therefore not a retraction of the finding, only of the
+    constant. Where a note ends is a convention, and a convention has to be
+    fitted rather than guessed: enable this and fit ``release_drop_db`` with
+    ``transcpybe-tune --objective offset``, which is the machinery that had to
+    exist before the question could be asked at all."""
+
+    release_drop_db: float = 1.0
+    """How far a frame must sit below the note's own sustained level to count
+    as release rather than note.
+
+    Small on purpose. This is not "how quiet is inaudible" -- it is "how far
+    from sustain is no longer sustaining", so what it locates is the top of the
+    decay, not a point part-way down it. That distinction decides whether the
+    trim works at all: a threshold set well down the ramp lands at a fixed
+    *fraction* of the release, so its error grows with the release and a long
+    one overshoots however the threshold is set. Measured across releases from
+    50 ms to 450 ms, every value from 3 dB up failed the longest of them and
+    1 dB passed all five.
+
+    Measured against the note, not the track, because a quiet note's release is
+    quiet too. The floor under it is vibrato: singers ripple their level by a
+    decibel or so, and at 0.5 dB the walk goes back through those dips and ends
+    notes early -- it cost two cases in the suite. Raise it if note ends come
+    out early, lower it if notes run on."""
+
+    release_min_fraction: float = 0.5
+    """A release trim may never take more than this fraction of a note.
+
+    A note that fades throughout -- a deliberate diminuendo -- is below its own
+    75th percentile for most of its length, and without this floor the trim
+    would report it as a fraction of its true duration."""
+
+    # ---------------- Tuning reference ----------------
+    estimate_tuning: bool = True
+    """Find the recording's own pitch centre before deciding what a note is.
+
+    The decoder's pitch states and the rounding that produces an integer MIDI
+    number both sit on the A440 semitone grid. A performance that sits well off
+    that grid -- no reference pitch, an instrument tuned by ear, a tape running
+    slow -- is then read against the wrong centres: notes land between two
+    states rather than on one, and the ones nearest the boundary round to the
+    neighbouring semitone. The transcription comes out a semitone wrong in
+    places while the singing was perfectly in tune with itself.
+
+    Measured on synthetic phrases with ordinary intonation scatter, a
+    performance 35 cents off the grid loses a quarter of its note F-measure to
+    this and nothing else. Correcting for it is not a preference about
+    temperament: it is reading the recording in the tuning it was actually sung
+    in. Turn it off to force the A440 grid."""
+
+    tuning_min_concentration: float = 0.20
+    """How concentrated the pitch deviations must be before the estimate is used.
+
+    The resultant length of the circular mean, in [0, 1]. It answers "is there a
+    pitch centre here at all" -- deviations spread evenly around the circle have
+    none, and their mean angle is noise that would shift every note by an
+    arbitrary amount. Ordinary singing measures 0.4 to 0.8 even with a quarter
+    tone of scatter, so this floor rejects only the genuinely unidentifiable."""
+
+    tuning_min_notes: int = 5
+    """How many notes a tuning estimate needs before it is worth acting on.
+
+    Below this the estimate rests on too little material and the A440 grid is
+    the better guess."""
+
+    tuning_max_offset_semitones: float = 0.40
+    """Offsets beyond this are refused rather than applied.
+
+    A quarter tone is where the question stops having an answer. Deviations
+    spread symmetrically about the grid -- a singer who is simply scattered,
+    landing 40 cents sharp as often as 40 cents flat -- sit, on a circle whose
+    period is one semitone, nearest to the point half a semitone away. So the
+    scattered performance is not merely mistaken for an offset one: it is
+    genuinely better explained by one, because shifting everything by half a
+    semitone really does pull those deviations into a tighter band. The suite's
+    ``mistuned`` case is exactly this, and its notes are 49 cents from the grid
+    by that reckoning while the pitches its singer intended are the ones on it.
+
+    No statistic of the deviations can separate those two readings, because
+    they fit the same numbers. What separates them is a prior: tuning
+    references cluster near A440 -- the range in practical use spans about
+    -40 to +25 cents -- whereas the artefact lands near 50 by construction,
+    being the antipode of a distribution centred on zero. Refusing the far half
+    of the circle therefore costs the offsets nobody has and rejects the
+    artefact structurally rather than by a threshold fitted to one case."""
+
+    tuning_min_offset_semitones: float = 0.05
+    """Offsets smaller than this are treated as zero.
+
+    A note survives rounding until it sits more than half a semitone from the
+    pitch intended, so a five-cent correction can only move a note that was
+    already within five cents of the boundary -- one that was a coin toss
+    whichever way it fell. Below that there is nothing to win, and it is where
+    a noisy estimate lives: a performance already on the grid but scattered
+    reports a few cents one way or the other, and this declines to chase it.
+
+    Raising it further looks like the safer choice and measures worse. The
+    argument for 0.15 was that a performance 15 cents off still scores a clean
+    1.000 against the A440 grid, so there is no loss to recover at that size and
+    the correction is pure risk. Both halves of that are true and the setting
+    still lost: it cut the gain at 25 cents from +0.083 to +0.056, because the
+    estimate shrinks as scatter wraps and real offsets of 20-odd cents are read
+    as 17 and refused, while the case it was meant to protect stayed at -0.028
+    -- that loss is one note in one recording whose estimate cleared 15 cents
+    anyway. A floor cannot separate them, because the sizes overlap. So the
+    floor stays where it only excludes what is certainly noise, and the
+    aggregate is left to carry the rest: better on 7 recordings, worse on 1.
+
+    Nearly every recording lands below this and skips the second decoding pass
+    entirely."""
+
     # ---------------- MIDI output ----------------
     midi_program: int = 0
     """General MIDI program for the output track (0 = Acoustic Grand Piano)."""
@@ -250,6 +440,19 @@ class TranscriptionConfig:
             raise ValueError("Require 0 < fmin_hz < fmax_hz")
         if self.f0_median_filter_frames % 2 == 0:
             raise ValueError("f0_median_filter_frames must be odd")
+        if self.onset_aggregate not in ("mean", "median"):
+            raise ValueError("onset_aggregate must be 'mean' or 'median', "
+                             f"got {self.onset_aggregate!r}")
+        if self.onset_n_fft <= 0:
+            raise ValueError("onset_n_fft must be positive")
+        if not 0.0 <= self.tuning_min_concentration <= 1.0:
+            raise ValueError("tuning_min_concentration must be in [0, 1]")
+        if self.tuning_min_notes < 1:
+            raise ValueError("tuning_min_notes must be at least 1")
+        if self.tuning_min_offset_semitones < 0:
+            raise ValueError("tuning_min_offset_semitones must be non-negative")
+        if not 0.0 <= self.tuning_max_offset_semitones <= 0.5:
+            raise ValueError("tuning_max_offset_semitones must be in [0, 0.5]")
         if not 0.0 < self.p_self < 1.0:
             raise ValueError("p_self must be in (0, 1)")
         if self.p_self + self.p_voiced_to_unvoiced >= 1.0:

@@ -144,6 +144,9 @@ def synth_phrase(
     detune_cents: Sequence[float] | None = None,
     attack_s: float = 0.025,
     release_s: float = 0.05,
+    tail_release_s: float = 0.0,
+    breath_db: float = -np.inf,
+    breath_s: float = 0.2,
     noise_db: float = -60.0,
     tail_s: float = 0.3,
     seed: int = 0,
@@ -155,16 +158,32 @@ def synth_phrase(
     individual notes, and ``detune_cents`` shifts their pitch away from equal
     temperament without moving the ground truth, so that both dynamic range and
     intonation can be stress-tested.
+
+    ``tail_release_s`` and ``breath_db`` both put sound *after* a note's
+    annotated offset, and neither moves the ground truth. That is the point of
+    them: an annotator marks where pitched content stops, while the singer
+    remains audible past it -- releasing the note, then breathing. Without one
+    of these a case cannot distinguish a transcriber that ends notes correctly
+    from one that runs them on until the audio stops, because in that case those
+    are the same instant. ``tail_release_s`` extends the note's own pitched
+    decay; ``breath_db`` adds unvoiced noise in the rest that follows.
     """
     rng = np.random.default_rng(seed)
-    total = max(offset for _, offset, _ in notes) + tail_s
+    total = (max(offset for _, offset, _ in notes)
+             + max(tail_release_s + breath_s if np.isfinite(breath_db) else tail_release_s, 0.0)
+             + tail_s)
     n_total = int(total * sample_rate) + 1
     audio = np.zeros(n_total)
 
     previous_pitch: float | None = None
     for index, (onset, offset, pitch) in enumerate(notes):
         start = int(onset * sample_rate)
-        n = max(int((offset - onset) * sample_rate), 1)
+        n_body = max(int((offset - onset) * sample_rate), 1)
+        # The tail sounds past the annotated offset, so it lengthens the render
+        # without touching the ground truth. Giving _adsr the whole length and
+        # a release equal to the tail starts the decay exactly at the offset.
+        n_tail = max(int(tail_release_s * sample_rate), 0)
+        n = n_body + n_tail
 
         glide_from = previous_pitch if (portamento_s > 0 and index > 0) else None
         offset_cents = detune_cents[index] if detune_cents is not None else 0.0
@@ -177,7 +196,8 @@ def synth_phrase(
         )
 
         voiced = synth_voice(f0_curve, sample_rate, rng=rng)
-        voiced *= _adsr(n, sample_rate, attack_s, release_s)
+        voiced *= _adsr(n, sample_rate, attack_s,
+                        tail_release_s if n_tail > 0 else release_s)
         if gains_db is not None:
             voiced *= 10.0 ** (gains_db[index] / 20.0)
 
@@ -195,6 +215,22 @@ def synth_phrase(
 
         end = min(start + n, n_total)
         audio[start:end] += voiced[:end - start]
+
+        if np.isfinite(breath_db) and breath_s > 0:
+            # An audible exhale after the note. Unvoiced, so a transcriber that
+            # gates on periodicity should ignore it; loud enough that one which
+            # gates only on level will not.
+            b_start = min(start + n, n_total)
+            b_n = min(int(breath_s * sample_rate), n_total - b_start)
+            if b_n > 0:
+                breath = rng.normal(0.0, 1.0, b_n)
+                breath *= np.sin(np.linspace(0.0, np.pi, b_n)) ** 2
+                breath = _resonator(breath, 1500.0, sample_rate, q=1.5)
+                peak = np.abs(breath).max()
+                if peak > 0:
+                    audio[b_start:b_start + b_n] += (
+                        10.0 ** (breath_db / 20.0) * breath / peak)
+
         previous_pitch = sounding
 
     peak = np.abs(audio).max()
@@ -425,6 +461,70 @@ def case_low_register(sample_rate: int = 16000):
                         vibrato_cents=15.0, seed=26)
 
 
+def case_release_tails(sample_rate: int = 16000):
+    """Notes that keep sounding after the annotation has ended them.
+
+    Every other case here stops a note's audio at the instant the ground truth
+    ends it, which makes the offset metric unmeasurable: a transcriber that
+    ends notes correctly and one that runs them on until the sound stops score
+    identically, because those are the same instant. Real singers release a
+    note over a good fraction of a second while an annotator marks where the
+    pitch stopped being the point, and closing that gap is the cheapest
+    accuracy left on this task.
+    """
+    pitches = [60, 64, 67, 65, 64, 62, 60]
+    return synth_phrase(_sequence(pitches, 0.55, 0.45), sample_rate,
+                        vibrato_cents=20.0, tail_release_s=0.18, seed=31)
+
+
+def case_breath_ends(sample_rate: int = 16000):
+    """A release followed by an audible breath, neither of them part of the note.
+
+    The breath is unvoiced, so periodicity can reject it; it is also loud, so a
+    level gate alone cannot. Together with the release before it, this is what
+    the end of a sung phrase actually contains.
+    """
+    pitches = [62, 65, 67, 65, 62, 60]
+    return synth_phrase(_sequence(pitches, 0.5, 0.5), sample_rate,
+                        vibrato_cents=20.0, tail_release_s=0.10,
+                        breath_db=-26.0, breath_s=0.22, seed=32)
+
+
+def case_soft_rearticulation(sample_rate: int = 16000):
+    """The same pitch re-articulated on a vowel, with no consonant to help.
+
+    ``case_rearticulated`` gives every note a broadband noise burst, which any
+    spectral-flux detector finds easily. Singers also re-articulate on vowels
+    and on voiced consonants -- l, m, n, w, j -- which dip the level without
+    producing broadband flux. That is the harder case, and in most singing it
+    is also the commoner one.
+    """
+    notes, t = [], 0.4
+    for _ in range(8):
+        notes.append((t, t + 0.34, 62))
+        t += 0.34
+    return synth_phrase(notes, sample_rate, consonants=False,
+                        vibrato_cents=10.0, attack_s=0.030,
+                        release_s=0.025, seed=41)
+
+
+def case_soft_legato_repeats(sample_rate: int = 16000):
+    """A legato phrase that repeats pitches, sung with soft attacks.
+
+    Melodies repeat notes constantly. Where a repeat is legato and the attack
+    is soft, neither the pitch decoder nor a blunt onset detector has anything
+    to work with, and the two notes are reported as one.
+    """
+    pitches = [62, 62, 64, 64, 62, 60, 60, 62]
+    notes, t = [], 0.4
+    for pitch in pitches:
+        notes.append((t, t + 0.4, int(pitch)))
+        t += 0.4
+    return synth_phrase(notes, sample_rate, consonants=False,
+                        vibrato_cents=15.0, attack_s=0.030,
+                        release_s=0.020, seed=42)
+
+
 def case_loud_separation_residue(sample_rate: int = 16000):
     """Separation residue only 18 dB below the vocal: a badly separated stem."""
     audio, truth = synth_phrase(
@@ -442,6 +542,13 @@ HARD_CASES = {
     "breathy": case_breathy,
     "low_register": case_low_register,
     "loud_residue": case_loud_separation_residue,
+    # The two things a suite of exactly-truncated notes and consonant-initiated
+    # re-articulation cannot see: where a note ends, and a syllable boundary
+    # with no transient on it.
+    "release_tails": case_release_tails,
+    "breath_ends": case_breath_ends,
+    "soft_rearticulation": case_soft_rearticulation,
+    "soft_legato_repeats": case_soft_legato_repeats,
 }
 
 

@@ -89,10 +89,49 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Drop notes this many dB below the performance level. "
                              "Lower it to reject more separation residue, at the risk "
                              "of losing genuinely quiet singing")
+    tuning.add_argument("--onset-n-fft", type=int, default=512,
+                        dest="onset_n_fft",
+                        help="FFT window for the onset envelope, in samples. 512 "
+                             "is 32 ms at 16 kHz; raise it for a smoother envelope "
+                             "at the cost of placing attacks less precisely")
+    tuning.add_argument("--onset-aggregate", choices=("mean", "median"),
+                        default="mean", dest="onset_aggregate",
+                        help="How spectral flux is combined across frequency. "
+                             "median only fires when most of the spectrum rises, "
+                             "which misses vowel-initial onsets")
+    tuning.add_argument("--onset-split-strength", type=float, default=0.70,
+                        dest="onset_split_strength_ratio",
+                        help="How strong an onset must be, relative to the median "
+                             "detected onset, to split a note in two. Lower splits "
+                             "more; raise it if the output is over-segmented")
+    tuning.add_argument("--onset-delta", type=float, default=1.0,
+                        dest="onset_delta_ratio",
+                        help="Peak threshold as a multiple of the onset envelope's "
+                             "median. Raise it if noisy input over-segments")
+    tuning.add_argument("--onset-max-size", type=int, default=9,
+                        dest="onset_max_size",
+                        help="Frequency max-filter width suppressing vibrato. "
+                             "Raise it if sustained notes fragment")
+    tuning.add_argument("--release-drop", type=float, default=1.0,
+                        dest="release_drop_db",
+                        help="End a note where it falls this many dB below its own "
+                             "sustained level. Small by design: it locates the top "
+                             "of the decay, not a point part-way down it")
     tuning.add_argument("--no-onsets", action="store_true",
                         help="Disable spectral-flux onset refinement")
     tuning.add_argument("--no-glides", action="store_true",
                         help="Disable portamento handling")
+    tuning.add_argument("--no-tuning-estimate", action="store_true",
+                        help="Force the A440 semitone grid instead of finding the "
+                             "one this recording is actually sung on. The estimate "
+                             "already declines when a performance has no clear "
+                             "pitch centre, so this is for when you know the grid")
+    tuning.add_argument("--release-trim", action="store_true",
+                        help="End notes where their level leaves the sustain rather "
+                             "than where the decoder stops hearing pitch. Off by "
+                             "default: it ends notes earlier than vocadito's "
+                             "annotators do, and cost 0.161 COnPOff there. Fit "
+                             "--release-drop for your corpus before enabling it")
 
     batch = parser.add_argument_group("batch mode (directory input)")
     batch.add_argument("--no-recursive", action="store_true",
@@ -130,8 +169,16 @@ def config_from_args(args: argparse.Namespace) -> TranscriptionConfig:
         pitch_sigma_semitones=args.pitch_sigma_semitones,
         p_self=args.p_self,
         note_level_floor_db=args.note_level_floor_db,
+        onset_n_fft=args.onset_n_fft,
+        onset_aggregate=args.onset_aggregate,
+        onset_max_size=args.onset_max_size,
+        onset_delta_ratio=args.onset_delta_ratio,
+        onset_split_strength_ratio=args.onset_split_strength_ratio,
+        release_drop_db=args.release_drop_db,
         use_onsets=not args.no_onsets,
+        estimate_tuning=not args.no_tuning_estimate,
         absorb_glides=not args.no_glides,
+        trim_note_releases=args.release_trim,
         midi_program=args.midi_program,
         midi_tempo=args.midi_tempo,
     )
@@ -139,13 +186,19 @@ def config_from_args(args: argparse.Namespace) -> TranscriptionConfig:
     return config
 
 
-def run_self_test(progress: ProgressReporter) -> int:
-    """Transcribe the synthetic suite and report accuracy."""
+def run_self_test(progress: ProgressReporter, config: TranscriptionConfig) -> int:
+    """Transcribe the synthetic suite and report accuracy.
+
+    Takes the configuration the command line asked for rather than building a
+    default one. Ignoring it meant ``--self-test --f0-backend pyin`` silently
+    ran CREPE, so the one command offered for checking an install failed with
+    an ImportError on precisely the torch-free install the flag exists to
+    serve -- and any other flag passed alongside it was quietly discarded.
+    """
     from .core import transcribe_audio
     from .evaluate import format_scores, score
     from .synth import ALL_CASES
 
-    config = TranscriptionConfig()
     rows = []
     with progress.stage("self-test", total=len(ALL_CASES)) as stage:
         for name, make_case in ALL_CASES.items():
@@ -176,7 +229,10 @@ def _run_single(args, config, progress) -> int:
         written.append(write_json(
             result.notes, output_dir / f"{stem}.notes.json", config,
             extra={"source": str(audio_path), "duration": result.duration,
-                   "device": result.device},
+                   "device": result.device,
+                   # In cents, because that is the unit the note table's own
+                   # deviation column is in and the two are read together.
+                   "tuning_offset_cents": 100.0 * result.tuning_offset},
         ))
     if not args.no_csv:
         written.append(write_csv(result.notes, output_dir / f"{stem}.notes.csv"))
@@ -232,7 +288,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.self_test:
-        return run_self_test(progress)
+        return run_self_test(progress, config_from_args(args))
 
     if not args.audio:
         build_parser().print_help()

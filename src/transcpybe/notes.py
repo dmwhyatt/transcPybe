@@ -6,6 +6,7 @@ cleaning up the note list afterwards.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional
 
@@ -123,9 +124,18 @@ def _velocity(note_db: float, reference_db: float, config: TranscriptionConfig) 
 
 
 def segments_to_notes(
-    segments: List[Segment], track: F0Track, config: TranscriptionConfig
+    segments: List[Segment], track: F0Track, config: TranscriptionConfig,
+    tuning_offset: float = 0.0,
 ) -> List[Note]:
-    """Measure pitch, timing, confidence and velocity for each segment."""
+    """Measure pitch, timing, confidence and velocity for each segment.
+
+    ``tuning_offset`` is the recording's own pitch centre, in semitones away
+    from the A440 grid (see ``f0.estimate_tuning_offset``). Rounding happens
+    relative to it, so a performance sung consistently a third of a semitone
+    flat reports the notes it meant rather than the ones it was nearest to.
+    ``pitch_midi_float`` stays as measured, in absolute MIDI, so the deviation
+    a caller reads off it remains the real distance from A440.
+    """
     hop_s = config.hop_length / config.sample_rate
     n_frames = track.n_frames
 
@@ -146,7 +156,7 @@ def segments_to_notes(
             # No usable f0 anywhere in the segment; trust the decoder's state.
             measured = float(seg.pitch)
 
-        pitch = int(np.clip(round(measured), 0, 127))
+        pitch = int(np.clip(round(measured - tuning_offset), 0, 127))
         voiced = track.voicing[indices]
         hz = track.f0_hz[indices]
         hz_valid = hz[np.isfinite(hz)]
@@ -175,6 +185,88 @@ def segments_to_notes(
             )
         )
     return notes
+
+
+def estimate_tuning_offset(
+    notes: List[Note], config: TranscriptionConfig
+) -> float:
+    """How far this performance's pitch centre sits from the A440 semitone grid.
+
+    Returned in semitones, in [-0.5, 0.5]; zero means leave the grid alone.
+
+    Both the decoder's pitch states and the rounding that produces an integer
+    MIDI number assume a note's centre lies on an integer. That is an
+    assumption about the *recording*: a phone take sung with no reference
+    pitch, or against an instrument tuned by ear, sits wherever it sits. Offset
+    the whole performance by more than a quarter tone and every note is nearer
+    the wrong semitone than the right one -- the transcription comes out a
+    semitone adrift while the singing was perfectly in tune with itself.
+
+    Measured across notes rather than across frames, which is the whole
+    difficulty. A vibrato sweeps its frames across the entire deviation range
+    several times a second, so a frame-weighted estimate is dominated by
+    material that carries no tuning information at all: measured per frame,
+    the suite's vibrato case reports a 49-cent offset where the true one is
+    zero, which is the most damaging answer available. Nor can the sweep be
+    filtered out by holding on to frames whose pitch is momentarily still --
+    the still points of a vibrato are the extremes of its swing, so that
+    selects precisely the frames furthest from the centre. Averaging inside
+    each note first collapses the swing to the pitch the note was aiming at,
+    and only then is there something to take a centre of.
+
+    Weighted by duration and confidence, because a held, confident note says
+    where the singer thinks a pitch is and a 60 ms fragment does not.
+
+    The average is circular, not arithmetic: these deviations live on a circle,
+    where a performance 49 cents sharp and one 49 cents flat are nearly the
+    same performance sitting at opposite ends of [-0.5, 0.5]. Averaging those
+    linearly returns zero, the one answer that is certainly wrong. The circular
+    mean also yields a concentration R in [0, 1] for free, and that is what
+    decides whether to act: it asks whether this performance has a pitch centre
+    at all. Singing scattered evenly around the circle has none -- intonation
+    that wanders by a quarter tone note to note is not an offset and must not
+    be corrected as one -- and its mean angle is noise that would shift every
+    note by an arbitrary amount.
+    """
+    if not config.estimate_tuning or len(notes) < config.tuning_min_notes:
+        return 0.0
+
+    values, weights = [], []
+    for note in notes:
+        if not np.isfinite(note.pitch_midi_float):
+            continue
+        weight = max(note.duration, 0.0) * max(note.confidence, 0.0)
+        if weight <= 0.0:
+            continue
+        values.append(note.pitch_midi_float)
+        weights.append(weight)
+
+    if len(values) < config.tuning_min_notes:
+        return 0.0
+
+    values = np.asarray(values, dtype=np.float64)
+    weights = np.asarray(weights, dtype=np.float64)
+    total = float(np.sum(weights))
+    if total <= 0.0:
+        return 0.0
+
+    # Deviation from the nearest semitone, mapped onto a full turn so that the
+    # wrap at +/-0.5 is a continuity rather than a cliff.
+    theta = 2.0 * np.pi * (values - np.round(values))
+    cosine = float(np.sum(weights * np.cos(theta)))
+    sine = float(np.sum(weights * np.sin(theta)))
+
+    concentration = float(np.hypot(cosine, sine) / total)
+    if concentration < config.tuning_min_concentration:
+        return 0.0
+
+    offset = float(np.arctan2(sine, cosine) / (2.0 * np.pi))
+    # Near the far side of the circle the reading is ambiguous rather than
+    # merely uncertain, and the ambiguity resolves the wrong way: see
+    # tuning_max_offset_semitones.
+    if abs(offset) > config.tuning_max_offset_semitones:
+        return 0.0
+    return offset
 
 
 def merge_same_pitch(
@@ -227,6 +319,75 @@ def merge_same_pitch(
     return merged
 
 
+def trim_note_releases(
+    notes: List[Note], track: F0Track, config: TranscriptionConfig
+) -> List[Note]:
+    """Pull each note's end back to where the note's own level collapses.
+
+    This is the only stage that touches a note's end. Everything else --
+    fragment absorption, glide backtracking, onset splitting, start snapping --
+    refines note starts, and the end was simply wherever the decoder left the
+    pitch state. The adaptive gate holds that state open until a frame is
+    ``loudness_dynamic_range_db`` below the whole performance, which is a good
+    threshold for "is anyone singing" and much too generous for "is this note
+    still sounding". A note with a half-second release is reported half a
+    second long.
+
+    So: find the note's sustained level, walk back from its end while frames
+    sit below that level by ``release_drop_db``, and end the note there. The
+    threshold is per-note because a quiet note's release is quiet too, and it
+    is small because what it has to find is where the level *departed* from
+    sustain rather than where it became inaudible. A threshold set further down
+    the ramp lands at a fixed fraction of the release instead of at its top, so
+    the error it leaves grows with the release and long ones overshoot whatever
+    value is chosen.
+
+    Two things this deliberately does not do. It never lengthens a note, only
+    shortens one, so a decoder that already ended a note early is left alone.
+    And it does not re-measure pitch: the release frames were already the
+    least confident in the note and the weighted median had all but discarded
+    them, so the measurement stands and only the reported end moves.
+    """
+    if not config.trim_note_releases or not notes:
+        return notes
+
+    hop_s = config.hop_length / config.sample_rate
+    min_frames = max(1, int(round(config.min_note_duration_s / hop_s)))
+
+    trimmed: List[Note] = []
+    for note in notes:
+        start = note.start_frame
+        end = min(note.end_frame, track.n_frames)
+        levels = track.loudness_db[start:end]
+        finite = levels[np.isfinite(levels)]
+        if finite.size < 3 or end - start <= min_frames:
+            trimmed.append(note)
+            continue
+
+        floor = float(np.percentile(finite, 75)) - config.release_drop_db
+        # Never take more than release_min_fraction of the note: a note that
+        # fades throughout sits below its own 75th percentile for most of its
+        # length, and is a diminuendo rather than a release.
+        keep_at_least = max(min_frames,
+                            int(round((end - start) * config.release_min_fraction)))
+        limit = start + keep_at_least
+
+        cut = end
+        while cut - 1 >= limit:
+            level = levels[cut - 1 - start]
+            if not np.isfinite(level) or level >= floor:
+                break
+            cut -= 1
+
+        if cut < end:
+            trimmed.append(dataclasses.replace(
+                note, offset=cut * hop_s, end_frame=cut))
+        else:
+            trimmed.append(note)
+
+    return trimmed
+
+
 def drop_short_notes(notes: List[Note], config: TranscriptionConfig) -> List[Note]:
     """Discard notes too short to be a deliberate sung pitch."""
     return [n for n in notes if n.duration >= config.min_note_duration_s]
@@ -270,12 +431,18 @@ def postprocess_notes(
     config: TranscriptionConfig,
     onsets: Optional[OnsetTrack] = None,
 ) -> List[Note]:
-    """Merge fragments first, then drop what is still too short.
+    """Merge fragments first, then trim releases, then drop what is too short.
 
-    Order matters: merging can rescue a fragment that would not survive the
-    duration filter on its own.
+    Order matters twice over. Merging can rescue a fragment that would not
+    survive the duration filter on its own, so it goes first -- and it must see
+    untrimmed ends, because the gap it measures is the decoder's silence
+    between two notes, not the silence a release trim would manufacture.
+    Trimming then goes before the duration filter rather than after it, so that
+    a note which is only long enough because of its release is judged on the
+    length it is actually reported with.
     """
     notes = merge_same_pitch(notes, track, config, onsets)
+    notes = trim_note_releases(notes, track, config)
     notes = drop_short_notes(notes, config)
     notes = drop_quiet_notes(notes, config)
     return sorted(notes, key=lambda n: (n.onset, n.pitch))

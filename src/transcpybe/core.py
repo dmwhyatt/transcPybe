@@ -16,7 +16,8 @@ from .config import TranscriptionConfig
 from .f0 import F0Track, estimate_f0
 from .fragments import absorb_short_fragments
 from .glide import handle_glides
-from .notes import Note, postprocess_notes, segments_to_notes
+from .notes import (Note, estimate_tuning_offset, postprocess_notes,
+                    segments_to_notes)
 from .onsets import OnsetTrack, refine_segments
 from .progress import ProgressReporter, format_duration, format_realtime_factor, null_reporter
 from .segment import segment_notes
@@ -42,6 +43,14 @@ class TranscriptionResult:
     source: Optional[str] = None
     device: Optional[str] = None
     """The device CREPE actually ran on, after resolving 'auto'."""
+    tuning_offset: float = 0.0
+    """Semitones between this recording's pitch centre and the A440 grid.
+
+    Zero when the estimate was switched off or refused for want of evidence, so
+    it does not distinguish "on A440" from "not measured"; the log line says
+    which. Kept because a large value is a fact about the recording worth
+    seeing, and because a transcription that looks a semitone out is explained
+    by it more often than by anything else."""
 
     @property
     def n_notes(self) -> int:
@@ -89,8 +98,8 @@ def decode_notes(
     *,
     audio: Optional[np.ndarray] = None,
     onsets: Optional[OnsetTrack] = None,
-) -> tuple[List[Note], Optional[OnsetTrack], int]:
-    """Everything after f0 estimation: segment, clean up, and measure notes.
+) -> tuple[List[Note], Optional[OnsetTrack], int, float]:
+    """Everything after f0 estimation: tune, segment, clean up, and measure notes.
 
     Split out so it can be replayed from a cached f0 track and onset track
     without the audio. Estimating f0 dominates the cost and none of the
@@ -100,13 +109,44 @@ def decode_notes(
     This is the same code path the full transcription takes, so a sweep cannot
     be measuring something the pipeline does not do.
     """
-    segments = segment_notes(track, config)
+    notes, onsets, n_segments = _decode_pass(track, config, audio, onsets, 0.0)
+
+    # Where the semitone grid sits can only be judged from notes, and notes can
+    # only be had by assuming a grid -- so assume the standard one, look at what
+    # came back, and decode again if the performance turns out not to be on it.
+    # The second pass is the cheap half: estimating f0 dominates the cost and is
+    # already done, and a negligible offset skips it entirely, which is nearly
+    # every recording.
+    tuning_offset = estimate_tuning_offset(notes, config)
+    if abs(tuning_offset) >= config.tuning_min_offset_semitones:
+        notes, onsets, n_segments = _decode_pass(
+            track, config, audio, onsets, tuning_offset)
+    else:
+        tuning_offset = 0.0
+
+    return notes, onsets, n_segments, tuning_offset
+
+
+def _decode_pass(
+    track: F0Track,
+    config: TranscriptionConfig,
+    audio: Optional[np.ndarray],
+    onsets: Optional[OnsetTrack],
+    tuning_offset: float,
+) -> tuple[List[Note], Optional[OnsetTrack], int]:
+    """One decode of the f0 track against a semitone grid at ``tuning_offset``.
+
+    The onset track is passed back out so that a second pass reuses the one the
+    first computed rather than re-running the detector over the audio: no
+    searched or estimated parameter here can change it.
+    """
+    segments = segment_notes(track, config, tuning_offset)
     n_segments = len(segments)
     segments = absorb_short_fragments(segments, config)
     segments = handle_glides(segments, track, config)
     segments, onsets = refine_segments(segments, audio, track.times, config,
                                        onsets=onsets)
-    notes = segments_to_notes(segments, track, config)
+    notes = segments_to_notes(segments, track, config, tuning_offset)
     notes = postprocess_notes(notes, track, config, onsets)
     return notes, onsets, n_segments
 
@@ -145,8 +185,10 @@ def transcribe_audio(
     progress.log(f"  {track.n_frames} frames, {voiced_fraction:.1f}% voiced")
 
     with progress.stage("note decoding", announce=False):
-        notes, onsets, n_segments = decode_notes(track, config, audio=audio)
+        notes, onsets, n_segments, tuning_offset = decode_notes(track, config, audio=audio)
     progress.log(f"  {n_segments} raw segments")
+    if tuning_offset:
+        progress.log(f"  tuning centre {100.0 * tuning_offset:+.0f} cents from A440")
 
     if onsets is not None:
         progress.log(f"  {len(onsets)} onsets detected")
@@ -165,6 +207,7 @@ def transcribe_audio(
         duration=duration,
         elapsed=elapsed,
         device=config.device if config.f0_backend == "crepe" else None,
+        tuning_offset=tuning_offset,
     )
 
 

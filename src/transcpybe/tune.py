@@ -30,7 +30,8 @@ import numpy as np
 
 from transcription_benchmarking.dataset import Item
 from transcription_benchmarking.metrics import (
-    ONSET_TOLERANCE, PITCH_TOLERANCE, RefNote, note_prf, score_sequence)
+    OFFSET_RATIO, ONSET_TOLERANCE, PITCH_TOLERANCE, RefNote, note_prf,
+    score_sequence)
 
 from .config import TranscriptionConfig
 
@@ -39,6 +40,7 @@ from .config import TranscriptionConfig
 UPSTREAM_FIELDS = (
     "sample_rate", "hop_ms", "f0_backend", "crepe_model", "device", "seed",
     "fmin_hz", "fmax_hz", "crepe_batch_size", "onset_max_size", "onset_lag",
+    "onset_n_fft", "onset_aggregate", "onset_delta_ratio",
     "use_onsets",
 )
 
@@ -159,6 +161,15 @@ DEFAULT_SPACE: Dict[str, Tuple[float, float]] = {
     "pitch_sigma_semitones": (0.35, 0.80),
 }
 
+# Only worth searching with trim_note_releases enabled, and only against a
+# reference whose note ends are meant seriously -- pass it explicitly along
+# with --objective offset. It is not in DEFAULT_SPACE because with the trim off
+# it is inert, and an inert parameter in a random search spends trials to learn
+# nothing.
+RELEASE_SPACE: Dict[str, Tuple[float, float]] = {
+    "release_drop_db": (0.5, 20.0),
+}
+
 
 def cache_name(item_id: str) -> str:
     """A filesystem-safe name for one recording's cached tracks.
@@ -234,7 +245,10 @@ def score_config(
     a clock with the audio. "sequence" compares the notes in order and ignores
     time entirely, which is the only honest choice against a reference notated
     at a nominal tempo -- and it still sees the defect that matters most here,
-    since two notes run into one shortens the sequence.
+    since two notes run into one shortens the sequence. "offset" is "onset"
+    with the note end required as well, and exists because without it nothing
+    in this package could optimise a note end: both other objectives discard
+    offsets entirely, so a search could not have improved one even by accident.
     """
     from .core import decode_notes
 
@@ -245,7 +259,7 @@ def score_config(
         if not reference:
             continue
         track, onsets = cache.get(item, config)
-        notes, _, _ = decode_notes(track, config, onsets=onsets)
+        notes, _, _, _ = decode_notes(track, config, onsets=onsets)
         estimated = [(n.onset, n.offset, n.pitch) for n in notes]
         if objective == "sequence":
             sequence = score_sequence(reference, estimated, beta=beta)
@@ -255,7 +269,8 @@ def score_config(
             per_item[item.item_id] = sequence.f
         else:
             prf = note_prf(reference, estimated, pitch_tolerance=PITCH_TOLERANCE,
-                       offset_ratio=None, onset_tolerance=onset_tolerance)
+                       offset_ratio=(OFFSET_RATIO if objective == "offset" else None),
+                       onset_tolerance=onset_tolerance)
             scores.append(fbeta(prf.precision, prf.recall, beta))
             precisions.append(prf.precision)
             recalls.append(prf.recall)
