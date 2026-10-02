@@ -246,6 +246,38 @@ estimate, then rounded to the nearest integer. Finally, fragments of one note
 are rejoined, notes below the duration floor are dropped, and notes far quieter
 than the rest of the performance are discarded.
 
+**7. Tuning reference.** Steps 2 and 6 both assume a note's centre sits on an
+integer MIDI number, which is an assumption about the recording rather than
+about music: a take sung with no reference pitch, or against an instrument tuned
+by ear, sits wherever it sits. Offset the whole performance by more than a
+quarter tone and every note is nearer the wrong semitone than the right one, so
+the transcription comes out a semitone adrift while the singing was perfectly in
+tune with itself. So the notes from a first pass are used to find where this
+performance's semitones actually fall, and if that is not the standard grid the
+decode is run again against the one it is on. The second pass is the cheap half
+— estimating f0 dominates the cost and is already done — and a negligible offset
+skips it, which is nearly every recording.
+
+The estimate is taken across notes rather than across frames. A vibrato sweeps
+its frames over the whole deviation range several times a second, so a
+frame-weighted estimate is dominated by material carrying no tuning information:
+measured that way, the suite's `vibrato` case reports a 49-cent offset where the
+true one is zero. Averaging inside each note first collapses the swing to the
+pitch the note was aiming at.
+
+Two things it deliberately refuses. Deviations spread evenly around the circle
+mean the performance has no pitch centre to find, and their average is noise
+that would shift every note by an arbitrary amount. And deviations spread
+symmetrically about the grid — a singer landing 40 cents sharp as often as 40
+cents flat — sit, on a circle one semitone around, nearest the point *half* a
+semitone away: such a performance is not merely mistaken for a well-tuned one a
+quarter tone off, it is genuinely better explained by one, since shifting
+everything by half a semitone really does pull those deviations into a tighter
+band. No statistic of the deviations separates those two readings. What
+separates them is a prior — tuning references cluster near A440, while that
+artefact lands near 50 cents by construction — so offsets past 40 cents are
+refused rather than applied. `--no-tuning-estimate` forces the A440 grid.
+
 ---
 
 ## Accuracy
@@ -322,6 +354,36 @@ Sweeping `--note-level-floor`:
 The default favours keeping real quiet singing, on the view that a spurious note
 you can see and delete is less costly than a sung note that was never reported.
 Lower it when working with a poorly separated stem.
+
+### What the tuning reference is worth
+
+The suite cannot show this, by design: every case in it is sung on the A440
+grid, so the estimate correctly declines on all 22 and the table above is
+identical with it on and off. What it is worth shows up only on a performance
+that is not on that grid.
+
+Paired on the same audio, the same f0, and the same seeds — phrases sung a
+fixed distance off the grid with per-note intonation scatter on top, scored as
+note F (onset+pitch):
+
+| Offset | Scatter | Forced A440 | Tuned | |
+|---|---|---|---|---|
+| 0 | 25c | 0.972 | 0.972 | estimate declines |
+| 15c | 25c | 1.000 | 0.972 | nothing to win; one note lost |
+| 25c | 25c | 0.833 | **0.917** | |
+| 35c | 15c | 0.833 | **1.000** | |
+| 35c | 25c | 0.750 | **0.917** | |
+
+Better on 7 of those 15 recordings, worse on 1, unchanged on 7. The shape is
+the point: it does nothing until the grid is demonstrably costing notes, and
+a recording already near A440 never reaches the second decoding pass at all —
+its output is the same object the single pass produced.
+
+These are synthesised, and the caveat below applies to them with force. The
+argument that this should carry to real singing is that a human annotator
+hears a performance in its own tuning, so an estimate that does the same ought
+to agree with them more often. That is an argument rather than a measurement,
+and it wants a benchmark run before it is believed.
 
 ### What these numbers do and do not mean
 
@@ -496,6 +558,15 @@ remain bit-identical.
   `transcpybe-tune --objective offset` before trusting either answer.
 - **Loud separation residue** is transcribed as notes at the default level
   floor — see the dial above.
+- **A tuning reference can only be found when there is one.** The grid a
+  recording is sung on is read off its own notes, and a performance whose
+  intonation wanders either side of the grid does not have one to read. Worse,
+  scattered singing is *better explained* by a well-tuned performance a quarter
+  tone away than by the grid it meant, because shifting it there really does
+  tighten the spread — so the estimate is refused past 40 cents rather than
+  believed. A recording genuinely sung more than 40 cents from A440 is
+  therefore left on the wrong grid, which is the deliberate cost of not
+  re-gridding a singer who is merely imprecise.
 - **Validated on synthetic audio.** See the caveat above.
 - **Unquantised.** Output is in seconds, with no beat tracking or rhythmic
   quantisation. That is deliberate: quantising is lossy and belongs downstream.

@@ -259,7 +259,7 @@ def score_config(
         if not reference:
             continue
         track, onsets = cache.get(item, config)
-        notes, _, _ = decode_notes(track, config, onsets=onsets)
+        notes, _, _, _ = decode_notes(track, config, onsets=onsets)
         estimated = [(n.onset, n.offset, n.pitch) for n in notes]
         if objective == "sequence":
             sequence = score_sequence(reference, estimated, beta=beta)
