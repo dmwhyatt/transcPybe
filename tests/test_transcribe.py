@@ -196,6 +196,73 @@ def test_viterbi_recovers_notes_from_a_vibrato_contour():
         assert abs(segment.end_frame - end) <= 2
 
 
+def _hand_track(midi, loudness_db=None):
+    """An F0Track built from a fractional-MIDI contour; NaN is unvoiced."""
+    midi = np.asarray(midi, dtype=float)
+    voiced = np.isfinite(midi)
+    voicing = np.where(voiced, 0.95, 0.0)
+    loudness = (np.where(voiced, -20.0, -80.0) if loudness_db is None
+                else np.asarray(loudness_db, dtype=float))
+    return F0Track(
+        times=np.arange(midi.shape[0]) / 100.0,
+        f0_hz=np.where(voiced, midi_to_hz(np.nan_to_num(midi, nan=60.0)), np.nan),
+        periodicity=voicing, loudness_db=loudness,
+        loudness_gate=np.where(voiced, 1.0, 0.0), voicing=voicing,
+    )
+
+
+# --------------------------------------------------------------------------
+# Glides
+# --------------------------------------------------------------------------
+
+def test_glide_backtrack_stops_at_a_note_held_off_its_semitone():
+    """The walk must not march back through a held note.
+
+    It used to stop only on arriving within 0.35 of the previous note's
+    *integer* pitch. A note held at 60.4 never does, and sits inside the
+    corridor up to 62, so the next onset was pulled 300 ms early and the held
+    note cut short by the same amount.
+    """
+    from transcpybe.glide import backtrack_glide_onsets
+
+    midi = np.full(160, np.nan)
+    midi[10:90] = 60.4
+    midi[90:150] = 62.0
+    track = _hand_track(midi)
+    segments = [Segment(10, 90, 60), Segment(90, 150, 62)]
+
+    out = backtrack_glide_onsets(segments, track, TranscriptionConfig())
+    assert abs(out[1].start_frame - 90) <= 2
+    assert abs(out[0].end_frame - 90) <= 2
+
+
+def test_glide_backtrack_still_finds_the_start_of_a_glide():
+    from transcpybe.glide import backtrack_glide_onsets
+
+    midi = np.full(160, np.nan)
+    midi[10:80] = 60.0
+    midi[80:95] = np.linspace(60.0, 62.0, 15)    # a 150 ms slide
+    midi[95:150] = 62.0
+    track = _hand_track(midi)
+    segments = [Segment(10, 90, 60), Segment(90, 150, 62)]
+
+    out = backtrack_glide_onsets(segments, track, TranscriptionConfig())
+    assert out[1].start_frame <= 84
+
+
+def test_a_short_note_between_rests_is_not_a_passing_tone():
+    """A glide crossing touches both notes it joins; this one touches neither."""
+    from transcpybe.glide import absorb_passing_tones
+
+    segments = [Segment(0, 30, 60), Segment(45, 56, 62), Segment(71, 120, 64)]
+    assert len(absorb_passing_tones(list(segments), TranscriptionConfig())) == 3
+    # The same note with no rests around it is a glide crossing.
+    contiguous = [Segment(0, 30, 60), Segment(30, 41, 62), Segment(41, 90, 64)]
+    assert len(absorb_passing_tones(list(contiguous), TranscriptionConfig())) == 2
+
+
+
+
 # --------------------------------------------------------------------------
 # Fragment absorption
 # --------------------------------------------------------------------------

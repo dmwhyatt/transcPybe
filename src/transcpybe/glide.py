@@ -25,12 +25,19 @@ from .f0 import F0Track
 from .segment import Segment
 
 
-def _smoothed_midi(track: F0Track, width: int = 5) -> np.ndarray:
-    """Moving average of the pitch contour, interpolated across unvoiced gaps.
+def _smoothed_midi(track: F0Track, width: int = 3) -> np.ndarray:
+    """Running median of the pitch contour, interpolated across unvoiced gaps.
 
     Smoothing matters here because the backtrack below walks frame by frame;
-    raw jitter would stop the walk early.
+    raw jitter would stop the walk early. A median rather than a mean, because
+    a mean smears a pitch step backwards: on an instantaneous step a five-frame
+    mean starts moving two frames before the step does, and the walk follows it
+    there, putting every legato onset 20 ms early -- two fifths of the onset
+    tolerance spent before anything else has gone wrong. A median holds a step
+    where it is and still removes single-frame jitter.
     """
+    from scipy.ndimage import median_filter
+
     midi = track.midi_float
     valid = np.isfinite(midi)
     if not valid.any():
@@ -38,8 +45,7 @@ def _smoothed_midi(track: F0Track, width: int = 5) -> np.ndarray:
 
     indices = np.arange(midi.shape[0])
     filled = np.interp(indices, indices[valid], midi[valid])
-    kernel = np.ones(width) / width
-    smoothed = np.convolve(filled, kernel, mode="same")
+    smoothed = median_filter(filled, size=width, mode="nearest")
     return np.where(valid, smoothed, np.nan)
 
 
@@ -58,8 +64,10 @@ def absorb_passing_tones(
     hop_s = config.hop_length / config.sample_rate
     max_frames = int(round(config.max_passing_note_s / hop_s))
     # A glide can briefly drop below the voicing threshold, so neighbours are
-    # allowed to be separated by a short gap rather than exactly contiguous.
-    max_gap = int(round(config.glide_max_gap_s / hop_s))
+    # allowed to be separated by a short gap rather than exactly contiguous --
+    # but only a short one. A note with a rest on each side is not the trace
+    # of a slide between its neighbours, however short it is.
+    max_gap = int(round(config.passing_max_gap_s / hop_s))
 
     keep = [True] * len(segments)
     for i in range(1, len(segments) - 1):
@@ -96,8 +104,19 @@ def backtrack_glide_onsets(
 
     From each boundary, walk backwards while the contour is still travelling
     between the two note levels, stopping once it has returned to the previous
-    note's pitch. Bounded by ``glide_max_backtrack_s`` so that a wobbling
-    sustain cannot swallow the note before it.
+    note's pitch or has stopped moving. Bounded by ``glide_max_backtrack_s`` so
+    that a wobbling sustain cannot swallow the note before it.
+
+    "The previous note's pitch" is the pitch it was sung at, measured from its
+    frames, not the integer state the decoder gave it. The two differ by up to
+    half a semitone, and when the difference points towards the next note the
+    held part of the previous note sits inside the corridor between the two
+    without ever coming within ``glide_edge_tolerance_semitones`` of the
+    integer: the walk then marched back through the held note to its full
+    300 ms limit. A legato phrase with alternate notes 40 cents sharp lost
+    three onsets in four that way. The plateau test is the second guard: a
+    glide moves, so ``glide_plateau_frames`` frames that hold one pitch mean
+    the walk has left it, wherever the pitch they hold.
 
     The walk may cross a short unvoiced gap: a rapid glide drives the pitch
     tracker's confidence down, so the decoder often inserts spurious silence in
@@ -111,7 +130,15 @@ def backtrack_glide_onsets(
     max_gap = int(round(config.glide_max_gap_s / hop_s))
     min_frames = max(1, int(round(config.min_note_duration_s / hop_s)))
     tolerance = config.glide_edge_tolerance_semitones
+    plateau_frames = max(int(config.glide_plateau_frames), 2)
     smoothed = _smoothed_midi(track)
+    measured = track.midi_float
+
+    def pitch_of(seg: Segment) -> float:
+        """The pitch a segment was sung at: the median of its frames."""
+        frames = measured[seg.start_frame:seg.end_frame]
+        finite = frames[np.isfinite(frames)]
+        return float(np.median(finite)) if finite.size else float(seg.pitch)
 
     def level_of(seg: Segment) -> float:
         """Representative level of a segment, in dBFS."""
@@ -130,8 +157,9 @@ def backtrack_glide_onsets(
         if interval < 1:
             continue
 
-        low = min(previous.pitch, current.pitch) - tolerance
-        high = max(previous.pitch, current.pitch) + tolerance
+        previous_pitch, current_pitch = pitch_of(previous), pitch_of(current)
+        low = min(previous_pitch, current_pitch) - tolerance
+        high = max(previous_pitch, current_pitch) + tolerance
 
         # A glide is sung, so it sits at roughly the level of the note it leads
         # into. Requiring that stops the walk from marching back through
@@ -147,8 +175,9 @@ def backtrack_glide_onsets(
         # came from. Noise between notes wanders instead, and that is the cue
         # which separates the two: without it, the walk happily marches back
         # through a breathy gap and reports the onset far too early.
-        towards_previous = 1.0 if previous.pitch < current.pitch else -1.0
+        towards_previous = 1.0 if previous_pitch < current_pitch else -1.0
         last_pitch = smoothed[boundary] if boundary < smoothed.shape[0] else np.nan
+        visited: List[float] = []
         while boundary - 1 >= limit:
             pitch = smoothed[boundary - 1]
             if not np.isfinite(pitch):
@@ -166,10 +195,16 @@ def backtrack_glide_onsets(
                 break
             if track.loudness_db[boundary - 1] < min_level:
                 break
-            if abs(pitch - previous.pitch) <= tolerance:
+            if abs(pitch - previous_pitch) <= tolerance:
                 break                                   # back at the previous note
             if not (low <= pitch <= high):
                 break                                   # left the transition corridor
+            visited.append(pitch)
+            if (len(visited) >= plateau_frames
+                    and np.ptp(visited[-plateau_frames:]) < config.glide_plateau_semitones):
+                # Held, not gliding: give back the plateau's frames.
+                boundary += plateau_frames - 1
+                break
             last_pitch = pitch
             boundary -= 1
 

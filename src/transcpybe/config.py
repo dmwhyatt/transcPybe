@@ -109,6 +109,16 @@ class TranscriptionConfig:
     """Segments shorter than this, lying between their neighbours' pitches in a
     contiguous run, are treated as a glide crossing rather than a note."""
 
+    passing_max_gap_s: float = 0.05
+    """Longest silence a passing tone may have on either side.
+
+    A passing tone is the trace a glide leaves as it crosses a semitone, so it
+    touches the notes either side of it; a fast slide may drop a frame or two
+    of voicing, and no more. This used to borrow ``glide_max_gap_s``, which is
+    200 ms, so a short real note with a rest before it and a rest after it --
+    60, breath, 62, breath, 64 -- was deleted as a glide crossing that nothing
+    was gliding across."""
+
     glide_max_backtrack_s: float = 0.30
     """Ceiling on how far a legato note start may be moved back."""
 
@@ -130,6 +140,19 @@ class TranscriptionConfig:
     """How far the contour may back-track the wrong way during a glide walk
     before the walk stops. Distinguishes a sung slide, which retreats steadily,
     from noise between notes, which wanders."""
+
+    glide_plateau_frames: int = 5
+    """A glide walk stops when this many consecutive frames hold one pitch.
+
+    A glide moves; a held note does not. The walk already stops on arriving
+    back at the previous note's pitch, but a note that is sung a little off
+    the pitch it is measured at can be held inside the corridor between the
+    two notes without ever arriving, and the walk would then march back
+    through it to its full ``glide_max_backtrack_s``. A plateau says the walk
+    has left the glide, wherever the plateau sits."""
+
+    glide_plateau_semitones: float = 0.25
+    """Pitch span below which ``glide_plateau_frames`` frames count as held."""
 
     glide_max_level_drop_db: float = 20.0
     """A glide may not be more than this far below the level of the note it
