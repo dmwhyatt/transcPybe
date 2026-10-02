@@ -578,22 +578,38 @@ def test_split_threshold_comes_from_onsets_not_the_envelope():
 # on note starts, and the end was wherever the Viterbi path left the pitch
 # state -- which the adaptive gate holds open until a frame is 45 dB below the
 # whole performance. A note with a release was reported for as long as it
-# remained audible rather than for as long as it was a note.
+# remained audible rather than for as long as it was a note, and in a room the
+# reverberation after it is audible, and periodic, for longer still.
 # ---------------------------------------------------------------------------
+
+
+def _reverberate(audio, rt60, sample_rate=16000, seed=0):
+    """Convolve with an exponentially decaying noise tail: a plain room."""
+    from scipy.signal import fftconvolve
+
+    rng = np.random.default_rng(seed)
+    n = int(1.2 * rt60 * sample_rate)
+    t = np.arange(n) / sample_rate
+    tail = rng.normal(0.0, 1.0, n) * np.exp(-6.9 * t / rt60)
+    tail *= np.sqrt(10 ** (-6.0 / 10) / np.sum(tail ** 2))   # 6 dB direct-to-reverb
+    tail[0] += 1.0
+    wet = fftconvolve(audio, tail)[: audio.shape[0]]
+    return (wet / np.abs(wet).max()).astype(np.float32)
 
 
 def test_release_is_not_counted_as_note():
     """Sound continuing past the annotation must not extend the note.
 
-    Opt-in, because the trim is off by default: it ends notes at the top of the
-    decay, and vocadito's annotators mark them later -- enabling it cost 0.161
-    COnPOff there, on all forty recordings. What this test pins is that the
-    mechanism works, not that the default should use it.
+    This case annotates each end at the top of its 180 ms decay, which is what
+    a 1 dB threshold locates. That is a convention the default does not assume
+    -- see ``test_reverberant_tail_is_not_counted_as_note`` -- so the threshold
+    is set here, and what the test pins is that the mechanism can find the top
+    of a decay when asked to.
     """
     from transcpybe.synth import case_release_tails
 
     audio, ground_truth = case_release_tails()
-    notes = transcribe_audio(audio, pyin_config(trim_note_releases=True)).notes
+    notes = transcribe_audio(audio, pyin_config(release_drop_db=1.0)).notes
 
     assert len(notes) == len(ground_truth)
     for note, (_, true_end, _) in zip(notes, ground_truth):
@@ -606,7 +622,7 @@ def test_breath_after_a_note_is_not_part_of_it():
     from transcpybe.synth import case_breath_ends
 
     audio, ground_truth = case_breath_ends()
-    notes = transcribe_audio(audio, pyin_config(trim_note_releases=True)).notes
+    notes = transcribe_audio(audio, pyin_config()).notes
 
     assert len(notes) == len(ground_truth)
     for note, (_, true_end, _) in zip(notes, ground_truth):
@@ -630,21 +646,53 @@ def test_release_trim_only_ever_shortens():
         assert after.duration >= config.min_note_duration_s
 
 
-def test_release_trim_is_off_by_default():
-    """The default must leave note ends where the decoder put them.
+def test_reverberant_tail_is_not_counted_as_note():
+    """A room keeps a note sounding, and periodic, after the singer stops.
 
-    Trimming them scored better on every synthetic case and worse on every one
-    of vocadito's forty recordings, so the default follows the real corpus.
+    No annotation convention puts a note's end at the end of the room's decay,
+    and that is where the decoder leaves it: CREPE and pYIN both report the
+    reverberant tail of a held vowel as pitched. The default trim ends each
+    note where its level has fallen well away from its own sustain.
     """
-    from transcpybe.synth import case_release_tails
+    audio, ground_truth = case_scale()
+    audio = _reverberate(audio, rt60=0.6)
 
-    assert TranscriptionConfig().trim_note_releases is False
+    untrimmed = transcribe_audio(audio, pyin_config(trim_note_releases=False)).notes
+    trimmed = transcribe_audio(audio, pyin_config()).notes
+    assert len(trimmed) == len(ground_truth)
 
-    audio, ground_truth = case_release_tails()
-    kept = transcribe_audio(audio, pyin_config()).notes
+    def ends_within_tolerance(notes):
+        # COnPOff's offset tolerance: 50 ms or 20% of the note, the larger.
+        return sum(abs(n.offset - end) <= max(0.05, 0.2 * (end - start))
+                   for n, (start, end, _) in zip(notes, ground_truth))
 
-    overshoot = [n.offset - end for n, (_, end, _) in zip(kept, ground_truth)]
-    assert min(overshoot) > 0.11, "untrimmed, these run long -- and that is the default"
+    # Untrimmed, the room adds 130 ms to every note and none of the ends count.
+    # This is a live room -- 0.6 s RT60, reverberation only 6 dB below the
+    # voice -- so a trim set well down the decay cannot reach every end, but it
+    # must reach most of them.
+    assert ends_within_tolerance(untrimmed) == 0
+    assert ends_within_tolerance(trimmed) >= 10
+
+
+def test_default_trim_leaves_held_notes_whole():
+    """The trim must take a release, not the body of a note.
+
+    At 1 dB it did: a phrase sagging by a few decibels, or a vibrato rippling
+    the level, put frames below the bar long before the end, and the walk went
+    back through them. That is the setting that cost vocadito 0.161 COnPOff.
+    The default threshold must leave notes whose level wanders but does not
+    end exactly as the decoder found them.
+    """
+    from transcpybe.synth import case_dynamics, case_vibrato
+
+    assert TranscriptionConfig().trim_note_releases is True
+    for make_case in (case_vibrato, case_dynamics):
+        audio, _ = make_case()
+        untrimmed = transcribe_audio(audio, pyin_config(trim_note_releases=False)).notes
+        trimmed = transcribe_audio(audio, pyin_config()).notes
+        assert len(trimmed) == len(untrimmed)
+        for before, after in zip(untrimmed, trimmed):
+            assert before.offset - after.offset <= 0.03
 
 
 # ---------------------------------------------------------------------------

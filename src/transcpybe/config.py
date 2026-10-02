@@ -329,48 +329,60 @@ class TranscriptionConfig:
     onset separates them."""
 
     # ---------------- Note ends ----------------
-    trim_note_releases: bool = False
-    """End a note where its own level collapses, rather than where the decoder
-    stops hearing pitch. Off by default, and the reason is worth the space.
+    trim_note_releases: bool = True
+    """End a note where its own level has fallen well away from its sustain,
+    rather than where the decoder stops hearing pitch.
 
     Everything else in the pipeline refines note *starts*; the end is left
     wherever the Viterbi path happened to leave the pitch state, which the
     adaptive gate holds open until the frame is ``loudness_dynamic_range_db``
-    below the whole track. On synthetic signals whose notes keep sounding past
-    their annotated end, that reports every note long, and trimming fixes it
-    completely -- COnPOff 0.000 to 1.000 on those cases.
+    below the whole track. In a room, that is long after the singer stopped.
+    The reverberant tail of a sung vowel is still periodic, and CREPE reports
+    it with a periodicity near 0.9 down to 30 dB below the note, so a note runs
+    on through its release, through the room's decay after it, and -- at an
+    unvoiced consonant -- straight across the closure into the next note.
 
-    On vocadito it made things worse on all forty recordings: COnPOff 0.410 to
-    0.248, a paired difference of -0.161 with a 95% interval of [-0.191,
-    -0.134], while COn and COnP did not move. So the defect the trim addresses
-    is real and the trim's answer to it is wrong, at least for these
-    annotators. It ends a note where the level departs from sustain -- the top
-    of the decay -- and vocadito marks note ends later than that.
+    This was once on with ``release_drop_db`` at 1 dB, and on vocadito that
+    made things worse on all forty recordings: COnPOff 0.410 to 0.248, paired
+    difference -0.161 [-0.191, -0.134]. That finding stands, and it is about
+    the constant rather than the stage: 1 dB ends a note at the first frame
+    that is no longer at full sustain, which in real singing -- a phrase that
+    sags by a few decibels, vibrato rippling the level -- is often half way
+    through the note. The realistic synthetic corpus (``corpus.py``)
+    reproduces the regression, and says something about why. Annotated with
+    consonant gaps closed up to the next note's onset, its 40 held-out
+    recordings lose -0.173 [-0.212, -0.133] to the 1 dB trim, worse on 36 --
+    vocadito's figure almost exactly. Annotated with the gaps left open, they
+    lose -0.018, not significantly. So vocadito's note ends most likely run up
+    to the next note, and that is the convention a trim has to survive.
 
-    Turning it off is therefore not a retraction of the finding, only of the
-    constant. Where a note ends is a convention, and a convention has to be
-    fitted rather than guessed: enable this and fit ``release_drop_db`` with
-    ``transcpybe-tune --objective offset``, which is the machinery that had to
-    exist before the question could be asked at all."""
+    At 15 dB it measures differently, and the sign does not depend on the
+    annotation convention. On the realistic corpus's 40 held-out recordings
+    (``corpus.py``), with the other changes in place, COnPOff rises 0.069 /
+    0.051 / 0.033 when release ends are annotated a quarter, half or all the
+    way down the decay -- better on 28, 25 and 17 recordings, worse on 0, 0
+    and 2 -- and 0.009 (not significant; 13 better, 7 worse) when consonant
+    gaps are closed up to the next onset, the convention that cost 1 dB its
+    0.173. COn and COnP do not move. It is still unmeasured on vocadito, and
+    should be measured there before it is believed: ``--no-release-trim``
+    restores the old behaviour, and ``transcpybe-tune --objective offset``
+    fits ``release_drop_db`` to a corpus."""
 
-    release_drop_db: float = 1.0
-    """How far a frame must sit below the note's own sustained level to count
-    as release rather than note.
-
-    Small on purpose. This is not "how quiet is inaudible" -- it is "how far
-    from sustain is no longer sustaining", so what it locates is the top of the
-    decay, not a point part-way down it. That distinction decides whether the
-    trim works at all: a threshold set well down the ramp lands at a fixed
-    *fraction* of the release, so its error grows with the release and a long
-    one overshoots however the threshold is set. Measured across releases from
-    50 ms to 450 ms, every value from 3 dB up failed the longest of them and
-    1 dB passed all five.
+    release_drop_db: float = 15.0
+    """How far below the note's own sustained level a frame must sit to count
+    as past the note's end.
 
     Measured against the note, not the track, because a quiet note's release is
-    quiet too. The floor under it is vibrato: singers ripple their level by a
-    decibel or so, and at 0.5 dB the walk goes back through those dips and ends
-    notes early -- it cost two cases in the suite. Raise it if note ends come
-    out early, lower it if notes run on."""
+    quiet too. The floor is set by everything a held note does to its level
+    that is not ending: singers sag across a phrase and ripple with their
+    vibrato, and reverberation beating against a moving pitch swings the level
+    of a held note by 5 dB or more. At 1 dB the walk went back through those
+    and ended notes early -- the vocadito regression. On the corpus's
+    development set every value from 6 to 25 dB gains; the gain peaks around
+    10-12 dB when consonant gaps are annotated as gaps, and is steadiest around
+    15-18 dB when they are not, which is the convention this cannot know in
+    advance. 15 dB is the compromise. Raise it if note ends come out early,
+    lower it if notes run on."""
 
     release_min_fraction: float = 0.5
     """A release trim may never take more than this fraction of a note.

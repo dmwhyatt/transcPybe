@@ -123,11 +123,11 @@ def build_parser() -> argparse.ArgumentParser:
                         dest="onset_max_size",
                         help="Frequency max-filter width suppressing vibrato. "
                              "Raise it if sustained notes fragment")
-    tuning.add_argument("--release-drop", type=float, default=1.0,
+    tuning.add_argument("--release-drop", type=float, default=15.0,
                         dest="release_drop_db",
                         help="End a note where it falls this many dB below its own "
-                             "sustained level. Small by design: it locates the top "
-                             "of the decay, not a point part-way down it")
+                             "sustained level. Raise it if note ends come out "
+                             "early, lower it if notes run on into the room")
     tuning.add_argument("--no-onsets", action="store_true",
                         help="Disable spectral-flux onset refinement")
     tuning.add_argument("--no-glides", action="store_true",
@@ -137,12 +137,13 @@ def build_parser() -> argparse.ArgumentParser:
                              "one this recording is actually sung on. The estimate "
                              "already declines when a performance has no clear "
                              "pitch centre, so this is for when you know the grid")
+    tuning.add_argument("--no-release-trim", action="store_true",
+                        help="End notes where the decoder stops hearing pitch, "
+                             "which in a room is where the reverberation dies "
+                             "away, rather than where the note falls "
+                             "--release-drop below its own level")
     tuning.add_argument("--release-trim", action="store_true",
-                        help="End notes where their level leaves the sustain rather "
-                             "than where the decoder stops hearing pitch. Off by "
-                             "default: it ends notes earlier than vocadito's "
-                             "annotators do, and cost 0.161 COnPOff there. Fit "
-                             "--release-drop for your corpus before enabling it")
+                        help=argparse.SUPPRESS)  # now the default; kept so old command lines run
 
     batch = parser.add_argument_group("batch mode (directory input)")
     batch.add_argument("--no-recursive", action="store_true",
@@ -189,7 +190,7 @@ def config_from_args(args: argparse.Namespace) -> TranscriptionConfig:
         use_onsets=not args.no_onsets,
         estimate_tuning=not args.no_tuning_estimate,
         absorb_glides=not args.no_glides,
-        trim_note_releases=args.release_trim,
+        trim_note_releases=not args.no_release_trim,
         pitch_states_per_semitone=args.pitch_states_per_semitone,
         pitch_reference=args.pitch_reference,
         midi_program=args.midi_program,
