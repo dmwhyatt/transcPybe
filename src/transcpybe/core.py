@@ -147,7 +147,7 @@ def _decode_pass(
     segments, onsets = refine_segments(segments, audio, track.times, config,
                                        onsets=onsets)
     notes = segments_to_notes(segments, track, config, tuning_offset)
-    notes = postprocess_notes(notes, track, config, onsets)
+    notes = postprocess_notes(notes, track, config, onsets, tuning_offset)
     return notes, onsets, n_segments
 
 

@@ -397,6 +397,32 @@ class TranscriptionConfig:
     temperament: it is reading the recording in the tuning it was actually sung
     in. Turn it off to force the A440 grid."""
 
+    pitch_reference: str = "sung"
+    """What a note's integer pitch is the nearest semitone *to*.
+
+    'sung' rounds the measured pitch to the nearest semitone of A440: the
+    integer closest to what was actually sung. 'tuned' rounds it on the grid
+    the tuning estimate found, so a performance sung a consistent third of a
+    semitone flat reports the notes it meant rather than the ones it was
+    nearest to.
+
+    The two answer different questions, and the default follows the one the
+    benchmarks ask. vocadito's references, like most sung-melody annotations,
+    give each note the pitch that was sung, as a fractional MIDI number, and
+    score an integer within 50 cents of it as correct. Against such a reference
+    the nearest integer to the sung pitch is always within 50 cents of it, so
+    'sung' cannot lose a note to rounding, while 'tuned' loses every note whose
+    two roundings disagree -- each such note is reported at least 50 cents from
+    what was sung. The tuning estimate still moves the decoder's states either
+    way; this only decides the label.
+
+    On the realistic corpus's held-out recordings, 'tuned' costs COnP 0.023
+    [0.002, 0.051] against sung-pitch references, worse on 10 recordings and
+    better on 3, and gains 0.011 (not significant) against intended-pitch
+    ones. Use 'tuned' when the integer is meant as the intended scale degree --
+    the built-in suite's ``mistuned`` case is scored that way -- rather than as
+    a description of the performance."""
+
     tuning_min_concentration: float = 0.20
     """How concentrated the pitch deviations must be before the estimate is used.
 
@@ -519,6 +545,9 @@ class TranscriptionConfig:
             raise ValueError("pitch_states_per_semitone must be at least 1")
         if self.min_note_interval_semitones < 0:
             raise ValueError("min_note_interval_semitones must be non-negative")
+        if self.pitch_reference not in ("sung", "tuned"):
+            raise ValueError("pitch_reference must be 'sung' or 'tuned', "
+                             f"got {self.pitch_reference!r}")
 
     @property
     def hop_length(self) -> int:

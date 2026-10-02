@@ -89,6 +89,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="How finely the decoder divides a semitone. 1 is the "
                              "old one-state-per-semitone decoder, which fragments "
                              "notes sung near the midpoint of two semitones")
+    tuning.add_argument("--pitch-reference", choices=("sung", "tuned"), default="sung",
+                        dest="pitch_reference",
+                        help="Round each note to the semitone nearest what was "
+                             "sung (default; what sung-pitch annotations score), "
+                             "or to the nearest step of the recording's own "
+                             "estimated tuning grid (the note it meant)")
     tuning.add_argument("--note-level-floor", type=float, default=30.0,
                         dest="note_level_floor_db",
                         help="Drop notes this many dB below the performance level. "
@@ -185,6 +191,7 @@ def config_from_args(args: argparse.Namespace) -> TranscriptionConfig:
         absorb_glides=not args.no_glides,
         trim_note_releases=args.release_trim,
         pitch_states_per_semitone=args.pitch_states_per_semitone,
+        pitch_reference=args.pitch_reference,
         midi_program=args.midi_program,
         midi_tempo=args.midi_tempo,
     )

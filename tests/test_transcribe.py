@@ -757,18 +757,59 @@ def test_a_phrase_on_the_grid_is_left_alone():
 
 
 def test_tuning_correction_recovers_notes_lost_to_rounding():
-    """The point of the whole exercise: the notes the singer meant.
+    """The notes the singer meant, when that is what is asked for.
 
     A third of a semitone off the grid, with ordinary intonation scatter on
-    top, is enough to round a share of notes to the neighbouring semitone.
+    top, is enough to round a share of notes to the neighbouring semitone of
+    A440. Scored against the intended pitches, rounding on the recording's own
+    grid gets them back.
     """
     audio, truth = _detuned_phrase(35.0, scatter_cents=15.0, seed=11)
 
-    corrected = score(transcribe_audio(audio, pyin_config()).notes, truth)
-    forced = score(
-        transcribe_audio(audio, pyin_config(estimate_tuning=False)).notes, truth)
+    corrected = score(transcribe_audio(
+        audio, pyin_config(pitch_reference="tuned")).notes, truth)
+    forced = score(transcribe_audio(
+        audio, pyin_config(pitch_reference="tuned", estimate_tuning=False)).notes, truth)
 
     assert corrected.note_f1 > forced.note_f1
+
+
+def test_sung_pitch_reference_never_rounds_away_from_what_was_sung():
+    """Against a reference annotated in sung pitch, round to the sung pitch.
+
+    That is how vocadito and most sung-melody corpora annotate: each note
+    carries the fractional pitch that was sung, and an integer within 50 cents
+    of it scores. The nearest integer to the sung pitch is always within 50
+    cents of it, so 'sung' cannot lose a note to rounding; 'tuned' reports the
+    intended note, which for a performance 35 cents sharp is at least 50 cents
+    from what was sung whenever the two roundings disagree.
+    """
+    from transcpybe.synth import _sequence, synth_phrase
+
+    # A performance 30 cents sharp, with three notes pushed a further 35 cents:
+    # sung at x.65, which is x+1 to the ear and x on the performance's grid.
+    pitches = [62, 64, 66, 67, 69, 67, 66, 64, 62, 60, 62, 64]
+    detune = [30.0, 30.0, 65.0, 30.0, 30.0, 65.0, 30.0, 30.0, 30.0, 65.0, 30.0, 30.0]
+    intended = _sequence(pitches, 0.5, 0.15)
+    audio, _ = synth_phrase(intended, 16000, vibrato_cents=20.0,
+                            detune_cents=detune, seed=11)
+    sung_truth = [(a, b, p + d / 100.0) for (a, b, p), d in zip(intended, detune)]
+
+    def note_f(reference):
+        import mir_eval
+
+        notes = transcribe_audio(audio, pyin_config(pitch_reference=reference)).notes
+        est = [(n.onset, n.offset, float(n.pitch)) for n in notes]
+        hz = lambda p: 440.0 * 2.0 ** ((np.asarray(p) - 69.0) / 12.0)
+        _, _, f, _ = mir_eval.transcription.precision_recall_f1_overlap(
+            np.array([[a, b] for a, b, _ in sung_truth]), hz([p for *_, p in sung_truth]),
+            np.array([[a, b] for a, b, _ in est]), hz([p for *_, p in est]),
+            onset_tolerance=0.05, pitch_tolerance=50.0, offset_ratio=None)
+        return f
+
+    assert TranscriptionConfig().pitch_reference == "sung"
+    assert note_f("sung") == pytest.approx(1.0)
+    assert note_f("tuned") < note_f("sung")
 
 
 def test_scattered_intonation_is_not_a_tuning_offset():

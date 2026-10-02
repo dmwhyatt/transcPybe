@@ -130,12 +130,16 @@ def segments_to_notes(
     """Measure pitch, timing, confidence and velocity for each segment.
 
     ``tuning_offset`` is the recording's own pitch centre, in semitones away
-    from the A440 grid (see ``f0.estimate_tuning_offset``). Rounding happens
-    relative to it, so a performance sung consistently a third of a semitone
-    flat reports the notes it meant rather than the ones it was nearest to.
-    ``pitch_midi_float`` stays as measured, in absolute MIDI, so the deviation
-    a caller reads off it remains the real distance from A440.
+    from the A440 grid (see ``estimate_tuning_offset``). With
+    ``pitch_reference='tuned'`` rounding happens relative to it, so a
+    performance sung consistently a third of a semitone flat reports the notes
+    it meant rather than the ones it was nearest to; with the default 'sung'
+    each note is the nearest semitone to what was sung, which is what a
+    reference annotated in sung pitch scores against. ``pitch_midi_float``
+    stays as measured, in absolute MIDI, so the deviation a caller reads off it
+    remains the real distance from A440.
     """
+    grid = tuning_offset if config.pitch_reference == "tuned" else 0.0
     hop_s = config.hop_length / config.sample_rate
     n_frames = track.n_frames
 
@@ -156,7 +160,7 @@ def segments_to_notes(
             # No usable f0 anywhere in the segment; trust the decoder's state.
             measured = float(seg.pitch)
 
-        pitch = int(np.clip(round(measured - tuning_offset), 0, 127))
+        pitch = int(np.clip(round(measured - grid), 0, 127))
         voiced = track.voicing[indices]
         hz = track.f0_hz[indices]
         hz_valid = hz[np.isfinite(hz)]
@@ -274,6 +278,7 @@ def merge_same_pitch(
     track: F0Track,
     config: TranscriptionConfig,
     onsets: Optional[OnsetTrack] = None,
+    tuning_offset: float = 0.0,
 ) -> List[Note]:
     """Rejoin consecutive notes of equal pitch separated by only a brief gap.
 
@@ -309,7 +314,10 @@ def merge_same_pitch(
                 end_frame=note.end_frame,
                 pitch=previous.hmm_pitch,
             )
-            remeasured = segments_to_notes([combined], track, config)
+            # Measured on the same grid as every other note. Without the
+            # offset, a merged note was rounded on A440 while its neighbours
+            # were rounded on the recording's own grid.
+            remeasured = segments_to_notes([combined], track, config, tuning_offset)
             if remeasured:
                 merged[-1] = remeasured[0]
                 continue
@@ -430,6 +438,7 @@ def postprocess_notes(
     track: F0Track,
     config: TranscriptionConfig,
     onsets: Optional[OnsetTrack] = None,
+    tuning_offset: float = 0.0,
 ) -> List[Note]:
     """Merge fragments first, then trim releases, then drop what is too short.
 
@@ -441,7 +450,7 @@ def postprocess_notes(
     a note which is only long enough because of its release is judged on the
     length it is actually reported with.
     """
-    notes = merge_same_pitch(notes, track, config, onsets)
+    notes = merge_same_pitch(notes, track, config, onsets, tuning_offset)
     notes = trim_note_releases(notes, track, config)
     notes = drop_short_notes(notes, config)
     notes = drop_quiet_notes(notes, config)
