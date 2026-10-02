@@ -100,6 +100,37 @@ class TranscriptionConfig:
     """Additive log-domain bias on the unvoiced state. Positive values produce
     more silence, negative values produce more notes."""
 
+    pitch_states_per_semitone: int = 3
+    """How finely the decoder's pitch states divide a semitone.
+
+    With one state per semitone, a note sung near the midpoint between two
+    semitones -- 61.45, say, which is ordinary for a singer without a reference
+    pitch, or for one whose intonation scatters by a quarter tone -- is equally
+    well explained by either neighbour, and its vibrato flips the decoder
+    between them several times a second. A held note comes out as a stream of
+    alternating fragments, and its boundaries land wherever the flipping
+    happens to stop. A grid of a third of a semitone always has a state within
+    a sixth of a semitone of the note, so the note sits on one state and stays
+    there. This is the resolution Tony's note tracker uses.
+
+    The tuning estimate already re-centres the states for a whole recording,
+    which is why the corpus averages barely see this: taking it out of the
+    shipped pipeline costs 0.007 to 0.012 COnPOff, inside the noise. What the
+    estimate cannot do is per note -- intonation scatter, drift across a
+    phrase, a performance more than 40 cents off, which it refuses -- and the
+    two do overlap: with both removed, held-out COnPOff falls 0.020 [0.008,
+    0.033], worse on 14 of 40 recordings and better on 1. On the built-in
+    suite, which is sung on the A440 grid throughout, nothing changes. 1
+    restores the old decoder exactly."""
+
+    min_note_interval_semitones: float = 0.5
+    """Smallest pitch change the decoder may treat as a new note.
+
+    Only matters with more than one state per semitone, where it stops a note
+    whose intonation drifts by a fifth of a semitone from being split into two
+    notes a fifth of a semitone apart. Half a semitone is the point at which
+    the change could round to a different integer pitch at all."""
+
     # ---------------- Portamento / glides ----------------
     absorb_glides: bool = True
     """Recognise glides between notes: remove passing tones and pull legato
@@ -484,6 +515,10 @@ class TranscriptionConfig:
             raise ValueError("p_unvoiced_self must be in (0, 1)")
         if self.pitch_sigma_semitones <= 0:
             raise ValueError("pitch_sigma_semitones must be positive")
+        if self.pitch_states_per_semitone < 1:
+            raise ValueError("pitch_states_per_semitone must be at least 1")
+        if self.min_note_interval_semitones < 0:
+            raise ValueError("min_note_interval_semitones must be non-negative")
 
     @property
     def hop_length(self) -> int:

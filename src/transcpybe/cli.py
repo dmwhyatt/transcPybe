@@ -84,6 +84,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Emission width in semitones; larger absorbs more vibrato")
     tuning.add_argument("--p-self", type=float, default=0.985,
                         help="Note persistence; raise for fewer, longer notes")
+    tuning.add_argument("--pitch-states-per-semitone", type=int, default=3,
+                        dest="pitch_states_per_semitone",
+                        help="How finely the decoder divides a semitone. 1 is the "
+                             "old one-state-per-semitone decoder, which fragments "
+                             "notes sung near the midpoint of two semitones")
     tuning.add_argument("--note-level-floor", type=float, default=30.0,
                         dest="note_level_floor_db",
                         help="Drop notes this many dB below the performance level. "
@@ -179,6 +184,7 @@ def config_from_args(args: argparse.Namespace) -> TranscriptionConfig:
         estimate_tuning=not args.no_tuning_estimate,
         absorb_glides=not args.no_glides,
         trim_note_releases=args.release_trim,
+        pitch_states_per_semitone=args.pitch_states_per_semitone,
         midi_program=args.midi_program,
         midi_tempo=args.midi_tempo,
     )

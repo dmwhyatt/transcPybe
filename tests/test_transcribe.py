@@ -211,6 +211,58 @@ def _hand_track(midi, loudness_db=None):
     )
 
 
+def test_a_note_sung_between_two_semitones_is_one_note():
+    """Vibrato around x.5 flipped a one-state-per-semitone decoder.
+
+    A note at 61.48 is equally well explained by 61 and 62, and +/-80 cents of
+    vibrato hands it to each in turn several times a second. A singer with no
+    reference pitch puts notes there routinely. On a third-of-a-semitone grid
+    it has a state of its own.
+    """
+    rng = np.random.default_rng(2)
+    t = np.arange(150) / 100.0
+    midi = np.full(200, np.nan)
+    midi[25:175] = (61.48 + 0.8 * np.sin(2 * np.pi * 5.8 * t)
+                    + rng.normal(0.0, 0.05, 150))
+    track = _hand_track(midi)
+
+    coarse = segment_notes(track, TranscriptionConfig(pitch_states_per_semitone=1))
+    fine = segment_notes(track, TranscriptionConfig())
+
+    assert len(coarse) >= 5
+    assert len(fine) == 1
+    assert abs(fine[0].start_frame - 25) <= 2 and abs(fine[0].end_frame - 175) <= 2
+
+
+def test_fine_grid_still_splits_a_narrow_semitone_step():
+    """A finer grid must not make the decoder hold a compromise state.
+
+    Two notes a semitone apart, sung 0.85 apart. A fine grid has states
+    between them; if a change to any one sub-state cost more than a change to
+    a semitone did, holding one of those in-between states across both notes
+    would be cheaper than changing, and the step would vanish.
+    """
+    midi = np.full(160, np.nan)
+    midi[20:60] = 64.1
+    midi[60:140] = 64.95
+    segments = segment_notes(_hand_track(midi), TranscriptionConfig())
+    assert [s.pitch for s in segments] == [64, 65]
+    assert abs(segments[1].start_frame - 60) <= 2
+
+
+def test_fine_grid_does_not_split_a_drifting_note():
+    """A note that drifts by a fifth of a semitone is still one note."""
+    midi = np.full(160, np.nan)
+    midi[20:140] = np.linspace(62.0, 62.2, 120)
+    assert len(segment_notes(_hand_track(midi), TranscriptionConfig())) == 1
+
+
+def test_one_state_per_semitone_is_the_old_decoder():
+    config = TranscriptionConfig(pitch_states_per_semitone=1)
+    log_a = build_transition_matrix(10, config)
+    assert np.allclose(np.exp(log_a).sum(axis=1), 1.0)
+
+
 # --------------------------------------------------------------------------
 # Glides
 # --------------------------------------------------------------------------
