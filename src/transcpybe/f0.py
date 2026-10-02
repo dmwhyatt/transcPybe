@@ -149,6 +149,10 @@ def _seeded_numpy(seed: Optional[int]) -> Iterator[None]:
         np.random.set_state(state)
 
 
+_CREPE_LOWEST_HZ = 32.0
+"""Just above CREPE's lowest pitch bin, 31.7 Hz (1997.38 cents above 10 Hz)."""
+
+
 def _crepe_batch_count(n_samples: int, config: TranscriptionConfig) -> int:
     """How many batches torchcrepe will run, mirroring its own framing.
 
@@ -198,9 +202,16 @@ def _estimate_crepe(
 
     from .device import memory_summary, synchronize
 
-    # torchcrepe is trained at 16 kHz and clamps fmax; respect both.
+    # torchcrepe is trained at 16 kHz and clamps fmax; respect both. It does
+    # not clamp fmin: below its lowest pitch bin (31.7 Hz) the bin index it
+    # computes is negative, and probabilities[:, :minidx] then masks all but
+    # the top few bins -- every frame comes back unvoiced, and an --fmin of 30
+    # for a bass guitar transcribed nothing at all. Frames below the
+    # configured fmin are still marked unvoiced below. A constant rather than
+    # torchcrepe.convert.bins_to_frequency(0), which dithers its answer below
+    # the bin and draws that dither from the caller's numpy RNG.
     fmax = min(config.fmax_hz, float(torchcrepe.MAX_FMAX))
-    fmin = max(config.fmin_hz, 10.0)
+    fmin = max(config.fmin_hz, _CREPE_LOWEST_HZ)
 
     audio_t = torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32))[None, :]
     n_batches = _crepe_batch_count(audio_t.size(1), config)

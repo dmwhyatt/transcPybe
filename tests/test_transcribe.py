@@ -427,6 +427,20 @@ def test_crepe_backend_transcribes_the_scale():
     assert score(transcribe_audio(audio, config).notes, ground_truth).note_f1 > 0.9
 
 
+@pytest.mark.slow
+def test_crepe_accepts_an_fmin_below_its_lowest_bin():
+    """An fmin under CREPE's 31.8 Hz floor used to silence every frame.
+
+    torchcrepe turns fmin into a bin index without clamping it, and a negative
+    index masks nearly the whole pitch range -- so lowering --fmin to reach a
+    bass guitar's low E transcribed nothing at all, from any instrument.
+    """
+    pytest.importorskip("torchcrepe")
+    audio, ground_truth = case_scale()
+    config = TranscriptionConfig(f0_backend="crepe", crepe_model="tiny", fmin_hz=30.0)
+    assert score(transcribe_audio(audio, config).notes, ground_truth).note_f1 > 0.9
+
+
 # --------------------------------------------------------------------------
 # Output
 # --------------------------------------------------------------------------
