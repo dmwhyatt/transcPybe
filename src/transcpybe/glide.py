@@ -208,6 +208,12 @@ def backtrack_glide_onsets(
             last_pitch = pitch
             boundary -= 1
 
+        if boundary != current.start_frame and config.glide_onset_position > 0:
+            # The walk found where the glide left the previous note; place the
+            # onset that fraction of the way back towards where it arrived.
+            boundary += int(round(config.glide_onset_position
+                                  * (current.start_frame - boundary)))
+
         if boundary != current.start_frame:
             # Moving a start earlier may only ever shorten the note before it.
             # Writing the boundary in unconditionally would stretch the previous

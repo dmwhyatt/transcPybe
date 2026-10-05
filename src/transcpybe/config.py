@@ -185,6 +185,17 @@ class TranscriptionConfig:
     glide_plateau_semitones: float = 0.25
     """Pitch span below which ``glide_plateau_frames`` frames count as held."""
 
+    glide_onset_position: float = 0.0
+    """Where in a detected glide the next note's onset is placed.
+
+    0 puts it where the walk stopped: where the pitch left the previous note.
+    1 leaves it where the decoder put it, where the pitch arrived. Between the
+    two is a fraction of the way from departure to arrival. Where a glided note
+    starts is an annotation convention, not a fact about the audio --
+    annotators differ, and the corpus scores all three readings -- so this
+    sets which reading the transcription follows. 0 is the behaviour from
+    before this option existed."""
+
     glide_max_level_drop_db: float = 20.0
     """A glide may not be more than this far below the level of the note it
     leads into. Keeps onset backtracking out of quiet residue between phrases."""
@@ -557,6 +568,8 @@ class TranscriptionConfig:
             raise ValueError("pitch_states_per_semitone must be at least 1")
         if self.min_note_interval_semitones < 0:
             raise ValueError("min_note_interval_semitones must be non-negative")
+        if not 0.0 <= self.glide_onset_position <= 1.0:
+            raise ValueError("glide_onset_position must be in [0, 1]")
         if self.pitch_reference not in ("sung", "tuned"):
             raise ValueError("pitch_reference must be 'sung' or 'tuned', "
                              f"got {self.pitch_reference!r}")
