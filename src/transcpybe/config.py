@@ -364,6 +364,14 @@ class TranscriptionConfig:
     from 2.2% of all notes to 0.3% at 5 dB, and same-pitch splits of a held
     note by a third; 2 to 5 dB is a plateau."""
 
+    onset_split_min_periodicity_dip: float = 0.0
+    """Alternative evidence for a split: a dip in periodicity of this much.
+
+    Only consulted while ``onset_split_min_dip_db`` is on. A consonant sung
+    through without a break -- noise over continuing voicing -- barely moves
+    the level but drops periodicity, so with this above zero an onset may
+    split a note on either dip. 0 consults level alone."""
+
     onset_snap_window_s: float = 0.05
     """Note starts are pulled to a detected onset within this window."""
 
@@ -647,6 +655,8 @@ class TranscriptionConfig:
             raise ValueError("glide_onset_position must be in [0, 1]")
         if self.onset_split_min_dip_db < 0:
             raise ValueError("onset_split_min_dip_db must be non-negative")
+        if not 0.0 <= self.onset_split_min_periodicity_dip <= 1.0:
+            raise ValueError("onset_split_min_periodicity_dip must be in [0, 1]")
         if self.onset_snap_direction not in ("both", "earlier", "later"):
             raise ValueError("onset_snap_direction must be 'both', 'earlier' or 'later', "
                              f"got {self.onset_snap_direction!r}")

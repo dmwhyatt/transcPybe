@@ -96,22 +96,22 @@ def detect_onsets(audio: np.ndarray, config: TranscriptionConfig) -> OnsetTrack:
     return OnsetTrack(times, strengths, envelope, envelope_times)
 
 
-def _dip_depth_db(loudness_db: np.ndarray, frame: int) -> float:
-    """How far the level falls around ``frame`` below the sustain either side.
+def _dip_depth(values: np.ndarray, frame: int) -> float:
+    """How far ``values`` fall around ``frame`` below their level either side.
 
     The valley is the quietest frame from 40 ms before to 20 ms after; each
     shoulder is the loudest frame 40-100 ms before, and 20-80 ms after. The
     depth is measured against the lower shoulder, so a note that simply gets
     louder or quieter across the onset does not count as a dip.
     """
-    n = loudness_db.shape[0]
+    n = values.shape[0]
 
     def peak(a, b):
-        window = loudness_db[max(a, 0):min(b, n)]
+        window = values[max(a, 0):min(b, n)]
         window = window[np.isfinite(window)]
         return float(window.max()) if window.size else np.nan
 
-    valley = loudness_db[max(frame - 4, 0):min(frame + 2, n)]
+    valley = values[max(frame - 4, 0):min(frame + 2, n)]
     valley = valley[np.isfinite(valley)]
     if not valley.size:
         return np.inf                    # silence at the cut: as deep as it gets
@@ -125,6 +125,7 @@ def split_segments_on_onsets(
     frame_times: np.ndarray,
     config: TranscriptionConfig,
     loudness_db: np.ndarray | None = None,
+    periodicity: np.ndarray | None = None,
 ) -> List[Segment]:
     """Split segments wherever a strong onset falls well inside them.
 
@@ -138,9 +139,11 @@ def split_segments_on_onsets(
     The gap guard remains, because an over-eager split shreds a sustained note.
 
     With ``onset_split_min_dip_db`` above zero and ``loudness_db`` given, an
-    onset must also sit in a dip in level of at least that depth: singing a
-    note again takes a consonant or a glottal onset, and either interrupts the
-    sound, while a vowel change or vibrato moves the spectrum without one.
+    onset must also show that phonation was interrupted: a dip in level of at
+    least that depth, or -- with ``onset_split_min_periodicity_dip`` above
+    zero -- a dip in periodicity of at least that much. Singing a note again
+    takes a consonant or a glottal onset, which either quietens the sound or
+    roughens it with noise; a vowel change or vibrato does neither.
     """
     if len(onsets) == 0 or not segments:
         return segments
@@ -180,9 +183,13 @@ def split_segments_on_onsets(
             & (seg.end_frame - cut_frames >= min_gap_frames)
         ]
         if config.onset_split_min_dip_db > 0 and loudness_db is not None:
-            cut_frames = np.array([c for c in cut_frames
-                                   if _dip_depth_db(loudness_db, int(c))
-                                   >= config.onset_split_min_dip_db], dtype=int)
+            use_periodicity = (config.onset_split_min_periodicity_dip > 0
+                               and periodicity is not None)
+            cut_frames = np.array([
+                c for c in cut_frames
+                if _dip_depth(loudness_db, int(c)) >= config.onset_split_min_dip_db
+                or (use_periodicity and _dip_depth(periodicity, int(c))
+                    >= config.onset_split_min_periodicity_dip)], dtype=int)
         if cut_frames.size == 0:
             out.append(seg)
             continue
@@ -298,6 +305,7 @@ def refine_segments(
     config: TranscriptionConfig,
     onsets: OnsetTrack | None = None,
     loudness_db: np.ndarray | None = None,
+    periodicity: np.ndarray | None = None,
 ) -> tuple[List[Segment], OnsetTrack | None]:
     """Apply onset-based splitting then start-snapping.
 
@@ -313,6 +321,7 @@ def refine_segments(
         if audio is None:
             raise ValueError("refine_segments needs either audio or precomputed onsets")
         onsets = detect_onsets(audio, config)
-    segments = split_segments_on_onsets(segments, onsets, frame_times, config, loudness_db)
+    segments = split_segments_on_onsets(segments, onsets, frame_times, config,
+                                        loudness_db, periodicity)
     segments = snap_segment_starts(segments, onsets, frame_times, config)
     return segments, onsets

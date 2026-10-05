@@ -145,7 +145,8 @@ def _decode_pass(
     segments = absorb_short_fragments(segments, config)
     segments = handle_glides(segments, track, config)
     segments, onsets = refine_segments(segments, audio, track.times, config,
-                                       onsets=onsets, loudness_db=track.loudness_db)
+                                       onsets=onsets, loudness_db=track.loudness_db,
+                                       periodicity=track.periodicity)
     notes = segments_to_notes(segments, track, config, tuning_offset)
     notes = postprocess_notes(notes, track, config, onsets, tuning_offset)
     return notes, onsets, n_segments
