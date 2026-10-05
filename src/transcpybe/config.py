@@ -370,6 +370,12 @@ class TranscriptionConfig:
     see ``attach_late_arrivals``. 0 turns this off, which is the behaviour
     from before this option existed."""
 
+    syllable_dip_db: float = 0.0
+    """A dip in level this deep also counts as a syllable's onset for
+    ``syllable_lead_s`` (and only for that). Spectral flux misses most
+    syllables that start on a vowel or a voiced consonant; a dip finds many of
+    them. 0 consults onsets alone."""
+
     onset_snap_window_s: float = 0.05
     """Note starts are pulled to a detected onset within this window."""
 
@@ -651,6 +657,8 @@ class TranscriptionConfig:
             raise ValueError("min_note_interval_semitones must be non-negative")
         if not 0.0 <= self.glide_onset_position <= 1.0:
             raise ValueError("glide_onset_position must be in [0, 1]")
+        if self.syllable_dip_db < 0:
+            raise ValueError("syllable_dip_db must be non-negative")
         if self.syllable_lead_s < 0:
             raise ValueError("syllable_lead_s must be non-negative")
         if self.onset_split_min_dip_db < 0:

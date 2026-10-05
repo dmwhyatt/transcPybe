@@ -303,6 +303,7 @@ def attach_late_arrivals(
     onsets: OnsetTrack,
     frame_times: np.ndarray,
     config: TranscriptionConfig,
+    loudness_db: np.ndarray | None = None,
 ) -> List[Segment]:
     """Start a note at the articulation that began its syllable, not where its pitch arrived.
 
@@ -322,6 +323,11 @@ def attach_late_arrivals(
     back to it. Either way the arriving note's pitch is measured from where the
     pitch arrived. A pitch change with no onset before it in that window -- a
     melisma, sung on one vowel -- is left alone.
+
+    Spectral flux misses most syllables that start on a vowel or a voiced
+    consonant. With ``syllable_dip_db`` above zero and ``loudness_db`` given, a
+    dip in level at least that deep also counts as a syllable's onset here --
+    only here, where it can only move a note start, never split a note.
     """
     if config.syllable_lead_s <= 0 or len(onsets) == 0 or len(segments) < 2:
         return segments
@@ -330,6 +336,14 @@ def attach_late_arrivals(
         return segments
     threshold = config.onset_split_strength_ratio * float(np.median(strengths))
     strong = np.searchsorted(frame_times, onsets.times[onsets.strengths >= threshold])
+    if config.syllable_dip_db > 0 and loudness_db is not None:
+        # A dip ends where the level recovers: take its quietest frame and the
+        # frame after, so the onset lands on the syllable's start, not its trough.
+        level = np.where(np.isfinite(loudness_db), loudness_db, -np.inf)
+        troughs = [f for f in range(1, len(level) - 1)
+                   if level[f] <= level[f - 1] and level[f] < level[f + 1]
+                   and _dip_depth(loudness_db, f) >= config.syllable_dip_db]
+        strong = np.unique(np.concatenate([strong, np.array(troughs, dtype=int) + 1]))
     if strong.size == 0:
         return segments
 

@@ -148,7 +148,8 @@ def _decode_pass(
                                        onsets=onsets, loudness_db=track.loudness_db,
                                        periodicity=track.periodicity)
     if onsets is not None:
-        segments = attach_late_arrivals(segments, onsets, track.times, config)
+        segments = attach_late_arrivals(segments, onsets, track.times, config,
+                                        track.loudness_db)
     notes = segments_to_notes(segments, track, config, tuning_offset)
     notes = postprocess_notes(notes, track, config, onsets, tuning_offset)
     return notes, onsets, n_segments
