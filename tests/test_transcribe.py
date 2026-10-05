@@ -753,6 +753,32 @@ def test_merging_a_note_keeps_measuring_it_from_its_attack():
     assert merged[0].measure_from_frame == 105
     # Bookkeeping for the pipeline: the written JSON does not change.
     assert "measure_from_frame" not in merged[0].to_dict()
+def _late_arrival(onset_times, segments):
+    from transcpybe.onsets import OnsetTrack, attach_late_arrivals
+
+    frame_times = np.arange(200) / 100.0
+    onsets = OnsetTrack(np.array(onset_times), np.full(len(onset_times), 5.0),
+                        np.zeros(200), frame_times)
+    return attach_late_arrivals(segments, onsets, frame_times,
+                                TranscriptionConfig(syllable_lead_s=0.15))
+
+
+def test_a_syllable_that_arrives_late_is_one_note_from_its_onset():
+    """The old pitch carried into a new syllable is folded into the note it reaches."""
+    out = _late_arrival([0.10, 0.50], [Segment(10, 50, 60), Segment(50, 62, 60),
+                                       Segment(62, 120, 62)])
+    assert [(s.start_frame, s.end_frame, s.pitch) for s in out] == [(10, 50, 60), (50, 120, 62)]
+    assert out[1].measure_from == 62, "the pitch is measured from where it arrived"
+
+
+def test_a_late_arrival_inside_the_last_note_moves_the_boundary_back():
+    out = _late_arrival([0.10, 0.70], [Segment(10, 80, 60), Segment(80, 140, 62)])
+    assert [(s.start_frame, s.end_frame) for s in out] == [(10, 70), (70, 140)]
+
+
+def test_a_melisma_with_no_onset_before_it_is_left_alone():
+    segments = [Segment(10, 80, 60), Segment(80, 140, 62)]
+    assert _late_arrival([0.10], segments) == segments
 
 
 # --------------------------------------------------------------------------
