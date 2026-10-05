@@ -304,7 +304,7 @@ class TranscriptionConfig:
     Raise it if noisy input is over-segmented; lower it if quiet
     re-articulations are missed."""
 
-    onset_split_strength_ratio: float = 0.35
+    onset_split_strength_ratio: float = 0.70
     """How strong a detected onset must be, relative to the median detected
     onset in the same recording, to split an existing note.
 
@@ -334,14 +334,7 @@ class TranscriptionConfig:
     cannot say whether the sensitivity reaches notes on real audio -- only that
     this ratio is not what would be stopping it.
 
-    Lower splits more. Raise it if the output is over-segmented.
-
-    With ``onset_split_min_dip_db`` requiring a dip under every split, the
-    noise peaks this bar was raised to reject no longer split anything, and it
-    is back at 0.35. On the corpus's development recordings, that finds more
-    of the notes only a split can find -- re-sung notes on one pitch, 0.203 of
-    them at 0.70 without the dip, 0.234 at 0.35 with it -- while the
-    unclaimed-note rate still falls."""
+    Lower splits more. Raise it if the output is over-segmented."""
 
     onset_split_min_gap_s: float = 0.06
     """Minimum distance from a segment edge for an onset to split that segment.
