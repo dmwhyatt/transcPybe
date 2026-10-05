@@ -98,6 +98,10 @@ class CorpusNote:
     glide_end: float | None = None     # where it arrives at this note's pitch
     scoop_end: float | None = None     # where an onset scoop has (mostly) recovered
     diphthong_at: float | None = None  # a vowel change inside the held note
+    # Pitch movement inside a syllable's note (``syllabic`` recordings only):
+    arrival: float | None = None            # a late arrival at the target pitch
+    overshoot_end: float | None = None      # where an overshoot after a leap settles
+    anticipation_from: float | None = None  # where the pitch starts leaving for the next note
 
     def offset(self, release_point: float) -> float:
         """The end, with a release annotated ``release_point`` of the way down."""
@@ -173,10 +177,24 @@ def _rir(rt60, drr_db, rng):
     return tail
 
 
-def make_recording(seed: int, *, with_reverb: bool = True) -> CorpusRecording:
+def make_recording(seed: int, *, with_reverb: bool = True,
+                   syllabic: bool = False) -> CorpusRecording:
     """Render the corpus recording for ``seed``. The same seed always gives the
-    same samples and the same reference."""
+    same samples and the same reference.
+
+    ``syllabic`` adds the pitch movement singers make inside a syllable's note,
+    which annotators fold into that one note: a new syllable that starts on
+    the old pitch, or below it after a rest, and arrives late; an overshoot
+    after a leap that settles back; a legato note that starts moving towards
+    the next before the next syllable begins. The reference is unchanged -- one
+    note per syllable, at its onset, at the pitch aimed for -- which is the
+    point: a transcriber that segments by pitch alone will split these notes.
+    The ranges are assumptions about ordinary singing, not measurements of any
+    corpus. All of it is drawn from a second random stream, so with
+    ``syllabic`` off every recording is exactly what it was before.
+    """
     rng = np.random.default_rng(seed)
+    rng2 = np.random.default_rng([seed, 2])     # syllabic movement only
 
     # ---------------- singer ----------------
     voice = rng.choice(["bass", "tenor", "alto", "soprano"])
@@ -194,6 +212,10 @@ def make_recording(seed: int, *, with_reverb: bool = True) -> CorpusRecording:
     p_glide = rng.uniform(0.0, 0.6)
     p_scoop = rng.uniform(0.0, 0.5)
     p_fall = rng.uniform(0.0, 0.4)
+    if syllabic:
+        p_late = rng2.uniform(0.0, 0.5)         # how often a syllable arrives late
+        p_overshoot = rng2.uniform(0.0, 0.3)    # how often a leap overshoots
+        p_anticipate = rng2.uniform(0.0, 0.4)   # how often a note leaves early
     breath_db = rng.uniform(-35, -15)
     tilt = rng.uniform(9, 15)             # dB/octave
     shimmer_db = rng.uniform(0.5, 3.0)
@@ -348,6 +370,45 @@ def make_recording(seed: int, *, with_reverb: bool = True) -> CorpusRecording:
             sl = rng.uniform(0.05, 0.12)
             p -= sc * np.exp(-seg_t / (sl / 3))
             refs[i].scoop_end = nt["onset"] + sl
+        if syllabic:
+            same_phrase = prev is not None and prev["phrase"] == nt["phrase"]
+            start_from = prev.get("end_pitch", prev["target"]) if same_phrase else None
+            arrive_n = 0
+            if refs[i].glide_start is not None:
+                arrive_n = int(round((refs[i].glide_end - nt["onset"]) * SR))
+                if "end_pitch" in prev:          # carry on from where the last note got to
+                    r = np.linspace(0, 1, arrive_n)
+                    p[:arrive_n] = start_from + (target - start_from) * (r * r * (3 - 2 * r))
+            # Late arrival: the syllable starts, the pitch follows 60-200 ms later
+            # -- from the old note's pitch in legato, from below after a rest.
+            moves = not same_phrase or prev["midi"] != nt["midi"]
+            if moves and rng2.random() < p_late:
+                dn = min(int(rng2.uniform(0.06, 0.20) * SR), (b - a) // 2)
+                mn = min(int(rng2.uniform(0.03, 0.08) * SR), b - a - dn)
+                start = start_from if same_phrase else target - rng2.uniform(0.5, 1.5)
+                r = np.linspace(0, 1, mn)
+                p[:dn] = start
+                p[dn:dn + mn] = start + (target - start) * (r * r * (3 - 2 * r))
+                p[dn + mn:] = target
+                arrive_n = dn + mn
+                refs[i].arrival = nt["onset"] + arrive_n / SR
+            # Overshoot after a leap, settling back within 50-120 ms.
+            if same_phrase and abs(nt["midi"] - prev["midi"]) >= 2 and rng2.random() < p_overshoot:
+                on = min(int(rng2.uniform(0.05, 0.12) * SR), b - a - arrive_n)
+                if on > 0:
+                    size = rng2.uniform(0.3, 1.0) * np.sign(target - prev["target"])
+                    p[arrive_n:arrive_n + on] += size * np.sin(np.linspace(0, np.pi, on))
+                    refs[i].overshoot_end = nt["onset"] + (arrive_n + on) / SR
+            # Anticipation: in legato, start moving towards the next note 60-180 ms
+            # before its syllable begins, half to all of the way.
+            if (nt["end_kind"] == "legato" and nxt is not None and nxt["phrase"] == nt["phrase"]
+                    and nxt["midi"] != nt["midi"] and rng2.random() < p_anticipate):
+                an = min(int(rng2.uniform(0.06, 0.18) * SR), (b - a) // 2)
+                share = rng2.uniform(0.5, 1.0)
+                r = np.linspace(0, 1, an)
+                p[b - a - an:] += (nxt["target"] - target) * share * (r * r * (3 - 2 * r))
+                nt["end_pitch"] = target + (nxt["target"] - target) * share
+                refs[i].anticipation_from = e_ph - an / SR
         # vibrato with delayed fade-in
         fade = np.clip((seg_t - vib_delay * 0.5) / vib_delay, 0, 1)
         p += (vib_depth / 100.0) * fade * np.sin(2 * np.pi * vib_rate * seg_t + rng.uniform(0, 6.28))

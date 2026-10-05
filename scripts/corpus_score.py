@@ -10,6 +10,8 @@
     python scripts/corpus_score.py --compare main.json branch.json
     # while choosing, keep the held-out recordings out of sight entirely
     python scripts/corpus_score.py --split development --out candidate.json
+    # the corpus with pitch movement inside each syllable's note
+    python scripts/corpus_score.py --syllabic --split development --out candidate.json
 
 Every recording is scored at the 50 ms / 50 cent / 20% tolerances mir_eval and
 the benchmark package use, under each annotation convention the corpus offers,
@@ -115,7 +117,7 @@ def chosen_splits(split: str):
     return SPLITS if split == "both" else (split,)
 
 
-def score(out: Path, overrides, cache: Path, split: str = "both") -> None:
+def score(out: Path, overrides, cache: Path, split: str = "both", syllabic: bool = False) -> None:
     import transcpybe
     from transcpybe import TranscriptionConfig, transcribe_audio
 
@@ -125,13 +127,14 @@ def score(out: Path, overrides, cache: Path, split: str = "both") -> None:
 
     cache_f0(cache)
     config = dataclasses.replace(TranscriptionConfig(), **overrides)
-    result = {"transcpybe": transcpybe.__file__, "overrides": {k: repr(v) for k, v in overrides.items()}}
+    result = {"transcpybe": transcpybe.__file__, "overrides": {k: repr(v) for k, v in overrides.items()},
+              "syllabic": syllabic}
     seeds_for = {"development": DEVELOPMENT_SEEDS, "held-out": HELD_OUT_SEEDS}
     for which in chosen_splits(split):
         seeds = seeds_for[which]
         rows = {name: [] for name in CONVENTIONS}
         for seed in seeds:
-            recording = make_recording(seed)
+            recording = make_recording(seed, syllabic=syllabic)
             notes = transcribe_audio(recording.audio, config).notes
             estimated = [(n.onset, n.offset, float(n.pitch)) for n in notes]
             for name, convention in CONVENTIONS.items():
@@ -143,6 +146,8 @@ def score(out: Path, overrides, cache: Path, split: str = "both") -> None:
 
 def compare(before: Path, after: Path, n_boot: int = 2000, split: str = "both") -> None:
     a, b = json.loads(before.read_text()), json.loads(after.read_text())
+    if a.get("syllabic", False) != b.get("syllabic", False):
+        raise SystemExit("cannot compare a syllabic run with a plain one: the recordings differ")
     rng = np.random.default_rng(0)
     for split in chosen_splits(split):
         if split not in a or split not in b:
@@ -175,6 +180,9 @@ def main(argv=None) -> int:
                         help="Which recordings to score or compare. Use 'development' "
                              "while choosing, so the held-out set is never seen until "
                              "it is scored once")
+    parser.add_argument("--syllabic", action="store_true",
+                        help="Score the corpus with in-syllable pitch movement: late "
+                             "arrivals, overshoots and anticipations (see make_recording)")
     args = parser.parse_args(argv)
 
     if args.compare:
@@ -186,7 +194,7 @@ def main(argv=None) -> int:
     for item in args.set:
         key, value = item.split("=", 1)
         overrides[key] = ast.literal_eval(value)
-    score(args.out, overrides, args.cache, args.split)
+    score(args.out, overrides, args.cache, args.split, args.syllabic)
     return 0
 
 
