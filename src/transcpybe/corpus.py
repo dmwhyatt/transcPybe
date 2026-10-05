@@ -380,8 +380,10 @@ def make_recording(seed: int, *, with_reverb: bool = True,
                     r = np.linspace(0, 1, arrive_n)
                     p[:arrive_n] = start_from + (target - start_from) * (r * r * (3 - 2 * r))
             # Late arrival: the syllable starts, the pitch follows 60-200 ms later
-            # -- from the old note's pitch in legato, from below after a rest.
-            moves = not same_phrase or prev["midi"] != nt["midi"]
+            # -- from the old note's pitch in legato, from below after a rest. Not
+            # in a melisma: with no new syllable there is nothing for the note to
+            # start at but the pitch change itself.
+            moves = (not same_phrase or prev["midi"] != nt["midi"]) and nt["kind"] != "melisma"
             if moves and rng2.random() < p_late:
                 dn = min(int(rng2.uniform(0.06, 0.20) * SR), (b - a) // 2)
                 mn = min(int(rng2.uniform(0.03, 0.08) * SR), b - a - dn)
@@ -402,7 +404,8 @@ def make_recording(seed: int, *, with_reverb: bool = True,
             # Anticipation: in legato, start moving towards the next note 60-180 ms
             # before its syllable begins, half to all of the way.
             if (nt["end_kind"] == "legato" and nxt is not None and nxt["phrase"] == nt["phrase"]
-                    and nxt["midi"] != nt["midi"] and rng2.random() < p_anticipate):
+                    and nxt["midi"] != nt["midi"] and nxt["kind"] != "melisma"
+                    and rng2.random() < p_anticipate):
                 an = min(int(rng2.uniform(0.06, 0.18) * SR), (b - a) // 2)
                 share = rng2.uniform(0.5, 1.0)
                 r = np.linspace(0, 1, an)
