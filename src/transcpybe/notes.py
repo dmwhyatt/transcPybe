@@ -82,11 +82,15 @@ def _measure_frames(seg: Segment, track: F0Track, config: TranscriptionConfig) -
     f0. Falls back progressively so that a measurement is always possible.
     """
     hop_s = config.hop_length / config.sample_rate
+    start = seg.start_frame
+    if seg.measure_from is not None and seg.start_frame < seg.measure_from < seg.end_frame:
+        start = seg.measure_from
+    n_frames = seg.end_frame - start
     max_trim = int(round(config.attack_trim_max_s / hop_s))
-    trim = min(int(seg.n_frames * config.attack_trim_frac), max_trim)
-    trim = min(trim, max(seg.n_frames - 1, 0))
+    trim = min(int(n_frames * config.attack_trim_frac), max_trim)
+    trim = min(trim, max(n_frames - 1, 0))
 
-    indices = np.arange(seg.start_frame + trim, seg.end_frame)
+    indices = np.arange(start + trim, seg.end_frame)
     if indices.size == 0:
         indices = np.arange(seg.start_frame, seg.end_frame)
 

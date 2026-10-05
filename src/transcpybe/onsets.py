@@ -206,8 +206,13 @@ def snap_segment_starts(
         if distances[nearest] > window_frames or candidate >= seg.end_frame:
             out.append(seg)
             continue
-        if ((config.onset_snap_direction == "earlier" and candidate > seg.start_frame)
-                or (config.onset_snap_direction == "later" and candidate < seg.start_frame)):
+        if config.onset_snap_direction == "earlier" and candidate > seg.start_frame:
+            # The start stays, but the attack is still where the pitch settles:
+            # measure from there, as a start snapped to it would have been.
+            out.append(Segment(seg.start_frame, seg.end_frame, seg.pitch,
+                               measure_from=candidate))
+            continue
+        if config.onset_snap_direction == "later" and candidate < seg.start_frame:
             out.append(seg)
             continue
 

@@ -323,8 +323,10 @@ class TranscriptionConfig:
     """Which way a note start may be snapped: 'both', 'earlier' or 'later'.
 
     'earlier' only ever pulls a start back onto an attack the decoder lagged,
-    which is what snapping exists for; 'later' only ever pushes a start
-    forward. 'both' was the behaviour before this option existed.
+    which is what snapping exists for; an attack later than the start does
+    not move it, but the note's pitch is still measured from that attack, as
+    it was when snapping moved the start there. 'later' only ever pushes a
+    start forward. 'both' was the behaviour before this option existed.
 
     Pushing starts later is where snapping went wrong. On the realistic
     corpus's development recordings, snapping both ways put onsets after a rest

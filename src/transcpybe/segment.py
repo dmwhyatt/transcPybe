@@ -24,7 +24,7 @@ a second. On a finer grid such a note has a state of its own to sit on.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -42,6 +42,9 @@ class Segment:
     start_frame: int
     end_frame: int      # exclusive
     pitch: int          # integer MIDI note number
+    # Where to start measuring the pitch, if not at the start: an attack
+    # later than the note's start, which snapping found but did not move to.
+    measure_from: Optional[int] = None
 
     @property
     def n_frames(self) -> int:

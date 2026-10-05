@@ -298,8 +298,30 @@ def test_glide_backtrack_still_finds_the_start_of_a_glide():
     track = _hand_track(midi)
     segments = [Segment(10, 90, 60), Segment(90, 150, 62)]
 
-    out = backtrack_glide_onsets(segments, track, TranscriptionConfig())
+    # The walk itself: where in the glide the onset then goes is tested below.
+    config = TranscriptionConfig(glide_onset_position=0.0)
+    out = backtrack_glide_onsets(segments, track, config)
     assert out[1].start_frame <= 84
+
+
+def test_glide_onset_position_places_the_onset_within_the_glide():
+    """0 is where the glide left the previous note; 1 is where it arrived."""
+    from transcpybe.glide import backtrack_glide_onsets
+
+    midi = np.full(160, np.nan)
+    midi[10:80] = 60.0
+    midi[80:95] = np.linspace(60.0, 62.0, 15)
+    midi[95:150] = 62.0
+    track = _hand_track(midi)
+
+    def start(position):
+        segments = [Segment(10, 90, 60), Segment(90, 150, 62)]
+        config = TranscriptionConfig(glide_onset_position=position)
+        return backtrack_glide_onsets(segments, track, config)[1].start_frame
+
+    departure, middle, arrival = start(0.0), start(0.5), start(1.0)
+    assert arrival == 90
+    assert departure < middle < arrival
 
 
 def test_a_short_note_between_rests_is_not_a_passing_tone():
@@ -324,6 +346,23 @@ def test_snapping_can_move_a_legato_boundary_onto_the_attack():
 
     out = snap_segment_starts(segments, onsets, frame_times, config)
     assert out[1].start_frame == 96 and out[0].end_frame == 96
+
+
+def test_snapping_earlier_only_measures_from_a_later_attack_without_moving_the_start():
+    """A later attack sets where the pitch is measured, not where the note starts."""
+    from transcpybe.onsets import OnsetTrack, snap_segment_starts
+
+    frame_times = np.arange(200) / 100.0
+    onsets = OnsetTrack(np.array([0.54]), np.array([5.0]), np.zeros(200), frame_times)
+    segments = [Segment(50, 150, 60)]
+
+    earlier = snap_segment_starts(segments, onsets, frame_times,
+                                  TranscriptionConfig(onset_snap_direction="earlier"))
+    assert earlier[0].start_frame == 50 and earlier[0].measure_from == 54
+
+    both = snap_segment_starts(segments, onsets, frame_times,
+                               TranscriptionConfig(onset_snap_direction="both"))
+    assert both[0].start_frame == 54
 
 
 # --------------------------------------------------------------------------
