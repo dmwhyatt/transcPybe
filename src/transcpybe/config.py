@@ -361,21 +361,14 @@ class TranscriptionConfig:
     the level but drops periodicity, so with this above zero an onset may
     split a note on either dip. 0 consults level alone."""
 
-    syllable_lead_s: float = 0.15
+    syllable_lead_s: float = 0.0
     """Longest a syllable's onset may lead its pitch change and still start its note.
 
     Singers often begin a syllable on the old pitch and arrive at the new one
     a little later. Above zero, a pitch change with no onset of its own, but a
     strong onset up to this long before it, starts its note at that onset:
-    see ``attach_late_arrivals``. 0 turns this off, which was the behaviour
-    before this option existed.
-
-    0.15 s is the longest lead that costs nothing on the corpus without late
-    arrivals: on its development recordings no measure moves significantly
-    under any convention, while on the syllabic corpus's development
-    recordings COnP rises 0.034 and same-pitch splits fall from 8.7% to 6.3%
-    of notes, with no melisma lost. 0.22 s gains more there but starts moving
-    real boundaries on the plain corpus."""
+    see ``attach_late_arrivals``. 0 turns this off, which is the behaviour
+    from before this option existed."""
 
     syllable_dip_db: float = 0.0
     """A dip in level this deep also counts as a syllable's onset for
