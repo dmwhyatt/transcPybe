@@ -206,6 +206,10 @@ def snap_segment_starts(
         if distances[nearest] > window_frames or candidate >= seg.end_frame:
             out.append(seg)
             continue
+        if ((config.onset_snap_direction == "earlier" and candidate > seg.start_frame)
+                or (config.onset_snap_direction == "later" and candidate < seg.start_frame)):
+            out.append(seg)
+            continue
 
         previous = out[-1] if out else None
         if previous is not None and candidate < previous.end_frame:

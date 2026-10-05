@@ -313,6 +313,13 @@ class TranscriptionConfig:
     onset_snap_window_s: float = 0.05
     """Note starts are pulled to a detected onset within this window."""
 
+    onset_snap_direction: str = "both"
+    """Which way a note start may be snapped: 'both', 'earlier' or 'later'.
+
+    'earlier' only ever pulls a start back onto an attack the decoder lagged,
+    which is what snapping exists for; 'later' only ever pushes a start
+    forward. 'both' is the behaviour from before this option existed."""
+
     # ---------------- Note post-processing ----------------
     min_note_duration_s: float = 0.055
     """Notes shorter than this are discarded as decoder noise."""
@@ -570,6 +577,9 @@ class TranscriptionConfig:
             raise ValueError("min_note_interval_semitones must be non-negative")
         if not 0.0 <= self.glide_onset_position <= 1.0:
             raise ValueError("glide_onset_position must be in [0, 1]")
+        if self.onset_snap_direction not in ("both", "earlier", "later"):
+            raise ValueError("onset_snap_direction must be 'both', 'earlier' or 'later', "
+                             f"got {self.onset_snap_direction!r}")
         if self.pitch_reference not in ("sung", "tuned"):
             raise ValueError("pitch_reference must be 'sung' or 'tuned', "
                              f"got {self.pitch_reference!r}")
