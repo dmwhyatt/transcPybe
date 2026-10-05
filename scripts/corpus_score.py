@@ -40,6 +40,12 @@ CONVENTIONS = {
     "release 1.0": dict(release_point=1.0),
     "gaps closed": dict(release_point=0.5, close_gaps=True),
     "intended pitch": dict(release_point=0.5, intended_pitch=True),
+    # Where a glided legato note starts is a convention too: the default puts it
+    # where the glide leaves the previous pitch; these put it half way through
+    # the glide, or where it arrives. A change should not win under one by
+    # losing under the others.
+    "glide midpoint": dict(release_point=0.5, glide_onset="midpoint"),
+    "glide arrival": dict(release_point=0.5, glide_onset="arrival"),
 }
 
 
@@ -143,6 +149,8 @@ def compare(before: Path, after: Path, n_boot: int = 2000, split: str = "both") 
             continue
         print(f"\n{split}: mean change, 95% interval, recordings better/worse")
         for name in CONVENTIONS:
+            if name not in a[split] or name not in b[split]:
+                continue        # a run from before this convention existed
             x, y = np.array(a[split][name]), np.array(b[split][name])
             cells = []
             for j, metric in enumerate(("COn", "COnP", "COnPOff")):

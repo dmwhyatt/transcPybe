@@ -91,6 +91,13 @@ class CorpusNote:
     end_kind: str           # 'legato', 'unvoiced' or 'release'
     onset_kind: str = ""    # 'vowel', 'voiced', 'plosive', 'fricative' or 'melisma'
     glide: bool = False
+    # What the renderer put inside the note, recorded so a transcription's errors
+    # can be traced to the phenomenon that caused them. None where absent. All
+    # are absolute times in seconds; recording them draws nothing from the RNG.
+    glide_start: float | None = None   # where the pitch leaves the previous note
+    glide_end: float | None = None     # where it arrives at this note's pitch
+    scoop_end: float | None = None     # where an onset scoop has (mostly) recovered
+    diphthong_at: float | None = None  # a vowel change inside the held note
 
     def offset(self, release_point: float) -> float:
         """The end, with a release annotated ``release_point`` of the way down."""
@@ -105,7 +112,7 @@ class CorpusRecording:
     meta: Dict = field(default_factory=dict)
 
     def reference(self, release_point: float = 0.5, *, close_gaps: bool = False,
-                  intended_pitch: bool = False) -> Reference:
+                  intended_pitch: bool = False, glide_onset: str = "departure") -> Reference:
         """``(onset, offset, pitch)`` triples under the chosen convention.
 
         ``release_point`` places a release's annotated end along its decay: 0 at
@@ -114,16 +121,36 @@ class CorpusRecording:
         unvoiced consonant at the next note's onset instead, when that is less
         than 200 ms later. ``intended_pitch`` gives the score's integer note
         rather than the sung pitch.
+
+        ``glide_onset`` says where a glided legato note starts: 'departure',
+        where the pitch leaves the previous note (the default, and the only
+        reading before this option existed); 'midpoint', half way through the
+        glide; or 'arrival', where the pitch reaches the new note. Annotators
+        differ on this, so a transcriber should be measured under all three
+        rather than fitted to one. The note before ends where this one starts,
+        as legato notes share their boundary. An onset is never moved earlier
+        than the departure reading.
         """
+        if glide_onset not in ("departure", "midpoint", "arrival"):
+            raise ValueError(f"glide_onset must be departure, midpoint or arrival, not {glide_onset!r}")
+        onsets = []
+        for note in self.notes:
+            onset = note.onset
+            if glide_onset != "departure" and note.glide_start is not None:
+                frac = 0.5 if glide_onset == "midpoint" else 1.0
+                onset = max(onset, note.glide_start + frac * (note.glide_end - note.glide_start))
+            onsets.append(onset)
         out = []
         for i, note in enumerate(self.notes):
             end = note.offset(release_point)
+            if note.end_kind == "legato" and i + 1 < len(self.notes) and end == self.notes[i + 1].onset:
+                end = onsets[i + 1]
             if close_gaps and note.end_kind == "unvoiced" and i + 1 < len(self.notes):
                 following = self.notes[i + 1]
                 if following.onset - end < 0.2:
                     end = following.onset
             pitch = float(note.intended_pitch) if intended_pitch else note.sung_pitch
-            out.append((note.onset, end, pitch))
+            out.append((onsets[i], end, pitch))
         return out
 
 
@@ -314,10 +341,13 @@ def make_recording(seed: int, *, with_reverb: bool = True) -> CorpusRecording:
             r = np.linspace(0, 1, gn)
             r = r * r * (3 - 2 * r)
             p[:gn] = prev["target"] + (target - prev["target"]) * r
+            refs[i].glide_start = nt["onset"]
+            refs[i].glide_end = nt["onset"] + gn / SR
         elif rng.random() < p_scoop and nt["kind"] != "melisma":
             sc = rng.uniform(0.5, 2.0)
             sl = rng.uniform(0.05, 0.12)
             p -= sc * np.exp(-seg_t / (sl / 3))
+            refs[i].scoop_end = nt["onset"] + sl
         # vibrato with delayed fade-in
         fade = np.clip((seg_t - vib_delay * 0.5) / vib_delay, 0, 1)
         p += (vib_depth / 100.0) * fade * np.sin(2 * np.pi * vib_rate * seg_t + rng.uniform(0, 6.28))
@@ -368,6 +398,7 @@ def make_recording(seed: int, *, with_reverb: bool = True) -> CorpusRecording:
         if nt["kind"] != "melisma" and (b - a) > 0.35 * SR and rng.random() < 0.25:
             m = a + int((b - a) * rng.uniform(0.4, 0.7))
             vowel_id[m:b] = (vowel_choice[i] + int(rng.integers(1, 5))) % 5
+            refs[i].diphthong_at = m / SR
         # release decay, 40 dB linear-in-dB over release length
         if nt["release"] > 0:
             rs = int((nt["end"] - nt["onset"]) * SR)
