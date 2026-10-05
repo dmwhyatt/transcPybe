@@ -185,7 +185,7 @@ class TranscriptionConfig:
     glide_plateau_semitones: float = 0.25
     """Pitch span below which ``glide_plateau_frames`` frames count as held."""
 
-    glide_onset_position: float = 0.0
+    glide_onset_position: float = 0.25
     """Where in a detected glide the next note's onset is placed.
 
     0 puts it where the walk stopped: where the pitch left the previous note.
@@ -193,8 +193,14 @@ class TranscriptionConfig:
     two is a fraction of the way from departure to arrival. Where a glided note
     starts is an annotation convention, not a fact about the audio --
     annotators differ, and the corpus scores all three readings -- so this
-    sets which reading the transcription follows. 0 is the behaviour from
-    before this option existed."""
+    sets which reading the transcription follows. 0 was the behaviour before
+    this option existed.
+
+    0.25 is chosen to lose least under the worst of the three readings, not
+    to match any one annotator. On the corpus's development recordings it
+    raises COn, COnP and COnPOff by about 0.01 under the arrival reading, and
+    changes nothing significantly under the departure reading; 0.5 and above
+    start to cost COnP and COnPOff under the others."""
 
     glide_max_level_drop_db: float = 20.0
     """A glide may not be more than this far below the level of the note it
