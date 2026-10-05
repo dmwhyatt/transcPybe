@@ -102,6 +102,7 @@ class CorpusNote:
     arrival: float | None = None            # a late arrival at the target pitch
     overshoot_end: float | None = None      # where an overshoot after a leap settles
     anticipation_from: float | None = None  # where the pitch starts leaving for the next note
+    ornament: bool = False                  # the short first note of a figure on one syllable
 
     def offset(self, release_point: float) -> float:
         """The end, with a release annotated ``release_point`` of the way down."""
@@ -256,6 +257,24 @@ def make_recording(seed: int, *, with_reverb: bool = True,
         t += rng.uniform(0.3, 1.2)
     total = t + 0.8
 
+    if syllabic:
+        # Ornamental figures: a syllable sung first on a short note a step or two
+        # away -- a grace note, or the first of a quick two-note figure -- then
+        # slurred to the main pitch with no new syllable. Both are real notes,
+        # and annotators mark both: the counterweight to every late arrival
+        # above, which looks the same until the pitch settles.
+        p_figure = rng2.uniform(0.0, 0.3)
+        figured = []
+        for nt in notes:
+            if nt["dur"] >= 0.3 and rng2.random() < p_figure:
+                short = rng2.uniform(0.07, 0.18)
+                figured.append(dict(nt, dur=short, midi=nt["midi"] + int(rng2.choice([-2, -1, 1, 2])),
+                                    ornament=True))
+                figured.append(dict(nt, t=nt["t"] + short, dur=nt["dur"] - short, slur=True))
+            else:
+                figured.append(nt)
+        notes = figured
+
     # ---------------- syllables and boundaries ----------------
     # Decide, per note, the onset consonant and per-transition details.
     n = int(total * SR)
@@ -271,7 +290,9 @@ def make_recording(seed: int, *, with_reverb: bool = True,
         prev = notes[i - 1] if i > 0 else None
         same_phrase_prev = prev is not None and prev["phrase"] == nt["phrase"]
         # syllable onset type
-        if same_phrase_prev and prev["midi"] != nt["midi"] and rng.random() < 0.18:
+        if nt.get("slur"):
+            kind = "melisma"                     # the figure's main note: no new syllable
+        elif same_phrase_prev and prev["midi"] != nt["midi"] and rng.random() < 0.18:
             kind = "melisma"
         else:
             kind = rng.choice(["vowel", "voiced", "plosive", "fricative"], p=[0.3, 0.3, 0.25, 0.15])
@@ -337,7 +358,8 @@ def make_recording(seed: int, *, with_reverb: bool = True,
         nt["end_kind"] = end_kind
         refs.append(CorpusNote(onset=nt["ann_onset"], end=end, release=release,
                                sung_pitch=float(nt["target"]), intended_pitch=int(nt["midi"]),
-                               end_kind=end_kind, onset_kind=nt["kind"], glide=bool(nt["glide"])))
+                               end_kind=end_kind, onset_kind=nt["kind"], glide=bool(nt["glide"]),
+                               ornament=bool(nt.get("ornament", False))))
 
     # ---------------- render control curves ----------------
     dips = []   # (centre s, half-width s, depth dB): vowel re-articulations
