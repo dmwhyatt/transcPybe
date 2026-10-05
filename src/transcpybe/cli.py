@@ -110,7 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="How spectral flux is combined across frequency. "
                              "median only fires when most of the spectrum rises, "
                              "which misses vowel-initial onsets")
-    tuning.add_argument("--onset-split-strength", type=float, default=0.70,
+    tuning.add_argument("--onset-split-strength", type=float, default=0.35,
                         dest="onset_split_strength_ratio",
                         help="How strong an onset must be, relative to the median "
                              "detected onset, to split a note in two. Lower splits "
