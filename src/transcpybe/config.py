@@ -313,12 +313,20 @@ class TranscriptionConfig:
     onset_snap_window_s: float = 0.05
     """Note starts are pulled to a detected onset within this window."""
 
-    onset_snap_direction: str = "both"
+    onset_snap_direction: str = "earlier"
     """Which way a note start may be snapped: 'both', 'earlier' or 'later'.
 
     'earlier' only ever pulls a start back onto an attack the decoder lagged,
     which is what snapping exists for; 'later' only ever pushes a start
-    forward. 'both' is the behaviour from before this option existed."""
+    forward. 'both' was the behaviour before this option existed.
+
+    Pushing starts later is where snapping went wrong. On the realistic
+    corpus's development recordings, snapping both ways put onsets after a rest
+    a median 25 ms late, one in ten of them more than 50 ms; switching snapping
+    off altogether took that to 4 ms, and raised COn and COnPOff under every
+    annotation convention. Keeping only the earlier half keeps what moving a
+    legato boundary onto its attack was measured to be worth: COnPOff 0.667 to
+    0.685 against both ways, with recall of re-sung notes unchanged."""
 
     # ---------------- Note post-processing ----------------
     min_note_duration_s: float = 0.055
