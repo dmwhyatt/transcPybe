@@ -8,6 +8,8 @@
     python scripts/corpus_score.py --out notrim.json --set trim_note_releases=False
     # the paired comparison: development set, then held-out set
     python scripts/corpus_score.py --compare main.json branch.json
+    # while choosing, keep the held-out recordings out of sight entirely
+    python scripts/corpus_score.py --split development --out candidate.json
 
 Every recording is scored at the 50 ms / 50 cent / 20% tolerances mir_eval and
 the benchmark package use, under each annotation convention the corpus offers,
@@ -100,7 +102,14 @@ def load_corpus():
     return module
 
 
-def score(out: Path, overrides, cache: Path) -> None:
+SPLITS = ("development", "held-out")
+
+
+def chosen_splits(split: str):
+    return SPLITS if split == "both" else (split,)
+
+
+def score(out: Path, overrides, cache: Path, split: str = "both") -> None:
     import transcpybe
     from transcpybe import TranscriptionConfig, transcribe_audio
 
@@ -111,7 +120,9 @@ def score(out: Path, overrides, cache: Path) -> None:
     cache_f0(cache)
     config = dataclasses.replace(TranscriptionConfig(), **overrides)
     result = {"transcpybe": transcpybe.__file__, "overrides": {k: repr(v) for k, v in overrides.items()}}
-    for split, seeds in (("development", DEVELOPMENT_SEEDS), ("held-out", HELD_OUT_SEEDS)):
+    seeds_for = {"development": DEVELOPMENT_SEEDS, "held-out": HELD_OUT_SEEDS}
+    for which in chosen_splits(split):
+        seeds = seeds_for[which]
         rows = {name: [] for name in CONVENTIONS}
         for seed in seeds:
             recording = make_recording(seed)
@@ -120,14 +131,16 @@ def score(out: Path, overrides, cache: Path) -> None:
             for name, convention in CONVENTIONS.items():
                 rows[name].append(note_scores(recording.reference(**convention), estimated))
             print(f"  {recording.name}: {len(notes)} notes", file=sys.stderr, flush=True)
-        result[split] = rows
+        result[which] = rows
     out.write_text(json.dumps(result))
 
 
-def compare(before: Path, after: Path, n_boot: int = 2000) -> None:
+def compare(before: Path, after: Path, n_boot: int = 2000, split: str = "both") -> None:
     a, b = json.loads(before.read_text()), json.loads(after.read_text())
     rng = np.random.default_rng(0)
-    for split in ("development", "held-out"):
+    for split in chosen_splits(split):
+        if split not in a or split not in b:
+            continue
         print(f"\n{split}: mean change, 95% interval, recordings better/worse")
         for name in CONVENTIONS:
             x, y = np.array(a[split][name]), np.array(b[split][name])
@@ -150,10 +163,14 @@ def main(argv=None) -> int:
     parser.add_argument("--cache", type=Path, default=Path(".corpus-cache"),
                         help="Where CREPE output is kept between runs")
     parser.add_argument("--compare", nargs=2, type=Path, metavar=("BEFORE", "AFTER"))
+    parser.add_argument("--split", choices=("development", "held-out", "both"), default="both",
+                        help="Which recordings to score or compare. Use 'development' "
+                             "while choosing, so the held-out set is never seen until "
+                             "it is scored once")
     args = parser.parse_args(argv)
 
     if args.compare:
-        compare(*args.compare)
+        compare(*args.compare, split=args.split)
         return 0
     if not args.out:
         parser.error("give --out to score, or --compare BEFORE AFTER")
@@ -161,7 +178,7 @@ def main(argv=None) -> int:
     for item in args.set:
         key, value = item.split("=", 1)
         overrides[key] = ast.literal_eval(value)
-    score(args.out, overrides, args.cache)
+    score(args.out, overrides, args.cache, args.split)
     return 0
 
 
