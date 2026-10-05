@@ -361,6 +361,15 @@ class TranscriptionConfig:
     the level but drops periodicity, so with this above zero an onset may
     split a note on either dip. 0 consults level alone."""
 
+    syllable_lead_s: float = 0.0
+    """Longest a syllable's onset may lead its pitch change and still start its note.
+
+    Singers often begin a syllable on the old pitch and arrive at the new one
+    a little later. Above zero, a pitch change with no onset of its own, but a
+    strong onset up to this long before it, starts its note at that onset:
+    see ``attach_late_arrivals``. 0 turns this off, which is the behaviour
+    from before this option existed."""
+
     onset_snap_window_s: float = 0.05
     """Note starts are pulled to a detected onset within this window."""
 
@@ -642,6 +651,8 @@ class TranscriptionConfig:
             raise ValueError("min_note_interval_semitones must be non-negative")
         if not 0.0 <= self.glide_onset_position <= 1.0:
             raise ValueError("glide_onset_position must be in [0, 1]")
+        if self.syllable_lead_s < 0:
+            raise ValueError("syllable_lead_s must be non-negative")
         if self.onset_split_min_dip_db < 0:
             raise ValueError("onset_split_min_dip_db must be non-negative")
         if not 0.0 <= self.onset_split_min_periodicity_dip <= 1.0:

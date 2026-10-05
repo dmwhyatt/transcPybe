@@ -298,6 +298,82 @@ def snap_segment_starts(
     return out
 
 
+def attach_late_arrivals(
+    segments: List[Segment],
+    onsets: OnsetTrack,
+    frame_times: np.ndarray,
+    config: TranscriptionConfig,
+) -> List[Segment]:
+    """Start a note at the articulation that began its syllable, not where its pitch arrived.
+
+    A singer often begins a syllable on the old pitch -- or, after a rest, a
+    little off the new one -- and reaches the note it is aimed at 60-200 ms
+    later. Annotators give the syllable one note from its onset; a decoder
+    that segments by pitch starts the note where the pitch arrives, and if an
+    onset split has already cut the syllable's start off the note before, that
+    piece is left as a note of its own at the wrong pitch.
+
+    For a pitch change of at most three semitones that has no onset of its
+    own, the latest strong onset between ``onset_snap_window_s`` and
+    ``syllable_lead_s`` before it is taken to start the syllable. If that
+    onset began the piece before the change, and the piece carries on the
+    pitch of the note before it (or follows a rest), the piece is folded into
+    the arriving note; if it falls inside the note before, the boundary moves
+    back to it. Either way the arriving note's pitch is measured from where the
+    pitch arrived. A pitch change with no onset before it in that window -- a
+    melisma, sung on one vowel -- is left alone.
+    """
+    if config.syllable_lead_s <= 0 or len(onsets) == 0 or len(segments) < 2:
+        return segments
+    strengths = onsets.strengths[np.isfinite(onsets.strengths)]
+    if strengths.size == 0:
+        return segments
+    threshold = config.onset_split_strength_ratio * float(np.median(strengths))
+    strong = np.searchsorted(frame_times, onsets.times[onsets.strengths >= threshold])
+    if strong.size == 0:
+        return segments
+
+    hop_s = config.hop_length / config.sample_rate
+    max_lead = int(round(config.syllable_lead_s / hop_s))
+    min_lead = max(1, int(round(config.onset_snap_window_s / hop_s)))
+    min_frames = max(1, int(round(config.min_note_duration_s / hop_s)))
+    touching = 3                                     # frames: a gap this small is legato
+
+    out = list(segments)
+    i = 1
+    while i < len(out):
+        before, after = out[i - 1], out[i]
+        if (before.end_frame != after.start_frame or before.pitch == after.pitch
+                or abs(after.pitch - before.pitch) > 3
+                or np.any(np.abs(strong - after.start_frame) < min_lead)):
+            i += 1
+            continue
+        leads = strong[(strong <= after.start_frame - min_lead)
+                       & (strong >= after.start_frame - max_lead)
+                       & (strong >= before.start_frame - 2)]
+        if leads.size == 0:
+            i += 1
+            continue
+        onset = int(leads.max())
+        arrived = after.start_frame
+        if onset <= before.start_frame + 2:
+            earlier = out[i - 2] if i >= 2 else None
+            gap = before.start_frame - earlier.end_frame if earlier is not None else None
+            carries_on = earlier is not None and gap <= touching and earlier.pitch == before.pitch
+            after_rest = earlier is None or gap > touching
+            if carries_on or (after_rest and abs(after.pitch - before.pitch) <= 2):
+                out[i] = Segment(before.start_frame, after.end_frame, after.pitch,
+                                 measure_from=arrived)
+                del out[i - 1]
+                continue
+        elif onset - before.start_frame >= min_frames:
+            out[i - 1] = Segment(before.start_frame, onset, before.pitch,
+                                 measure_from=before.measure_from)
+            out[i] = Segment(onset, after.end_frame, after.pitch, measure_from=arrived)
+        i += 1
+    return out
+
+
 def refine_segments(
     segments: List[Segment],
     audio: np.ndarray | None,
