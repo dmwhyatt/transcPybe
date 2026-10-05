@@ -344,6 +344,15 @@ class TranscriptionConfig:
     0.10 a syllable shorter than 100 ms could not be separated at all, which
     put fast re-articulation out of reach however clear its onset."""
 
+    onset_split_min_dip_db: float = 0.0
+    """Level dip an onset must sit in before it may split a note, in dB.
+
+    Singing a note again on the same pitch takes a consonant or a glottal
+    onset, and either briefly interrupts the sound. A spectral-flux peak with
+    no dip under it -- a vowel changing inside a held note, vibrato moving
+    harmonics through a formant -- is not a new note. 0 turns the test off,
+    which is the behaviour from before this option existed."""
+
     onset_snap_window_s: float = 0.05
     """Note starts are pulled to a detected onset within this window."""
 
@@ -625,6 +634,8 @@ class TranscriptionConfig:
             raise ValueError("min_note_interval_semitones must be non-negative")
         if not 0.0 <= self.glide_onset_position <= 1.0:
             raise ValueError("glide_onset_position must be in [0, 1]")
+        if self.onset_split_min_dip_db < 0:
+            raise ValueError("onset_split_min_dip_db must be non-negative")
         if self.onset_snap_direction not in ("both", "earlier", "later"):
             raise ValueError("onset_snap_direction must be 'both', 'earlier' or 'later', "
                              f"got {self.onset_snap_direction!r}")
