@@ -34,6 +34,11 @@ class Note:
     hmm_pitch: int        # pitch the Viterbi decoder assigned, before remeasuring
     start_frame: int
     end_frame: int
+    # The attack the pitch was measured from, when that is later than the
+    # start (see Segment.measure_from); None when measured from the start.
+    # Kept so that re-measuring the note, after a merge, measures it the same
+    # way.
+    measure_from_frame: Optional[int] = None
 
     @property
     def duration(self) -> float:
@@ -41,6 +46,9 @@ class Note:
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
+        # Pipeline bookkeeping rather than something the note reports: the
+        # written formats stay as they were.
+        data.pop("measure_from_frame")
         data["duration"] = self.duration
         return data
 
@@ -74,6 +82,13 @@ def weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
     return weighted_quantile(values, weights, 0.5)
 
 
+def _attack_frame(seg: Segment) -> Optional[int]:
+    """The segment's ``measure_from``, if it lies inside the segment."""
+    if seg.measure_from is not None and seg.start_frame < seg.measure_from < seg.end_frame:
+        return int(seg.measure_from)
+    return None
+
+
 def _measure_frames(seg: Segment, track: F0Track, config: TranscriptionConfig) -> np.ndarray:
     """Frame indices to use when measuring a segment's pitch.
 
@@ -82,9 +97,8 @@ def _measure_frames(seg: Segment, track: F0Track, config: TranscriptionConfig) -
     f0. Falls back progressively so that a measurement is always possible.
     """
     hop_s = config.hop_length / config.sample_rate
-    start = seg.start_frame
-    if seg.measure_from is not None and seg.start_frame < seg.measure_from < seg.end_frame:
-        start = seg.measure_from
+    attack = _attack_frame(seg)
+    start = seg.start_frame if attack is None else attack
     n_frames = seg.end_frame - start
     max_trim = int(round(config.attack_trim_max_s / hop_s))
     trim = min(int(n_frames * config.attack_trim_frac), max_trim)
@@ -190,6 +204,7 @@ def segments_to_notes(
                 hmm_pitch=int(seg.pitch),
                 start_frame=seg.start_frame,
                 end_frame=seg.end_frame,
+                measure_from_frame=_attack_frame(seg),
             )
         )
     return notes
@@ -313,10 +328,14 @@ def merge_same_pitch(
             and 0 <= gap <= config.merge_same_pitch_gap_s
             and not rearticulated
         ):
+            # The merged note starts where the previous one did, so its pitch
+            # is measured from wherever the previous one's was: from its
+            # attack, when snapping left its start before one.
             combined = Segment(
                 start_frame=previous.start_frame,
                 end_frame=note.end_frame,
                 pitch=previous.hmm_pitch,
+                measure_from=previous.measure_from_frame,
             )
             # Measured on the same grid as every other note. Without the
             # offset, a merged note was rounded on A440 while its neighbours

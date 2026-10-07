@@ -423,6 +423,38 @@ def test_moving_a_shared_boundary_keeps_the_previous_notes_attack():
     assert out[0].start_frame == 100 and out[0].measure_from == 104
 
 
+def test_merging_a_note_keeps_measuring_it_from_its_attack():
+    """A merged note used to be remeasured from its start, not its attack.
+
+    Snapping leaves this note's start 50 ms before its attack, and its pitch
+    is measured from the attack instead. A dropout splits it in two, and
+    merging the halves rebuilt the note from its start and end alone: the
+    scoop up from the attack was measured into it again, as if snapping had
+    never found the attack.
+    """
+    from transcpybe.notes import merge_same_pitch, segments_to_notes
+
+    midi = np.full(200, np.nan)
+    midi[100:105] = 58.0                         # before the attack
+    midi[105:111] = np.linspace(58.5, 59.9, 6)   # the scoop up from it
+    midi[111:130] = np.linspace(60.0, 60.2, 19)
+    midi[133:160] = np.linspace(60.2, 60.4, 27)  # after a 30 ms dropout
+    track = _hand_track(midi)
+    config = TranscriptionConfig()
+
+    halves = [Segment(100, 130, 60, measure_from=105), Segment(133, 160, 60)]
+    merged = merge_same_pitch(segments_to_notes(halves, track, config), track, config)
+
+    from_attack = segments_to_notes([Segment(100, 160, 60, measure_from=105)], track, config)
+    from_start = segments_to_notes([Segment(100, 160, 60)], track, config)
+    assert from_attack[0].pitch_midi_float != from_start[0].pitch_midi_float
+    assert len(merged) == 1 and merged[0].start_frame == 100
+    assert merged[0].pitch_midi_float == from_attack[0].pitch_midi_float
+    assert merged[0].measure_from_frame == 105
+    # Bookkeeping for the pipeline: the written JSON does not change.
+    assert "measure_from_frame" not in merged[0].to_dict()
+
+
 # --------------------------------------------------------------------------
 # Fragment absorption
 # --------------------------------------------------------------------------
