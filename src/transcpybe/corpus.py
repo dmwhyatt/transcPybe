@@ -103,6 +103,7 @@ class CorpusNote:
     overshoot_end: float | None = None      # where an overshoot after a leap settles
     anticipation_from: float | None = None  # where the pitch starts leaving for the next note
     ornament: bool = False                  # the short first note of a figure on one syllable
+    consonant_start: float | None = None    # where an unvoiced initial consonant starts, in a phrase
 
     def offset(self, release_point: float) -> float:
         """The end, with a release annotated ``release_point`` of the way down."""
@@ -117,7 +118,8 @@ class CorpusRecording:
     meta: Dict = field(default_factory=dict)
 
     def reference(self, release_point: float = 0.5, *, close_gaps: bool = False,
-                  intended_pitch: bool = False, glide_onset: str = "departure") -> Reference:
+                  intended_pitch: bool = False, glide_onset: str = "departure",
+                  consonant_onsets: bool = False) -> Reference:
         """``(onset, offset, pitch)`` triples under the chosen convention.
 
         ``release_point`` places a release's annotated end along its decay: 0 at
@@ -135,6 +137,10 @@ class CorpusRecording:
         rather than fitted to one. The note before ends where this one starts,
         as legato notes share their boundary. An onset is never moved earlier
         than the departure reading.
+
+        ``consonant_onsets`` starts a syllable sung after an unvoiced consonant
+        (a plosive or fricative inside a phrase) where the consonant starts,
+        rather than at its vowel: annotators differ on this too.
         """
         if glide_onset not in ("departure", "midpoint", "arrival"):
             raise ValueError(f"glide_onset must be departure, midpoint or arrival, not {glide_onset!r}")
@@ -146,6 +152,8 @@ class CorpusRecording:
                 onset = max(onset, note.glide_start + frac * (note.glide_end - note.glide_start))
                 if onset >= note.end:                   # never at or past the note's own end
                     onset = note.end - 0.01
+            if consonant_onsets and note.consonant_start is not None:
+                onset = note.consonant_start
             onsets.append(onset)
         out = []
         for i, note in enumerate(self.notes):
@@ -363,7 +371,10 @@ def make_recording(seed: int, *, with_reverb: bool = True,
         refs.append(CorpusNote(onset=nt["ann_onset"], end=end, release=release,
                                sung_pitch=float(nt["target"]), intended_pitch=int(nt["midi"]),
                                end_kind=end_kind, onset_kind=nt["kind"], glide=bool(nt["glide"]),
-                               ornament=bool(nt.get("ornament", False))))
+                               ornament=bool(nt.get("ornament", False)),
+                               consonant_start=(nt["onset"] - nt["cons_len"]
+                                                if nt["kind"] in ("plosive", "fricative") and i > 0
+                                                and notes[i - 1]["phrase"] == nt["phrase"] else None)))
 
     # ---------------- render control curves ----------------
     dips = []   # (centre s, half-width s, depth dB): vowel re-articulations

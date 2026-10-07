@@ -48,6 +48,9 @@ CONVENTIONS = {
     # losing under the others.
     "glide midpoint": dict(release_point=0.5, glide_onset="midpoint"),
     "glide arrival": dict(release_point=0.5, glide_onset="arrival"),
+    # and where a syllable after an unvoiced consonant starts: at its vowel (the
+    # default) or at the consonant
+    "consonant onset": dict(release_point=0.5, consonant_onsets=True),
 }
 
 
