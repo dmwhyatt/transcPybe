@@ -100,6 +100,30 @@ def test_hz_to_midi_rejects_non_positive_and_propagates_nan():
     assert np.isnan(out).all()
 
 
+def test_contour_median_removes_a_spike_and_carries_across_gaps():
+    """One gap-aware running median, shared by the f0 track and the glide walk.
+
+    Each used to carry its own copy. It must remove a single-frame spike, hold
+    a step where it is, leave unvoiced frames unvoiced, and smooth the frames
+    beside a gap against the contour carried across it rather than against
+    NaN.
+    """
+    from transcpybe.f0 import _median_filter_f0, median_filter_contour
+
+    contour = np.array([60.0, 60.0, 67.0, 60.0, 60.0, np.nan, np.nan,
+                        60.0, 60.0, 62.0, 62.0, 62.0])
+    out = median_filter_contour(contour, 3)
+    np.testing.assert_allclose(out[:5], 60.0)
+    assert np.isnan(out[5:7]).all()
+    np.testing.assert_allclose(out[7:], contour[7:])
+    assert median_filter_contour(contour, 1) is contour
+
+    # MIDI is a linear rescale of log2 Hz and a median commutes with that, so
+    # filtering f0 in Hz is the same filter as filtering the contour in MIDI.
+    via_hz = hz_to_midi(_median_filter_f0(midi_to_hz(contour), 3))
+    np.testing.assert_allclose(via_hz, out, equal_nan=True)
+
+
 def test_note_name_uses_scientific_pitch_notation():
     assert note_name(60) == "C4"
     assert note_name(69) == "A4"
@@ -412,6 +436,30 @@ def test_glide_backtrack_still_finds_the_start_of_a_glide():
 
     # The walk itself: where in the glide the onset then goes is tested below.
     config = TranscriptionConfig(glide_onset_position=0.0)
+    out = backtrack_glide_onsets(segments, track, config)
+    assert out[1].start_frame <= 84
+
+
+def test_glide_walk_crosses_a_single_frame_of_jitter_on_an_unfiltered_track():
+    """The walk smooths its own contour rather than trusting the f0 filter.
+
+    The f0 track is usually median-filtered already, but that filter is a
+    setting (``f0_median_filter_frames=1`` turns it off) and a hand-built
+    track is never filtered. One frame jumping half a semitone the wrong way
+    in the middle of a glide would otherwise read as the contour turning
+    back: on the raw contour this walk stops at frame 88, two frames in.
+    """
+    from transcpybe.glide import backtrack_glide_onsets
+
+    midi = np.full(160, np.nan)
+    midi[10:80] = 60.0
+    midi[80:95] = np.linspace(60.0, 62.0, 15)
+    midi[87] += 0.5
+    midi[95:150] = 62.0
+    track = _hand_track(midi)
+    segments = [Segment(10, 90, 60), Segment(90, 150, 62)]
+
+    config = TranscriptionConfig(glide_onset_position=0.0, f0_median_filter_frames=1)
     out = backtrack_glide_onsets(segments, track, config)
     assert out[1].start_frame <= 84
 

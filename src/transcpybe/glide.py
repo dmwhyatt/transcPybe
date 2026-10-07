@@ -21,7 +21,7 @@ from typing import List
 import numpy as np
 
 from .config import TranscriptionConfig
-from .f0 import F0Track
+from .f0 import F0Track, median_filter_contour
 from .segment import Segment
 
 
@@ -35,18 +35,17 @@ def _smoothed_midi(track: F0Track, width: int = 3) -> np.ndarray:
     there, putting every legato onset 20 ms early -- two fifths of the onset
     tolerance spent before anything else has gone wrong. A median holds a step
     where it is and still removes single-frame jitter.
+
+    This is the filter ``estimate_f0`` has usually applied already, at
+    ``f0_median_filter_frames``, so by default a second pass changes little:
+    on the synthetic suite's pYIN tracks it moves one voiced frame in 170 and
+    no backtracked onset. It stays because the walk's need is its own. That
+    setting is there to remove octave errors and may be set to 1, and a track
+    built by hand arrives unfiltered; either way one frame of jitter further
+    than ``glide_monotonic_slack_semitones`` the wrong way would end the walk
+    partway down a glide.
     """
-    from scipy.ndimage import median_filter
-
-    midi = track.midi_float
-    valid = np.isfinite(midi)
-    if not valid.any():
-        return midi
-
-    indices = np.arange(midi.shape[0])
-    filled = np.interp(indices, indices[valid], midi[valid])
-    smoothed = median_filter(filled, size=width, mode="nearest")
-    return np.where(valid, smoothed, np.nan)
+    return median_filter_contour(track.midi_float, width)
 
 
 def absorb_passing_tones(
