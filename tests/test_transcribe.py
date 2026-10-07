@@ -365,6 +365,27 @@ def test_snapping_earlier_only_measures_from_a_later_attack_without_moving_the_s
     assert both[0].start_frame == 54
 
 
+def test_moving_a_shared_boundary_keeps_the_previous_notes_attack():
+    """Pulling the next start back must not forget where this note's attack was.
+
+    The first note starts before its attack, so snapping records the attack
+    for its pitch to be measured from. The second note's start then moves back
+    onto its own attack, taking the shared boundary with it, and the first note
+    was rebuilt from its start, end and pitch alone: its attack was lost, and
+    its pitch measured from the frames before it again.
+    """
+    from transcpybe.onsets import OnsetTrack, snap_segment_starts
+
+    frame_times = np.arange(400) / 100.0
+    onsets = OnsetTrack(np.array([1.04, 1.96]), np.array([5.0, 5.0]),
+                        np.zeros(400), frame_times)
+    segments = [Segment(100, 200, 60), Segment(200, 300, 62)]
+
+    out = snap_segment_starts(segments, onsets, frame_times, TranscriptionConfig())
+    assert out[1].start_frame == 196 and out[0].end_frame == 196
+    assert out[0].start_frame == 100 and out[0].measure_from == 104
+
+
 # --------------------------------------------------------------------------
 # Fragment absorption
 # --------------------------------------------------------------------------

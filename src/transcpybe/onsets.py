@@ -222,8 +222,11 @@ def snap_segment_starts(
             if not shared or candidate - previous.start_frame < min_frames:
                 out.append(seg)
                 continue
+            # Only the end moves: the attack snapping recorded for the previous
+            # segment is still where its pitch settles. One the shorter
+            # segment no longer contains is ignored when it is measured.
             out[-1] = Segment(start_frame=previous.start_frame, end_frame=candidate,
-                              pitch=previous.pitch)
+                              pitch=previous.pitch, measure_from=previous.measure_from)
 
         out.append(Segment(start_frame=candidate, end_frame=seg.end_frame, pitch=seg.pitch))
 
