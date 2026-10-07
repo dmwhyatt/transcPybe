@@ -950,6 +950,66 @@ def test_split_threshold_comes_from_onsets_not_the_envelope():
     assert len(out) == 5, "four onsets inside one segment must yield five notes"
 
 
+def _sung_twice(onset_times):
+    """One pitch sung twice, 20 ms apart; the second starts on breath noise.
+
+    The decoder starts the second note at frame 122, and the attack that
+    re-sings it is 20 ms later -- unless ``onset_times`` leaves it out, which
+    makes the gap a dropout in one held note.
+    """
+    from transcpybe.onsets import OnsetTrack
+
+    midi = np.full(260, np.nan)
+    midi[50:120] = 62.0
+    midi[122:200] = 62.0
+    track = _hand_track(midi)
+    onsets = OnsetTrack(np.array(onset_times), np.full(len(onset_times), 5.0),
+                        np.zeros(260), track.times)
+    return track, onsets
+
+
+def test_an_attack_just_inside_the_next_note_blocks_a_same_pitch_merge():
+    """Only an onset in the gap used to count as re-articulation.
+
+    Snapping both ways moved the second note's start onto its attack, and the
+    attack then sat in the gap, where the merge looks for one. Snapping
+    earlier leaves the start on the breath noise before it and records the
+    attack for the pitch to be measured from, so the attack is inside the
+    note, the gap is empty, and the two notes were merged into one.
+    """
+    from transcpybe.notes import merge_same_pitch, segments_to_notes
+
+    track, onsets = _sung_twice([0.50, 1.24])
+    config = TranscriptionConfig()
+    notes = segments_to_notes([Segment(50, 120, 62), Segment(122, 200, 62, measure_from=124)],
+                              track, config)
+    merged = merge_same_pitch(notes, track, config, onsets)
+    assert [(n.start_frame, n.end_frame) for n in merged] == [(50, 120), (122, 200)]
+
+    # A dropout with no attack after it is one note, and is still rejoined.
+    track, onsets = _sung_twice([0.50])
+    notes = segments_to_notes([Segment(50, 120, 62), Segment(122, 200, 62)], track, config)
+    merged = merge_same_pitch(notes, track, config, onsets)
+    assert [(n.start_frame, n.end_frame) for n in merged] == [(50, 200)]
+
+
+def test_a_note_sung_twice_stays_two_notes_when_snapping_earlier_only():
+    """The same, through decoding, snapping and post-processing together."""
+    from transcpybe.core import decode_notes
+
+    track, onsets = _sung_twice([0.50, 1.24])
+    for direction in ("earlier", "both"):
+        config = TranscriptionConfig(onset_snap_direction=direction)
+        notes = decode_notes(track, config, onsets=onsets)[0]
+        assert len(notes) == 2, direction
+        assert notes[0].pitch == notes[1].pitch == 62
+
+    track, onsets = _sung_twice([0.50])
+    notes = decode_notes(track, TranscriptionConfig(), onsets=onsets)[0]
+    assert len(notes) == 1
+    assert notes[0].start_frame == 50 and notes[0].end_frame == 200
+
+
 # ---------------------------------------------------------------------------
 # Note ends.
 #

@@ -304,6 +304,10 @@ def merge_same_pitch(
     A short unvoiced dropout mid-note (a breathy patch, a consonant) otherwise
     splits one sung note into two. A detected onset in the gap is taken as
     evidence that the singer really did re-articulate, and blocks the merge.
+    So does an attack the second note carries just after its start
+    (``measure_from_frame``): a start the decoder put on breath noise before
+    the attack stays there when snapping only pulls starts earlier, and the
+    attack that would have been in the gap is inside the note.
     """
     if len(notes) < 2:
         return notes
@@ -315,7 +319,9 @@ def merge_same_pitch(
         previous = merged[-1]
         gap = note.onset - previous.offset
 
-        rearticulated = bool(
+        # The attack snapping recorded after the start is the one that, snapped
+        # both ways, would have become the start and so been found in the gap.
+        rearticulated = note.measure_from_frame is not None or bool(
             onset_times.size
             and np.any(
                 (onset_times > previous.offset - 1e-9)

@@ -391,7 +391,8 @@ class TranscriptionConfig:
 
     merge_same_pitch_gap_s: float = 0.035
     """Adjacent notes of equal pitch closer than this are merged, unless an
-    onset separates them."""
+    onset separates them or the second has an attack of its own just after
+    its start, which snapping found but did not move the start to."""
 
     # ---------------- Note ends ----------------
     trim_note_releases: bool = True
