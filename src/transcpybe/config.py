@@ -326,7 +326,10 @@ class TranscriptionConfig:
     which is what snapping exists for; an attack later than the start does
     not move it, but the note's pitch is still measured from that attack, as
     it was when snapping moved the start there. 'later' only ever pushes a
-    start forward. 'both' was the behaviour before this option existed.
+    start forward. 'both' was the behaviour before this option existed, and
+    takes the nearest onset on either side. 'earlier' and 'later' look only on
+    their own side of the start, so an attack 40 ms back is still found when
+    the vowel after it puts a nearer onset just past the start.
 
     Pushing starts later is where snapping went wrong. On the realistic
     corpus's development recordings, snapping both ways put onsets after a rest

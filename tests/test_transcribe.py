@@ -365,6 +365,43 @@ def test_snapping_earlier_only_measures_from_a_later_attack_without_moving_the_s
     assert both[0].start_frame == 54
 
 
+def test_snapping_one_way_is_not_hidden_by_a_nearer_onset_the_other_way():
+    """A nearer onset on the wrong side used to stop a start from snapping.
+
+    The nearest onset was chosen from both sides before the direction was
+    checked. The decoder lags an attack by 40 ms and a second flux peak -- the
+    vowel after a consonant -- sits 10 ms after the start: the peak was the
+    nearer, so snapping earlier only measured the pitch from it, and the start
+    was never pulled back onto the attack, which is what snapping earlier is
+    for. Snapping later was hidden the same way by a nearer onset before the
+    start.
+    """
+    from transcpybe.onsets import OnsetTrack, snap_segment_starts
+
+    frame_times = np.arange(200) / 100.0
+    segments = [Segment(100, 180, 60)]
+
+    def snapped(times, direction):
+        onsets = OnsetTrack(np.array(times), np.full(len(times), 5.0),
+                            np.zeros(200), frame_times)
+        config = TranscriptionConfig(onset_snap_direction=direction)
+        return snap_segment_starts(segments, onsets, frame_times, config)[0]
+
+    earlier = snapped([0.96, 1.01], "earlier")
+    assert earlier.start_frame == 96 and earlier.measure_from is None
+    assert snapped([0.99, 1.03], "later").start_frame == 103
+    # Both ways, the nearest onset either side still wins.
+    assert snapped([0.96, 1.01], "both").start_frame == 101
+
+    # An earlier onset inside the previous note is that note's, and the start
+    # cannot move onto it: the attack after the start is still measured from.
+    onsets = OnsetTrack(np.array([0.97, 1.03]), np.full(2, 5.0), np.zeros(200), frame_times)
+    out = snap_segment_starts([Segment(40, 98, 57), Segment(100, 180, 60)], onsets,
+                              frame_times, TranscriptionConfig(onset_snap_direction="earlier"))
+    assert out[0].end_frame == 98
+    assert out[1].start_frame == 100 and out[1].measure_from == 103
+
+
 def test_moving_a_shared_boundary_keeps_the_previous_notes_attack():
     """Pulling the next start back must not forget where this note's attack was.
 
