@@ -30,11 +30,15 @@ class OnsetTrack:
     """Detected onsets and the envelope they came from."""
 
     def __init__(self, times: np.ndarray, strengths: np.ndarray, envelope: np.ndarray,
-                 envelope_times: np.ndarray) -> None:
+                 envelope_times: np.ndarray, split_only_times: np.ndarray | None = None) -> None:
         self.times = times
         self.strengths = strengths
         self.envelope = envelope
         self.envelope_times = envelope_times
+        # Articulations that are not attacks -- a change of timbre: they may split
+        # a note on one pitch and block the same-pitch merge, but nothing is
+        # snapped to them and they take no part in setting the strength bar.
+        self.split_only_times = np.zeros(0) if split_only_times is None else np.asarray(split_only_times)
 
     def __len__(self) -> int:
         return int(self.times.shape[0])
@@ -137,6 +141,40 @@ def _voicing_return(voicing: np.ndarray, frame: int, threshold: float, limit: in
     return end if end < n and end - frame <= limit else frame
 
 
+def timbre_change_times(audio: np.ndarray, config: TranscriptionConfig) -> np.ndarray:
+    """Times of strong changes in the spectral envelope -- a new syllable's vowel.
+
+    Re-singing a note on its own pitch changes what is sung: a consonant, a new
+    vowel. Spectral flux and level miss most of these when the consonant is
+    voiced or there is none, but the envelope still moves. The envelope is
+    MFCC c1-c7 on a 20-band mel spectrum (coarse, so harmonics moving under
+    vibrato barely register), standardised per recording; novelty is the
+    distance between its means over 50 ms either side of each frame, relative
+    to the recording's median novelty. Peaks of at least
+    ``timbre_split_ratio`` are returned.
+    """
+    import librosa
+
+    hop = config.hop_length
+    mel = librosa.feature.melspectrogram(y=np.asarray(audio, dtype=float), sr=config.sample_rate,
+                                         n_fft=512, hop_length=hop, n_mels=20, fmax=5000)
+    mfcc = librosa.feature.mfcc(S=librosa.power_to_db(mel + 1e-10), n_mfcc=8)[1:]
+    mfcc = (mfcc - mfcc.mean(axis=1, keepdims=True)) / (mfcc.std(axis=1, keepdims=True) + 1e-9)
+    half, gap = 5, 1
+    n = mfcc.shape[1]
+    novelty = np.zeros(n)
+    for t in range(half + gap, n - half - gap):
+        novelty[t] = np.linalg.norm(mfcc[:, t - gap - half:t - gap].mean(axis=1)
+                                    - mfcc[:, t + gap:t + gap + half].mean(axis=1))
+    positive = novelty[novelty > 0]
+    if positive.size == 0:
+        return np.zeros(0)
+    novelty /= float(np.median(positive))
+    peaks = [t for t in range(1, n - 1) if novelty[t] >= novelty[t - 1] and novelty[t] > novelty[t + 1]
+             and novelty[t] >= config.timbre_split_ratio]
+    return np.array(peaks, dtype=float) * hop / config.sample_rate
+
+
 def voicing_breaks(voicing: np.ndarray, threshold: float, min_frames: int, max_frames: int) -> List[int]:
     """Frames where voicing returns after a short break inside sung sound.
 
@@ -189,18 +227,19 @@ def split_segments_on_onsets(
     takes a consonant or a glottal onset, which either quietens the sound or
     roughens it with noise; a vowel change or vibrato does neither.
     """
-    if len(onsets) == 0 or not segments:
+    if (len(onsets) == 0 and onsets.split_only_times.size == 0) or not segments:
         return segments
 
     strengths = onsets.strengths[np.isfinite(onsets.strengths)]
-    if strengths.size == 0:
-        return segments
-    # The bar is set by the other onsets, so it is a typical onset for this
-    # recording rather than a typical frame, and a handful of very loud ones
-    # cannot drag it up.
-    threshold = config.onset_split_strength_ratio * float(np.median(strengths))
-
-    strong_times = onsets.times[onsets.strengths >= threshold]
+    if strengths.size:
+        # The bar is set by the other onsets, so it is a typical onset for this
+        # recording rather than a typical frame, and a handful of very loud ones
+        # cannot drag it up.
+        threshold = config.onset_split_strength_ratio * float(np.median(strengths))
+        strong_times = onsets.times[onsets.strengths >= threshold]
+    else:
+        strong_times = onsets.times[np.isinf(onsets.strengths)]
+    strong_times = np.sort(np.concatenate([strong_times, onsets.split_only_times]))
     if strong_times.size == 0:
         return segments
 
@@ -487,7 +526,15 @@ def refine_segments(
             all_strengths = np.concatenate([onsets.strengths, np.full(times.size, np.inf)])
             order = np.argsort(all_times, kind="stable")
             onsets = OnsetTrack(all_times[order], all_strengths[order], onsets.envelope,
-                                onsets.envelope_times)
+                                onsets.envelope_times, onsets.split_only_times)
+    if (config.timbre_split_ratio > 0 and audio is not None
+            and onsets.split_only_times.size == 0):
+        # A strong change of timbre inside a note on one pitch is a new syllable:
+        # it may split the note and blocks the same-pitch merge, but it is not an
+        # attack, so nothing is snapped to it. Computed once; a second decoding
+        # pass reuses the track.
+        onsets = OnsetTrack(onsets.times, onsets.strengths, onsets.envelope,
+                            onsets.envelope_times, split_only_times=timbre_change_times(audio, config))
     segments = split_segments_on_onsets(segments, onsets, frame_times, config,
                                         loudness_db, periodicity, voicing)
     segments = snap_segment_starts(segments, onsets, frame_times, config, voicing)

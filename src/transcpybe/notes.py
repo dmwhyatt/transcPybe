@@ -312,7 +312,8 @@ def merge_same_pitch(
     if len(notes) < 2:
         return notes
 
-    onset_times = onsets.times if onsets is not None else np.zeros(0)
+    onset_times = (np.concatenate([onsets.times, onsets.split_only_times])
+                   if onsets is not None else np.zeros(0))
 
     merged: List[Note] = [notes[0]]
     for note in notes[1:]:

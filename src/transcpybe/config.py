@@ -396,6 +396,18 @@ class TranscriptionConfig:
     voicing_break_min_s: float = 0.02
     """Shortest break in voicing ``split_on_voicing_breaks`` acts on."""
 
+    timbre_split_ratio: float = 0.0
+    """Split a note on one pitch at a change of timbre this strong.
+
+    A repeated note sung on a new syllable changes the vowel, and often nothing
+    else that spectral flux or level would catch: a voiced consonant or a vowel
+    onset barely moves either. The change is measured as spectral-envelope
+    novelty relative to the recording's median (``timbre_change_times``); peaks
+    at least this many times the median may split a same-pitch note and stop
+    the same-pitch merge rejoining it. Needs the audio, so a decode replayed
+    from cached tracks does without it. 0 turns it off, which is the behaviour
+    from before this option existed."""
+
     onset_snap_window_s: float = 0.05
     """Note starts are pulled to a detected onset within this window."""
 
@@ -677,6 +689,8 @@ class TranscriptionConfig:
             raise ValueError("min_note_interval_semitones must be non-negative")
         if not 0.0 <= self.glide_onset_position <= 1.0:
             raise ValueError("glide_onset_position must be in [0, 1]")
+        if self.timbre_split_ratio < 0:
+            raise ValueError("timbre_split_ratio must be non-negative")
         if self.syllable_dip_db < 0:
             raise ValueError("syllable_dip_db must be non-negative")
         if self.syllable_lead_s < 0:
