@@ -144,6 +144,8 @@ class CorpusRecording:
             if glide_onset != "departure" and note.glide_start is not None:
                 frac = 0.5 if glide_onset == "midpoint" else 1.0
                 onset = max(onset, note.glide_start + frac * (note.glide_end - note.glide_start))
+                if onset >= note.end:                   # never at or past the note's own end
+                    onset = note.end - 0.01
             onsets.append(onset)
         out = []
         for i, note in enumerate(self.notes):
@@ -299,6 +301,8 @@ def make_recording(seed: int, *, with_reverb: bool = True,
         nt["kind"] = kind
         nt["glide"] = (same_phrase_prev and kind in ("melisma", "vowel", "voiced")
                        and prev["midi"] != nt["midi"] and rng.random() < p_glide)
+        if nt.get("ornament"):
+            nt["glide"] = False                  # a grace note is sung crisply, not slid into
         nt["cons_len"] = {"vowel": 0.0, "melisma": 0.0, "voiced": rng.uniform(0.04, 0.09),
                           "plosive": rng.uniform(0.04, 0.10), "fricative": rng.uniform(0.07, 0.16)}[kind]
 
