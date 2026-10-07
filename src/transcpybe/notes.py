@@ -365,13 +365,21 @@ def trim_note_releases(
     second long.
 
     So: find the note's sustained level, walk back from its end while frames
-    sit below that level by ``release_drop_db``, and end the note there. The
-    threshold is per-note because a quiet note's release is quiet too, and it
-    is small because what it has to find is where the level *departed* from
-    sustain rather than where it became inaudible. A threshold set further down
-    the ramp lands at a fixed fraction of the release instead of at its top, so
-    the error it leaves grows with the release and long ones overshoot whatever
-    value is chosen.
+    sit more than ``release_drop_db`` below it, and end the note there. The
+    threshold is per-note because a quiet note's release is quiet too. What it
+    is after is where the level *departed* from sustain rather than where it
+    became inaudible, but it cannot look for that just below sustain: a held
+    note's level moves a long way without the note ending -- singers sag
+    across a phrase and ripple with their vibrato, and reverberation beating
+    against a moving pitch swings the level by 5 dB or more. A threshold
+    inside that range cannot tell those from a release, and walks back
+    through the note itself: at 1 dB it often ended notes half way through,
+    and cost vocadito 0.16 COnPOff, worse on all forty recordings. The price
+    of a deeper threshold is that it lands part of the way down the release
+    rather than at its top, so a long release leaves more of itself in the
+    note than a short one does. Where on that ramp a note's end belongs is an
+    annotation convention, and the 15 dB default is the compromise across the
+    conventions measured (see ``TranscriptionConfig.release_drop_db``).
 
     Two things this deliberately does not do. It never lengthens a note, only
     shortens one, so a decoder that already ended a note early is left alone.
