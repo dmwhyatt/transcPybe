@@ -124,12 +124,19 @@ class TranscriptionConfig:
     restores the old decoder exactly."""
 
     min_note_interval_semitones: float = 0.5
-    """Smallest pitch change the decoder may treat as a new note.
+    """Smallest change of decoder state the transition model allows.
 
-    Only matters with more than one state per semitone, where it stops a note
-    whose intonation drifts by a fifth of a semitone from being split into two
-    notes a fifth of a semitone apart. Half a semitone is the point at which
-    the change could round to a different integer pitch at all."""
+    Only matters with more than one state per semitone. Notes are cut where
+    the semitone a state lies nearest changes, not where the state does, so a
+    move between two states of one semitone -- 60.67 to 61.33 is two thirds
+    of a semitone, and both are 61 -- never splits a note, whatever this is.
+    What it guards is the smaller step that does cross between semitones:
+    61.33 to 61.67 is a third of a semitone, from a 61 to a 62. A note sung
+    near the midpoint of two semitones, wandering a quarter tone either side
+    of it, can take that step and come out as two notes a semitone apart. At
+    0.5 a grid of three to the semitone cannot step by a third, so the note
+    stays on one state, while a real change of note -- two thirds of a
+    semitone or more -- is still open to it."""
 
     # ---------------- Portamento / glides ----------------
     absorb_glides: bool = True

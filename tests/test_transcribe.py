@@ -257,6 +257,118 @@ def test_fine_grid_does_not_split_a_drifting_note():
     assert len(segment_notes(_hand_track(midi), TranscriptionConfig())) == 1
 
 
+def test_path_to_segments_cuts_where_the_semitone_changes_not_the_state():
+    """Two states that lie nearest one semitone are one note, not two.
+
+    Segments used to be cut at every change of state. At three states per
+    semitone, 60.67 and 61.33 are both nearest 61, so a path moving from one
+    to the other produced two contiguous segments both labelled 61.
+    """
+    # pitch_lo 60, three to the semitone: state 3 is 60.67, 5 is 61.33 and 6
+    # is 61.67 -- labelled 61, 61 and 62.
+    path = np.array([0, 3, 3, 5, 5, 0, 5, 6, 6])
+    segments = path_to_segments(path, pitch_lo=60, steps=3)
+    assert [(s.start_frame, s.end_frame, s.pitch) for s in segments] == [
+        (1, 5, 61), (6, 7, 61), (7, 9, 62),
+    ]
+
+
+def test_a_note_drifting_across_its_semitone_is_one_segment():
+    """Intonation drift of 0.6 inside one held note split it in two.
+
+    A change of two thirds of a semitone is allowed, and 60.67 to 61.33 is
+    one that stays on the same semitone. A note held at 60.7 that settles to
+    61.3 moved the decoder between them, and came out as two segments both
+    labelled 61 with a boundary in the middle of the note.
+    """
+    for drift in (np.linspace(60.7, 61.3, 20), np.full(20, 61.3)):
+        midi = np.full(160, np.nan)
+        midi[20:70] = 60.7
+        midi[70:90] = drift
+        midi[90:140] = 61.3
+        segments = segment_notes(_hand_track(midi), TranscriptionConfig())
+        assert [s.pitch for s in segments] == [61]
+        assert abs(segments[0].start_frame - 20) <= 2
+        assert abs(segments[0].end_frame - 140) <= 2
+
+
+def test_a_weak_onset_does_not_split_a_note_that_drifts_across_its_semitone():
+    """A boundary inside a held note was treated as a note start downstream.
+
+    The drift above left a segment boundary where the decoder changed state.
+    Snapping moved it back onto a weak onset nearby -- an accent, a diphthong
+    -- and merging then saw that onset between the two halves and took it as
+    a re-articulation, so one held note was reported as two. The same onset
+    on a note that did not drift is too weak to split anything.
+    """
+    from transcpybe.core import decode_notes
+    from transcpybe.onsets import OnsetTrack
+
+    drifting = np.full(160, np.nan)
+    drifting[20:70] = 60.7
+    drifting[70:90] = np.linspace(60.7, 61.3, 20)
+    drifting[90:140] = 61.3
+    steady = np.where(np.isfinite(drifting), 61.0, np.nan)
+
+    for name, midi in (("steady", steady), ("drifting", drifting)):
+        track = _hand_track(midi)
+        # The note's own attack, and a much weaker one 40 ms before the
+        # drifting note's decoder changes state.
+        onsets = OnsetTrack(np.array([0.20, 0.76]), np.array([5.0, 1.0]),
+                            np.zeros(160), track.times)
+        notes, _, _, _ = decode_notes(track, TranscriptionConfig(), onsets=onsets)
+        assert [n.pitch for n in notes] == [61], name
+
+
+def test_an_accent_does_not_split_a_drifting_note_in_audio():
+    """The same failure end to end, from audio, with a pYIN track and real onsets.
+
+    A held note rising from 60.7 to 61.3, swelling by 10 dB just before it
+    arrives, inside a phrase of plainly attacked notes. The swell's onset is
+    too weak to split a note on its own -- a steady 61 with the same swell is
+    one note -- and the drifting one used to come out as two.
+    """
+    from transcpybe.synth import synth_voice
+
+    sr = 16000
+
+    def voice(pitch_curve, rng, swell_at=None):
+        out = synth_voice(midi_to_hz(pitch_curve), sr, rng=rng)
+        ramp = int(0.02 * sr)
+        out[:ramp] *= np.linspace(0.0, 1.0, ramp)
+        out[-ramp:] *= np.linspace(1.0, 0.0, ramp)
+        if swell_at is not None:
+            # 10 dB up over 20 ms, and held there.
+            t = np.arange(out.size) / sr
+            out *= 10.0 ** (-0.5 + 0.5 * np.clip((t - swell_at) / 0.02, 0.0, 1.0))
+        return out
+
+    def phrase(held):
+        rng = np.random.default_rng(0)
+        gap = np.zeros(int(0.15 * sr))
+        parts = [np.zeros(int(0.3 * sr))]
+        for pitch in (64.0, None, 62.0, 65.0):
+            if pitch is None:
+                parts.append(voice(held, rng, swell_at=0.56))
+            else:
+                parts.append(voice(np.full(int(0.5 * sr), pitch), rng))
+            parts.append(gap)
+        parts.append(np.zeros(int(0.3 * sr)))
+        audio = np.concatenate(parts)
+        audio /= np.abs(audio).max()
+        audio += rng.normal(0.0, 1e-3, audio.size)
+        return audio.astype(np.float32)
+
+    drifting = np.concatenate([np.full(int(0.6 * sr), 60.7),
+                               np.linspace(60.7, 61.3, int(0.05 * sr)),
+                               np.full(int(0.6 * sr), 61.3)])
+    steady = np.full(drifting.size, 61.0)
+
+    for name, held in (("steady", steady), ("drifting", drifting)):
+        notes = transcribe_audio(phrase(held), pyin_config()).notes
+        assert [n.pitch for n in notes] == [64, 61, 62, 65], name
+
+
 def test_one_state_per_semitone_is_the_old_decoder():
     config = TranscriptionConfig(pitch_states_per_semitone=1)
     log_a = build_transition_matrix(10, config)

@@ -19,6 +19,11 @@ a note sung near the midpoint of two semitones -- ordinary for a singer with no
 reference pitch, or with a quarter tone of intonation scatter -- is equally well
 explained by both, and its vibrato flips the decoder between them several times
 a second. On a finer grid such a note has a state of its own to sit on.
+
+The finer grid is for the decoder's benefit only. Segments are still cut where
+the *semitone* changes, not where the state does, so a held note that drifts
+from one of its semitone's states to another remains one note (see
+``path_to_segments``).
 """
 
 from __future__ import annotations
@@ -37,7 +42,7 @@ _NEG_INF = -1e30
 
 @dataclass
 class Segment:
-    """A contiguous run of frames decoded to the same pitch state."""
+    """A contiguous run of voiced frames decoded to the same semitone."""
 
     start_frame: int
     end_frame: int      # exclusive
@@ -196,24 +201,38 @@ def viterbi(log_emission: np.ndarray, log_transition: np.ndarray) -> np.ndarray:
 def path_to_segments(path: np.ndarray, pitch_lo: int, steps: int = 1) -> List[Segment]:
     """Group a decoded state path into contiguous voiced segments.
 
-    A segment is labelled with the semitone its state lies nearest. That label
-    only steers the stages between here and pitch measurement, which re-reads
-    every note's pitch from its own frames."""
+    A segment is labelled with the semitone its state lies nearest, and is cut
+    where that semitone changes or voicing stops -- not wherever the state
+    does. With more than one state per semitone the decoder may move between
+    two states of the same semitone inside one held note: at three to the
+    semitone, 60.67 to 61.33 is a change of two thirds, which
+    ``min_note_interval_semitones`` allows, and both are 61. Cut there, the
+    note became two contiguous segments of one pitch, and the boundary between
+    them was then treated as a note start -- snapped onto any weak onset
+    nearby, which merging afterwards read as a re-articulation. A genuine
+    re-articulation on one semitone is no business of the decoder's either
+    way: it has no pitch change to see, and the onset stage splits it.
+
+    The label only steers the stages between here and pitch measurement, which
+    re-reads every note's pitch from its own frames."""
     steps = max(int(steps), 1)
     segments: List[Segment] = []
     if path.size == 0:
         return segments
 
-    # Boundaries wherever the state index changes.
-    change = np.flatnonzero(np.diff(path)) + 1
+    # Every frame's semitone, with -1 (no MIDI number) for unvoiced frames, so
+    # a boundary falls wherever the semitone changes or voicing starts or stops.
+    labels = np.where(path > 0,
+                      pitch_lo + np.floor((path - 1) / steps + 0.5).astype(np.int64),
+                      -1)
+    change = np.flatnonzero(np.diff(labels)) + 1
     starts = np.concatenate(([0], change))
     ends = np.concatenate((change, [path.size]))
 
     for start, end in zip(starts, ends):
-        state = int(path[start])
-        if state == 0:          # unvoiced
+        pitch = int(labels[start])
+        if pitch < 0:           # unvoiced
             continue
-        pitch = pitch_lo + int(np.floor((state - 1) / steps + 0.5))
         segments.append(Segment(start_frame=int(start), end_frame=int(end), pitch=pitch))
     return segments
 
