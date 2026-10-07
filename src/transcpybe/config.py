@@ -376,6 +376,26 @@ class TranscriptionConfig:
     syllables that start on a vowel or a voiced consonant; a dip finds many of
     them. 0 consults onsets alone."""
 
+    onset_voicing_guard: bool = False
+    """Never put a note start inside an unvoiced stretch.
+
+    An onset detector fires on a consonant's burst or hiss, before the pitched
+    sound starts. With this on, a split or a snapped start lands where voicing
+    returns after the consonant instead. Off is the behaviour from before this
+    option existed."""
+
+    split_on_voicing_breaks: bool = False
+    """Treat a short break in voicing inside sung sound as a re-articulation.
+
+    A break of ``voicing_break_min_s`` to 150 ms, with voiced sound either side,
+    is an unvoiced consonant between syllables. With this on it may split a note
+    on one pitch -- a repeated note sung on a new syllable -- and stops the
+    same-pitch merge rejoining the halves. Off is the behaviour from before this
+    option existed."""
+
+    voicing_break_min_s: float = 0.02
+    """Shortest break in voicing ``split_on_voicing_breaks`` acts on."""
+
     onset_snap_window_s: float = 0.05
     """Note starts are pulled to a detected onset within this window."""
 

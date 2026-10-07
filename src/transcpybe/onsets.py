@@ -119,6 +119,49 @@ def _dip_depth(values: np.ndarray, frame: int) -> float:
     return shoulder - float(valley.min()) if np.isfinite(shoulder) else 0.0
 
 
+def _voicing_return(voicing: np.ndarray, frame: int, threshold: float, limit: int) -> int:
+    """Where voicing comes back after an unvoiced stretch at, or just after, ``frame``.
+
+    An onset detector fires on a consonant's burst or hiss, but a note's pitched
+    sound starts where voicing returns after it. If an unvoiced stretch begins
+    within three frames of ``frame`` and ends within ``limit`` frames of it,
+    that end is returned; otherwise ``frame`` itself.
+    """
+    n = voicing.shape[0]
+    start = next((f for f in range(frame, min(frame + 4, n)) if voicing[f] < threshold), None)
+    if start is None:
+        return frame
+    end = start
+    while end < n and voicing[end] < threshold:
+        end += 1
+    return end if end < n and end - frame <= limit else frame
+
+
+def voicing_breaks(voicing: np.ndarray, threshold: float, min_frames: int, max_frames: int) -> List[int]:
+    """Frames where voicing returns after a short break inside sung sound.
+
+    A break of ``min_frames`` to ``max_frames`` with at least three voiced
+    frames either side is an unvoiced consonant between two syllables -- a
+    re-articulation, whether or not the pitch changes. Longer breaks are rests,
+    which the decoder already ends a note at.
+    """
+    n = voicing.shape[0]
+    voiced = voicing >= threshold
+    out, f = [], 3
+    while f < n - 3:
+        if not voiced[f] and voiced[f - 1]:
+            g = f
+            while g < n and not voiced[g]:
+                g += 1
+            if (min_frames <= g - f <= max_frames and g + 3 <= n
+                    and voiced[f - 3:f].all() and voiced[g:g + 3].all()):
+                out.append(g)
+            f = g
+        else:
+            f += 1
+    return out
+
+
 def split_segments_on_onsets(
     segments: List[Segment],
     onsets: OnsetTrack,
@@ -126,6 +169,7 @@ def split_segments_on_onsets(
     config: TranscriptionConfig,
     loudness_db: np.ndarray | None = None,
     periodicity: np.ndarray | None = None,
+    voicing: np.ndarray | None = None,
 ) -> List[Segment]:
     """Split segments wherever a strong onset falls well inside them.
 
@@ -182,6 +226,13 @@ def split_segments_on_onsets(
             (cut_frames - seg.start_frame >= min_gap_frames)
             & (seg.end_frame - cut_frames >= min_gap_frames)
         ]
+        if config.onset_voicing_guard and voicing is not None:
+            # cut where the pitched sound starts, not on the consonant before it
+            limit = int(round(0.15 * config.sample_rate / config.hop_length))
+            cut_frames = np.array([_voicing_return(voicing, int(c), config.voicing_threshold, limit)
+                                   for c in cut_frames], dtype=int)
+            cut_frames = cut_frames[(cut_frames - seg.start_frame >= min_gap_frames)
+                                    & (seg.end_frame - cut_frames >= min_gap_frames)]
         if config.onset_split_min_dip_db > 0 and loudness_db is not None:
             use_periodicity = (config.onset_split_min_periodicity_dip > 0
                                and periodicity is not None)
@@ -206,6 +257,7 @@ def snap_segment_starts(
     onsets: OnsetTrack,
     frame_times: np.ndarray,
     config: TranscriptionConfig,
+    voicing: np.ndarray | None = None,
 ) -> List[Segment]:
     """Pull each segment start to a detected onset within ``onset_snap_window_s``.
 
@@ -215,7 +267,8 @@ def snap_segment_starts(
     'both' the nearest on either side. Under 'earlier', when there is no onset
     in the window before the start that it can move to, but there is one
     after it, the start stays and that onset is recorded as the segment's
-    ``measure_from`` instead.
+    ``measure_from`` instead. With ``onset_voicing_guard`` and ``voicing``
+    given, each onset first moves on to where voicing returns after it.
 
     A start may move later, or earlier into silence, as long as the segment
     keeps at least one frame. Where the segment begins exactly where the one
@@ -244,6 +297,12 @@ def snap_segment_starts(
     onset_frames = np.clip(onset_frames, 0, frame_times.shape[0] - 1)
     if onset_frames.size == 0:
         return segments
+
+    if config.onset_voicing_guard and voicing is not None:
+        # An onset fires on a consonant's burst or hiss; the note's pitched
+        # sound starts where voicing returns, so that is where it counts from.
+        onset_frames = np.array([_voicing_return(voicing, int(f), config.voicing_threshold, window_frames)
+                                 for f in onset_frames])
 
     direction = config.onset_snap_direction
     out: List[Segment] = []
@@ -396,6 +455,7 @@ def refine_segments(
     onsets: OnsetTrack | None = None,
     loudness_db: np.ndarray | None = None,
     periodicity: np.ndarray | None = None,
+    voicing: np.ndarray | None = None,
 ) -> tuple[List[Segment], OnsetTrack | None]:
     """Apply onset-based splitting then start-snapping.
 
@@ -411,7 +471,24 @@ def refine_segments(
         if audio is None:
             raise ValueError("refine_segments needs either audio or precomputed onsets")
         onsets = detect_onsets(audio, config)
+    if config.split_on_voicing_breaks and voicing is not None:
+        # A short break in voicing is an unvoiced consonant: an articulation, so
+        # it joins the onsets -- to split a note, and to stop the same-pitch
+        # merge rejoining the halves. Added once; a second decoding pass reuses
+        # the track.
+        hop_s = config.hop_length / config.sample_rate
+        frames = voicing_breaks(voicing, config.voicing_threshold,
+                                max(1, int(round(config.voicing_break_min_s / hop_s))),
+                                int(round(0.15 / hop_s)))
+        times = frame_times[np.array(frames, dtype=int)] if frames else np.zeros(0)
+        times = times[~np.isin(times, onsets.times)]
+        if times.size:
+            all_times = np.concatenate([onsets.times, times])
+            all_strengths = np.concatenate([onsets.strengths, np.full(times.size, np.inf)])
+            order = np.argsort(all_times, kind="stable")
+            onsets = OnsetTrack(all_times[order], all_strengths[order], onsets.envelope,
+                                onsets.envelope_times)
     segments = split_segments_on_onsets(segments, onsets, frame_times, config,
-                                        loudness_db, periodicity)
-    segments = snap_segment_starts(segments, onsets, frame_times, config)
+                                        loudness_db, periodicity, voicing)
+    segments = snap_segment_starts(segments, onsets, frame_times, config, voicing)
     return segments, onsets

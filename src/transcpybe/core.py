@@ -146,7 +146,7 @@ def _decode_pass(
     segments = handle_glides(segments, track, config)
     segments, onsets = refine_segments(segments, audio, track.times, config,
                                        onsets=onsets, loudness_db=track.loudness_db,
-                                       periodicity=track.periodicity)
+                                       periodicity=track.periodicity, voicing=track.voicing)
     if onsets is not None:
         segments = attach_late_arrivals(segments, onsets, track.times, config,
                                         track.loudness_db)

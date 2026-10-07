@@ -776,6 +776,24 @@ def test_a_late_arrival_inside_the_last_note_moves_the_boundary_back():
     assert [(s.start_frame, s.end_frame) for s in out] == [(10, 70), (70, 140)]
 
 
+def test_a_short_break_in_voicing_inside_sung_sound_is_a_re_articulation():
+    from transcpybe.onsets import voicing_breaks
+
+    voicing = np.ones(100)
+    voicing[40:44] = 0.0          # 40 ms: an unvoiced consonant between syllables
+    voicing[70:95] = 0.0          # 250 ms: a rest, which the decoder handles
+    assert voicing_breaks(voicing, 0.3, 2, 15) == [44]
+
+
+def test_the_voicing_guard_moves_an_onset_off_the_consonant():
+    from transcpybe.onsets import _voicing_return
+
+    voicing = np.ones(100)
+    voicing[50:57] = 0.0          # the consonant the onset detector fired on
+    assert _voicing_return(voicing, 49, 0.3, 15) == 57
+    assert _voicing_return(voicing, 30, 0.3, 15) == 30, "no consonant nearby: unchanged"
+
+
 def test_a_melisma_with_no_onset_before_it_is_left_alone():
     segments = [Segment(10, 80, 60), Segment(80, 140, 62)]
     assert _late_arrival([0.10], segments) == segments
