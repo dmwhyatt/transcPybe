@@ -424,6 +424,35 @@ def test_glide_backtrack_stops_at_a_note_held_off_its_semitone():
     assert abs(out[0].end_frame - 90) <= 2
 
 
+@pytest.mark.parametrize("tail", ["held", "drifting"])
+def test_glide_backtrack_stops_at_a_tail_held_off_the_note_s_measured_pitch(tail):
+    """What the plateau test is for: a tail that never comes back to the note.
+
+    The note before is measured at 60.0, its median, but its last half second
+    sits off that towards the next note -- held at 60.5, or drifting up to
+    60.6 -- inside the corridor and never within tolerance of 60.0. Only the
+    plateau test stops the walk there. Without it the walk marches back
+    through the tail, to its 300 ms limit or nearly, and takes the tail from
+    the note it belongs to.
+    """
+    from transcpybe.glide import backtrack_glide_onsets
+
+    midi = np.full(260, np.nan)
+    midi[10:100] = 60.0
+    midi[100:150] = 60.5 if tail == "held" else np.linspace(60.0, 60.6, 50)
+    midi[150:156] = np.linspace(midi[149], 62.0, 6)
+    midi[156:240] = 62.0
+    track = _hand_track(midi)
+    segments = [Segment(10, 153, 60), Segment(153, 240, 62)]
+
+    config = TranscriptionConfig(glide_onset_position=0.0)
+    out = backtrack_glide_onsets(segments, track, config)
+    assert out[1].start_frame >= 148 and out[0].end_frame >= 148
+
+    no_plateau = dataclasses.replace(config, glide_plateau_frames=1000)
+    assert backtrack_glide_onsets(segments, track, no_plateau)[1].start_frame <= 130
+
+
 def test_glide_backtrack_still_finds_the_start_of_a_glide():
     from transcpybe.glide import backtrack_glide_onsets
 
@@ -435,6 +464,53 @@ def test_glide_backtrack_still_finds_the_start_of_a_glide():
     segments = [Segment(10, 90, 60), Segment(90, 150, 62)]
 
     # The walk itself: where in the glide the onset then goes is tested below.
+    config = TranscriptionConfig(glide_onset_position=0.0)
+    out = backtrack_glide_onsets(segments, track, config)
+    assert out[1].start_frame <= 84
+
+
+def test_glide_backtrack_follows_a_slow_glide():
+    """A slow glide is still a glide, not a held note.
+
+    The plateau test read any five frames spanning less than a quarter of a
+    semitone as held. A semitone sung over 400 ms moves a tenth of a
+    semitone in five frames, so the walk stopped on its first five, gave them
+    back, and left the onset where the decoder had put it, halfway up the
+    glide.
+    """
+    from transcpybe.glide import backtrack_glide_onsets
+
+    midi = np.full(220, np.nan)
+    midi[10:80] = 60.0
+    midi[80:120] = np.linspace(60.0, 61.0, 40)   # a semitone over 400 ms
+    midi[120:200] = 61.0
+    track = _hand_track(midi)
+    # The decoder's boundary, halfway up the glide.
+    segments = [Segment(10, 100, 60), Segment(100, 200, 61)]
+
+    config = TranscriptionConfig(glide_onset_position=0.0)
+    out = backtrack_glide_onsets(segments, track, config)
+    # The contour leaves 60's tolerance of 0.35 at frame 94.
+    assert 90 <= out[1].start_frame <= 95
+
+
+def test_glide_backtrack_walks_back_through_a_late_switch():
+    """Frames already at the new pitch are the new note, not a plateau.
+
+    Where the decoder switched only after the glide had arrived, the frames
+    just before the boundary hold the new note's pitch. They sit inside the
+    corridor, so they read as a held plateau and the walk gave them back: the
+    onset stayed 70 ms after the pitch arrived and 170 ms after it set off.
+    """
+    from transcpybe.glide import backtrack_glide_onsets
+
+    midi = np.full(200, np.nan)
+    midi[10:80] = 60.0
+    midi[80:90] = np.linspace(60.0, 62.0, 10)    # a 100 ms slide
+    midi[90:180] = 62.0
+    track = _hand_track(midi)
+    segments = [Segment(10, 97, 60), Segment(97, 180, 62)]   # switched 70 ms late
+
     config = TranscriptionConfig(glide_onset_position=0.0)
     out = backtrack_glide_onsets(segments, track, config)
     assert out[1].start_frame <= 84

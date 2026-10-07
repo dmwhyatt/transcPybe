@@ -103,8 +103,9 @@ def backtrack_glide_onsets(
 
     From each boundary, walk backwards while the contour is still travelling
     between the two note levels, stopping once it has returned to the previous
-    note's pitch or has stopped moving. Bounded by ``glide_max_backtrack_s`` so
-    that a wobbling sustain cannot swallow the note before it.
+    note's pitch or has stopped moving towards it. Bounded by
+    ``glide_max_backtrack_s`` so that a wobbling sustain cannot swallow the
+    note before it.
 
     "The previous note's pitch" is the pitch it was sung at, measured from its
     frames, not the integer state the decoder gave it. The two differ by up to
@@ -113,9 +114,21 @@ def backtrack_glide_onsets(
     without ever coming within ``glide_edge_tolerance_semitones`` of the
     integer: the walk then marched back through the held note to its full
     300 ms limit. A legato phrase with alternate notes 40 cents sharp lost
-    three onsets in four that way. The plateau test is the second guard: a
-    glide moves, so ``glide_plateau_frames`` frames that hold one pitch mean
-    the walk has left it, wherever the pitch they hold.
+    three onsets in four that way.
+
+    The plateau test is the second guard, for a held part that sits off even
+    the measured pitch -- a tail drifting away from the note's median towards
+    the next note. Walked backwards, a glide makes steady progress towards the
+    note it came from, so ``glide_plateau_frames`` frames that make less than
+    ``glide_plateau_semitones`` of it mean the walk has left the glide,
+    wherever the pitch they hold. Progress, not span, and over more than the
+    five frames it once was: a slow glide is narrow over a short window too,
+    and a semitone sung over 400 ms, a tenth of a semitone in five frames,
+    stopped the walk on the first five frames it visited. Frames still within
+    tolerance of the note being approached never count towards a plateau.
+    They are that note, held, left before the boundary by a decoder that
+    switched only after the pitch had arrived; they used to read as a plateau
+    and keep the onset late, and the walk now carries on back through them.
 
     The walk may cross a short unvoiced gap: a rapid glide drives the pitch
     tracker's confidence down, so the decoder often inserts spurious silence in
@@ -198,12 +211,22 @@ def backtrack_glide_onsets(
                 break                                   # back at the previous note
             if not (low <= pitch <= high):
                 break                                   # left the transition corridor
-            visited.append(pitch)
-            if (len(visited) >= plateau_frames
-                    and np.ptp(visited[-plateau_frames:]) < config.glide_plateau_semitones):
-                # Held, not gliding: give back the plateau's frames.
-                boundary += plateau_frames - 1
-                break
+            if abs(pitch - current_pitch) <= tolerance:
+                # Still at the note being approached: the decoder switched
+                # after the pitch had arrived. That is the current note held,
+                # not a plateau the walk has wandered onto, so walk on back
+                # through it.
+                visited = []
+            else:
+                visited.append(pitch)
+                if len(visited) >= plateau_frames:
+                    # Net movement towards the previous note across the
+                    # window, not its span: vibrato spans, but goes nowhere.
+                    progress = (visited[-plateau_frames] - visited[-1]) * towards_previous
+                    if progress < config.glide_plateau_semitones:
+                        # Held, not gliding: give back the plateau's frames.
+                        boundary += plateau_frames - 1
+                        break
             last_pitch = pitch
             boundary -= 1
 

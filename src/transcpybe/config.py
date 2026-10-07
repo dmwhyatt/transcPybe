@@ -179,18 +179,39 @@ class TranscriptionConfig:
     before the walk stops. Distinguishes a sung slide, which retreats steadily,
     from noise between notes, which wanders."""
 
-    glide_plateau_frames: int = 5
-    """A glide walk stops when this many consecutive frames hold one pitch.
+    glide_plateau_frames: int = 10
+    """A glide walk stops when this many consecutive frames make less than
+    ``glide_plateau_semitones`` of progress towards the previous note.
 
     A glide moves; a held note does not. The walk already stops on arriving
     back at the previous note's pitch, but a note that is sung a little off
     the pitch it is measured at can be held inside the corridor between the
     two notes without ever arriving, and the walk would then march back
     through it to its full ``glide_max_backtrack_s``. A plateau says the walk
-    has left the glide, wherever the plateau sits."""
+    has left the glide, wherever the plateau sits. Frames within
+    ``glide_edge_tolerance_semitones`` of the note being approached do not
+    count towards one: they are that note, held, before a late boundary.
+
+    Over ten frames, 0.25 of a semitone is a glide of about 2.8 semitones a
+    second, a semitone in 360 ms: anything slower reads as held once the walk
+    has followed it that far. Few walks are that long -- from a boundary
+    halfway up a one-semitone glide there is 0.15 of a semitone to cover --
+    so most slower glides are still followed to where they began. This was
+    five frames and a span test, which drew the line at 6 semitones a second
+    over a window that most walks fill: a semitone sung over 350 ms or more
+    read as held, the walk stopped on its first five frames, and the onset
+    stayed halfway up the glide. A longer window still would follow slower
+    glides, but the walk goes that far into a held note before it knows, and
+    whatever else stops it in there -- a vibrato trough dipping within
+    tolerance of the note's pitch -- leaves the onset that far early."""
 
     glide_plateau_semitones: float = 0.25
-    """Pitch span below which ``glide_plateau_frames`` frames count as held."""
+    """Least progress towards the previous note, across ``glide_plateau_frames``
+    frames, for the walk to count as still gliding.
+
+    Net progress from the first frame of the window to the last, not the
+    span of the window: a note held with vibrato spans as much as a glide
+    does, but goes nowhere."""
 
     glide_onset_position: float = 0.25
     """Where in a detected glide the next note's onset is placed.
