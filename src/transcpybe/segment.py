@@ -166,19 +166,22 @@ def build_emission_matrix(
     return emission
 
 
+def _log_initial(n_states: int) -> np.ndarray:
+    """Start in silence with probability 1/2, or in any pitch with the rest
+    spread uniformly -- most recordings begin before the first note."""
+    log_init = np.empty(n_states, dtype=np.float64)
+    log_init[0] = np.log(0.5)
+    log_init[1:] = np.log(0.5) - np.log(n_states - 1)
+    return log_init
+
+
 def viterbi(log_emission: np.ndarray, log_transition: np.ndarray) -> np.ndarray:
     """Standard Viterbi decode. Returns the (T,) array of state indices."""
     n_frames, n_states = log_emission.shape
     if n_frames == 0:
         return np.zeros(0, dtype=np.int32)
 
-    # Start in silence with probability 1/2, or in any pitch with the rest
-    # spread uniformly -- most recordings begin before the first note.
-    log_init = np.empty(n_states, dtype=np.float64)
-    log_init[0] = np.log(0.5)
-    log_init[1:] = np.log(0.5) - np.log(n_states - 1)
-
-    delta = log_init + log_emission[0]
+    delta = _log_initial(n_states) + log_emission[0]
     backpointers = np.zeros((n_frames, n_states), dtype=np.int32)
 
     for t in range(1, n_frames):
@@ -195,6 +198,120 @@ def viterbi(log_emission: np.ndarray, log_transition: np.ndarray) -> np.ndarray:
     path[-1] = int(np.argmax(delta))
     for t in range(n_frames - 1, 0, -1):
         path[t - 1] = backpointers[t, path[t]]
+    return path
+
+
+@dataclass
+class ChangeCost:
+    """The note changes of a transition matrix, as a distance cost.
+
+    ``build_transition_matrix`` prices a change from pitch state ``i`` to
+    ``j`` as ``row[i] - slope * |i - j|`` when the two are at least ``band``
+    states apart, and forbids it when they are closer. Each frame's best
+    change into every state is then a one-dimensional distance transform --
+    a running maximum up the states and another down them -- rather than a
+    maximum over every pair of states.
+    """
+
+    row: np.ndarray     # (n_pitches,) the per-row part of the cost
+    slope: float        # cost per state of distance
+    band: int           # nearest pitch state a change may reach
+
+
+def change_cost(log_transition: np.ndarray) -> Optional[ChangeCost]:
+    """Read a transition matrix's change cost from the matrix itself.
+
+    Returns None unless the matrix has exactly that shape -- one cost for
+    staying on a pitch, one for leaving it to silence, one for entering any
+    pitch from silence, and changes priced as above -- so a decode that uses
+    the result cannot disagree with the matrix it was read from. A matrix built
+    with its weights on the ``_EPS`` floor, or any other matrix, is decoded
+    densely instead.
+    """
+    block = log_transition[1:, 1:]
+    n = block.shape[0]
+    stay = np.diag(block)
+    if (n < 2 or not np.all(stay == stay[0])
+            or not np.all(log_transition[0, 1:] == log_transition[0, 1])
+            or not np.all(log_transition[1:, 0] == log_transition[1, 0])):
+        return None
+
+    allowed = block[0, 1:] > _NEG_INF / 2
+    if not allowed.any():
+        return None
+    band = int(np.argmax(allowed)) + 1
+    if band + 1 >= n:
+        return None
+    slope = float(block[0, band] - block[0, band + 1])
+
+    states = np.arange(n)
+    nearest = np.where(states + band < n, states + band, states - band)
+    row = block[states, nearest] + slope * band
+
+    distance = np.abs(states[:, None] - states[None, :])
+    change = distance >= band
+    priced = row[:, None] - slope * distance
+    if not (np.allclose(priced[change], block[change], rtol=0.0, atol=1e-9)
+            and np.all(block[(distance > 0) & ~change] <= _NEG_INF / 2)):
+        return None
+    return ChangeCost(row=row, slope=slope, band=band)
+
+
+def viterbi_banded(log_emission: np.ndarray, log_transition: np.ndarray,
+                   cost: ChangeCost) -> np.ndarray:
+    """Viterbi decode for a transition matrix of the shape ``ChangeCost`` reads.
+
+    The path ``viterbi`` finds, in time linear in the number of states rather
+    than quadratic. Three states to the semitone tripled the states, and a
+    dense decode is a maximum over every pair of them every frame, which made
+    it the one stage of segmentation whose cost the finer grid multiplied:
+    about three times slower. Here each frame's best change into every state
+    is a running maximum, and only the scores are kept going forwards: the
+    backtrace recovers each frame's predecessor from the matrix, for the one
+    state the path passes through.
+
+    The scores are summed in a different order from the dense decode's, so
+    they can differ in the last bit. That only matters where two paths are
+    exactly equally likely -- a contour passing exactly between two states,
+    which a synthetic glide can do -- and then either path may come back.
+    Both are equally the most likely one. On the realistic corpus's 160
+    recordings, decoded at two tuning offsets, the paths are identical.
+    """
+    n_frames, n_states = log_emission.shape
+    if n_frames == 0:
+        return np.zeros(0, dtype=np.int32)
+
+    band = cost.band
+    ramp = cost.slope * np.arange(n_states - 1)
+    from_below = cost.row + ramp
+    from_above = cost.row - ramp
+    stay_unvoiced = log_transition[0, 0]
+    voice = log_transition[0, 1]
+    unvoice = log_transition[1, 0]
+    stay = log_transition[1, 1]
+
+    scores = np.empty((n_frames, n_states), dtype=np.float64)
+    scores[0] = _log_initial(n_states) + log_emission[0]
+    for t in range(1, n_frames):
+        previous, pitched = scores[t - 1], scores[t - 1, 1:]
+        current = scores[t]
+        best = current[1:]
+        np.add(pitched, stay, out=best)
+        np.maximum(best, previous[0] + voice, out=best)
+        # A change up from at least ``band`` states below, then down from at
+        # least ``band`` above.
+        below = np.maximum.accumulate(pitched + from_below)
+        np.maximum(best[band:], below[:-band] - ramp[band:], out=best[band:])
+        above = np.maximum.accumulate((pitched + from_above)[::-1])[::-1]
+        np.maximum(best[:-band], above[band:] + ramp[:-band], out=best[:-band])
+        current[0] = max(previous[0] + stay_unvoiced, pitched.max() + unvoice)
+        current += log_emission[t]
+        current -= current.max()
+
+    path = np.empty(n_frames, dtype=np.int32)
+    path[-1] = int(np.argmax(scores[-1]))
+    for t in range(n_frames - 1, 0, -1):
+        path[t - 1] = int(np.argmax(scores[t - 1] + log_transition[:, path[t]]))
     return path
 
 
@@ -252,5 +369,9 @@ def segment_notes(track: F0Track, config: TranscriptionConfig,
     log_emission = build_emission_matrix(track, pitch_lo, n_pitches, config,
                                          tuning_offset, steps)
     log_transition = build_transition_matrix(n_pitches, config, steps)
-    path = viterbi(log_emission, log_transition)
+    cost = change_cost(log_transition)
+    if cost is None:
+        path = viterbi(log_emission, log_transition)
+    else:
+        path = viterbi_banded(log_emission, log_transition, cost)
     return path_to_segments(path, pitch_lo, steps)

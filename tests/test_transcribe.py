@@ -399,6 +399,70 @@ def test_one_state_per_semitone_is_the_old_decoder():
     assert np.allclose(np.exp(log_a).sum(axis=1), 1.0)
 
 
+@pytest.mark.parametrize("steps,min_interval,tau", [
+    (1, 0.5, 7.0), (2, 0.5, 7.0), (3, 0.5, 7.0), (3, 0.9, 20.0), (4, 0.3, 7.0),
+])
+def test_banded_decode_finds_the_dense_decodes_path(steps, min_interval, tau):
+    """The fast decode must agree with the dense one, not merely be fast.
+
+    It reads the change cost from the matrix, so the matrix it reads must be
+    rebuilt exactly from that cost; and on emissions with no exact ties --
+    where the most likely path is unique -- it must find the same path.
+    """
+    from transcpybe.segment import change_cost, viterbi, viterbi_banded
+
+    config = TranscriptionConfig(pitch_states_per_semitone=steps,
+                                 min_note_interval_semitones=min_interval,
+                                 interval_tau_semitones=tau)
+    lo, hi = pitch_range(config)
+    n_pitches = (hi - lo) * steps + 1
+    log_a = build_transition_matrix(n_pitches, config, steps)
+    cost = change_cost(log_a)
+    assert cost is not None
+
+    states = np.arange(n_pitches)
+    distance = np.abs(states[:, None] - states[None, :])
+    rebuilt = np.where(distance >= cost.band,
+                       cost.row[:, None] - cost.slope * distance, log_a[1:, 1:])
+    assert np.allclose(rebuilt, log_a[1:, 1:], rtol=0.0, atol=1e-9)
+
+    for seed in range(3):
+        log_e = 3.0 * np.random.default_rng(seed).normal(size=(300, n_pitches + 1))
+        assert np.array_equal(viterbi_banded(log_e, log_a, cost), viterbi(log_e, log_a))
+
+
+def test_banded_decode_is_as_likely_as_the_dense_one_on_exact_ties():
+    """Where two paths are exactly equally likely either may come back."""
+    from transcpybe.segment import _log_initial, change_cost, viterbi, viterbi_banded
+
+    config = TranscriptionConfig()
+    lo, hi = pitch_range(config)
+    n_pitches = (hi - lo) * 3 + 1
+    log_a = build_transition_matrix(n_pitches, config, 3)
+    log_e = 3.0 * np.random.default_rng(1).normal(size=(300, n_pitches + 1))
+    log_e[100:200] = 0.0
+
+    def likelihood(path):
+        steps = log_a[path[:-1], path[1:]] + log_e[np.arange(1, path.size), path[1:]]
+        return _log_initial(n_pitches + 1)[path[0]] + log_e[0, path[0]] + steps.sum()
+
+    banded = viterbi_banded(log_e, log_a, change_cost(log_a))
+    assert likelihood(banded) == pytest.approx(likelihood(viterbi(log_e, log_a)), abs=1e-9)
+
+
+def test_a_matrix_without_the_banded_shape_is_decoded_densely():
+    """A cost the matrix does not have must not be read into it."""
+    from transcpybe.segment import change_cost
+
+    # A narrow interval prior puts the far weights on the _EPS floor, which
+    # the distance cost cannot express.
+    config = TranscriptionConfig(interval_tau_semitones=0.5)
+    lo, hi = pitch_range(config)
+    n_pitches = (hi - lo) * 3 + 1
+    assert change_cost(build_transition_matrix(n_pitches, config, 3)) is None
+    assert change_cost(np.random.default_rng(0).normal(size=(20, 20))) is None
+
+
 # --------------------------------------------------------------------------
 # Glides
 # --------------------------------------------------------------------------
