@@ -56,6 +56,14 @@ the network never learns from values a separated stem cannot produce.
 
 ## Evaluation
 
+During training, validation logs precision, recall, onsets per reference note
+and onset timing (median and quartiles of estimate minus reference, and the
+share more than 25 ms early or late). Timing against the training convention
+only checks alignment: a network that marks notes at the consonant looks
+perfect against consonant labels. Add the other convention with
+`--extra-valid vowel=…/features.jsonl` to see a mismatch while training. The
+dry pilot put note starts 40-70 ms before the annotators of Molina and vocadito.
+
 The decision is made on the RWC-P development half, against configuration B
 from `dev/frozen.json` (COnP@150 0.659 on the development half, 0.650 on the test half): the
 same replay harness (`dev/replay.py`), with the network's onsets passed to

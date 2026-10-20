@@ -1,4 +1,5 @@
 """The boundary pipeline's pieces, and one run of the whole thing on three synthetic recordings."""
+import json
 from pathlib import Path
 
 import numpy as np
@@ -8,7 +9,7 @@ from boundary import HOP_S, items
 from boundary.features import LEVEL_RANGE, targets
 from boundary.infer import onset_track, pick_peaks
 from boundary.sources import _vowel_onsets, textgrid_tiers
-from boundary.train import Crops, resung
+from boundary.train import Crops, onset_timing, resung, timing_summary
 
 
 def test_targets_peak_on_the_labelled_frames_and_taper():
@@ -41,6 +42,16 @@ def test_onset_track_sits_on_the_f0_grid():
 def test_resung_finds_only_same_pitch_notes_with_no_gap():
     notes = [[0, 1, 60], [1, 2, 60], [2.2, 3, 60], [3, 4, 62]]
     assert resung(notes) == [1]
+
+
+def test_onset_timing_reports_a_consistent_lead_as_early():
+    ref = np.array([1.0, 2.0, 3.0, 4.0])
+    off = onset_timing(ref, ref - 0.06)                        # every estimate 60 ms early
+    assert off == pytest.approx([-0.06] * 4)
+    t = timing_summary(off)
+    assert t["timing_median_ms"] == pytest.approx(-60.0) and t["early_share"] == 1.0 and t["late_share"] == 0.0
+    assert onset_timing(ref, np.array([1.3])) == []           # nothing within 150 ms of anything
+    assert timing_summary([])["n_timed"] == 0
 
 
 def test_vowel_onsets_moves_a_consonant_start_to_its_vowel(tmp_path):
@@ -171,15 +182,22 @@ def test_whole_pipeline_on_three_synthetic_recordings(tmp_path: Path, capsys):
     assert "(0 computed, 3 reused)" in capsys.readouterr().out
 
     run = [str(tmp_path / "feat" / "features.jsonl"), "--out", str(tmp_path / "run"), "--steps", "20",
-           "--eval-every", "10", "--batch", "4", "--device", "cpu"]
+           "--eval-every", "10", "--batch", "4", "--device", "cpu",
+           "--extra-valid", f"again={tmp_path / 'feat' / 'features.jsonl'}"]
     train.main(run)
     assert (tmp_path / "run" / "best.pt").exists() and len((tmp_path / "run" / "log.jsonl").read_text().splitlines()) == 2
+    rec = json.loads((tmp_path / "run" / "log.jsonl").read_text().splitlines()[-1])
+    assert {"onset_p", "onset_r", "onsets_per_note", "timing_median_ms", "early_share"} <= set(rec)
+    assert rec["extra"]["again"]["onset_f"] == rec["onset_f"]  # the same set evaluated twice agrees
     best = (tmp_path / "run" / "best.pt").stat().st_mtime_ns
     train.main(run)                                   # finished: resumes past the end, overwrites nothing
     assert "resuming" in capsys.readouterr().out and (tmp_path / "run" / "best.pt").stat().st_mtime_ns == best
     assert len((tmp_path / "run" / "log.jsonl").read_text().splitlines()) == 2
     with pytest.raises(SystemExit):
-        train.main(run[:-2] + ["--seed", "1", "--device", "cpu"])   # a different run is refused, not mixed in
+        train.main(run[:-4] + ["--seed", "1", "--device", "cpu"])
+    capsys.readouterr()
+    train.main([str(tmp_path / "feat" / "features.jsonl"), "--eval-only", str(tmp_path / "run" / "best.pt"), "--device", "cpu"])
+    assert "timing_median_ms" in json.loads(capsys.readouterr().out)   # a different run is refused, not mixed in
 
     stem = items.read(tmp_path / "sep" / "stems.jsonl")[0]["stem"]
     infer.main([str(tmp_path / "run" / "best.pt"), stem, "--out-dir", str(tmp_path / "inf"), "--device", "cpu",
