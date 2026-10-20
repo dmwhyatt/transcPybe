@@ -4,11 +4,13 @@ bidirectional GRU over time with transcPybe's f0 features alongside.
 Time is never pooled, so every 10 ms frame gets its own three outputs (onset,
 offset, sounding) as logits. Frequency is pooled by the convolutions, which is
 where consonants and vowel changes show: broadband noise, formant moves.
-About 1M parameters at the defaults.
+About 0.8M parameters at the defaults.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass
+from typing import Optional
 
 import torch
 from torch import nn
@@ -27,8 +29,9 @@ class NetConfig:
 
 
 class BoundaryNet(nn.Module):
-    def __init__(self, cfg: NetConfig = NetConfig()):
+    def __init__(self, cfg: Optional[NetConfig] = None):
         super().__init__()
+        cfg = cfg if cfg is not None else NetConfig()
         self.cfg = cfg
         layers, c_in, f = [], 1, cfg.n_mels
         for c in cfg.channels:
@@ -42,19 +45,43 @@ class BoundaryNet(nn.Module):
                           bidirectional=True, dropout=cfg.dropout if cfg.gru_layers > 1 else 0.0)
         self.head = nn.Linear(2 * cfg.hidden, cfg.n_out)
 
-    def forward(self, mel: torch.Tensor, aux: torch.Tensor) -> torch.Tensor:
-        """mel (B, T, n_mels), aux (B, T, n_aux) -> logits (B, T, n_out)."""
-        x = self.conv(mel.unsqueeze(1))                  # (B, C, T, F')
-        b, c, t, f = x.shape
+    def forward(self, mel: torch.Tensor, aux: torch.Tensor, lengths: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """mel (B, T, n_mels), aux (B, T, n_aux) -> logits (B, T, n_out).
+
+        ``lengths`` (B,) gives each sequence's real length in a zero-padded batch,
+        so a padded batch gives what each sequence would give alone: padded frames
+        are zeroed before every convolution (bias and BatchNorm would otherwise
+        make them non-zero and leak into the last real frames), and the GRU runs
+        over the real frames only, so its backward direction starts at each
+        sequence's own end.
+        """
+        x = mel.unsqueeze(1)                             # (B, 1, T, F)
+        t = x.shape[2]
+        keep = None
+        if lengths is not None:
+            keep = (torch.arange(t, device=x.device)[None, :] < lengths.to(x.device)[:, None])
+            keep = keep.to(x.dtype)[:, None, :, None]
+        for layer in self.conv:
+            if keep is not None and isinstance(layer, nn.Conv2d):
+                x = x * keep
+            x = layer(x)                                 # ends (B, C, T, F')
+        b, c, _, f = x.shape
         x = x.permute(0, 2, 1, 3).reshape(b, t, c * f)
         if self.cfg.use_aux:
             x = torch.cat([x, aux], dim=-1)
-        x, _ = self.gru(torch.nn.functional.gelu(self.proj(x)))
+        x = nn.functional.gelu(self.proj(x))
+        if lengths is None:
+            x, _ = self.gru(x)
+        else:
+            packed = nn.utils.rnn.pack_padded_sequence(x, lengths.cpu(), batch_first=True, enforce_sorted=False)
+            x, _ = nn.utils.rnn.pad_packed_sequence(self.gru(packed)[0], batch_first=True, total_length=t)
         return self.head(x)
 
 
 def save(path, model: BoundaryNet, **extra) -> None:
-    torch.save(dict(state=model.state_dict(), cfg=asdict(model.cfg), **extra), path)
+    tmp = f"{path}.part"
+    torch.save(dict(state=model.state_dict(), cfg=asdict(model.cfg), **extra), tmp)
+    os.replace(tmp, path)
 
 
 def load(path, device="cpu") -> BoundaryNet:

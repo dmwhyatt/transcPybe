@@ -32,12 +32,21 @@ On musix its output is time-aligned with the input sample for sample, and about
 twice the input's level. Every feature is normalised per recording, so the level
 does not matter.
 
+Outputs are keyed by what made them. A mix id ends in a digest of its item,
+notes, seed, variant, accompaniment set and mixing ranges. A feature file
+records the stem, notes and f0 settings it was made from. A re-run therefore
+reuses only what still matches and redoes the rest. Silence is never digital
+zero: mixes carry a noise floor, and the features floor log-mel and level, so
+the network never learns from values a separated stem cannot produce.
+
 ## Data
 
 - **Vocals with notes.** M4Singer (on musix at `~/m4singer`: 20,896 clips, 20
   singers, 48 kHz). Its MIDI starts a syllable at its consonant;
   `--onsets vowel` moves starts to the vowel using the TextGrids. Four singers,
   one per voice type, are held out for validation (`sources.M4SINGER_VALID`).
+  Other singers' recordings of the same songs are left out of training
+  (`split: excluded`), so validation never scores a melody the network trained on.
   To add next: GTSinger and Opencpop. transcPybe's synthetic corpus is
   also a source, but it is synthesised at 16 kHz, so it is weak material for the
   separator.
@@ -78,7 +87,13 @@ Then, on CSD3:
 apptainer build sep-bsroformer53.sif docker-archive://sep.tar
 ```
 
-Typical sequence (each resumable):
+Typical sequence. Every stage is resumable: resubmit the same command after a
+time-out and it carries on. First set `DATA` in the login shell. `env.sh` sets
+it only inside jobs, and the lines below expand it before they are submitted.
+
+```bash
+export DATA=/rds/user/$USER/hpc-work/boundary
+```
 
 ```bash
 sbatch --export=ALL,VOCALS=$DATA/m4singer.jsonl,ACCOMP=$DATA/musdb18hq,DEPTH=2,OUT=$DATA/m4-musdb boundary/slurm/mix.sbatch

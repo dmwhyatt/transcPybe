@@ -1,7 +1,7 @@
 """Labelled singing -> a manifest of vocals and their notes.
 
     python -m boundary.sources m4singer ROOT OUT.jsonl [--onsets consonant|vowel]
-    python -m boundary.sources corpus OUT.jsonl --audio-dir DIR --n 2000 [--syllabic]
+    python -m boundary.sources corpus OUT.jsonl --audio-dir DIR --n 2000 [--plain]
 
 Every source says which onset convention its notes follow, because annotators
 differ on it and the target the network learns is whatever convention it is
@@ -18,7 +18,10 @@ from typing import Dict, Iterator, List, Sequence
 from . import items as manifest
 
 # Held out for validation, by singer, so the network is never scored on a voice
-# it trained on: one of each voice type, about a seventh of M4Singer's songs.
+# it trained on: one of each voice type, about an eighth of M4Singer's clips.
+# Many songs are sung by several singers, so every other singer's recording of
+# a held-out singer's song is left out of training too ("excluded"): otherwise
+# validation would be scored on melodies, lyrics and rhythms it trained on.
 M4SINGER_VALID = ("Alto-3", "Bass-3", "Soprano-2", "Tenor-4")
 
 # Mandarin initials as M4Singer spells them: the consonant a syllable may start on.
@@ -70,8 +73,12 @@ def m4singer(root: Path, onsets: str = "consonant",
              valid_singers: Sequence[str] = M4SINGER_VALID) -> Iterator[dict]:
     import pretty_midi
 
-    for song in sorted(p for p in root.iterdir() if p.is_dir() and "#" in p.name):
-        singer = song.name.split("#")[0]
+    root = root.resolve()
+    songs = sorted(p for p in root.iterdir() if p.is_dir() and "#" in p.name)
+    held_out = {s.name.split("#", 1)[1] for s in songs if s.name.split("#", 1)[0] in valid_singers}
+    for song in songs:
+        singer, title = song.name.split("#", 1)
+        split = "valid" if singer in valid_singers else "excluded" if title in held_out else "train"
         for wav in sorted(song.glob("*.wav")):
             mid = wav.with_suffix(".mid")
             if not mid.exists():
@@ -87,8 +94,7 @@ def m4singer(root: Path, onsets: str = "consonant",
                     continue
                 notes = _vowel_onsets(notes, tiers[1])
             yield dict(id=f"m4singer/{song.name}/{wav.stem}", source="m4singer", audio=str(wav),
-                       notes=notes, onsets=onsets, singer=singer,
-                       split="valid" if singer in valid_singers else "train")
+                       notes=notes, onsets=onsets, singer=singer, title=title, split=split)
 
 
 def corpus(audio_dir: Path, n: int, start_seed: int = 0, syllabic: bool = True,
@@ -105,6 +111,7 @@ def corpus(audio_dir: Path, n: int, start_seed: int = 0, syllabic: bool = True,
     import soundfile as sf
     from transcpybe.corpus import SR, make_recording
 
+    audio_dir = audio_dir.resolve()
     audio_dir.mkdir(parents=True, exist_ok=True)
     for seed in range(start_seed, start_seed + n):
         rec = make_recording(seed, syllabic=syllabic)
@@ -135,8 +142,15 @@ def main(argv=None) -> None:
         rows = m4singer(args.root, args.onsets)
     else:
         rows = corpus(args.audio_dir, args.n, args.start_seed, syllabic=not args.plain)
-    n = manifest.write(args.out, rows)
-    print(f"{n} items -> {args.out}")
+    counts: Dict[str, int] = {}
+
+    def counted(rows):
+        for r in rows:
+            counts[r["split"]] = counts.get(r["split"], 0) + 1
+            yield r
+
+    n = manifest.write(args.out, counted(rows))
+    print(f"{n} items -> {args.out}: " + ", ".join(f"{v} {k}" for k, v in sorted(counts.items())))
 
 
 if __name__ == "__main__":

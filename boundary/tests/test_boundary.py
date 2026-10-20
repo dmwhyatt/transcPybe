@@ -5,10 +5,10 @@ import numpy as np
 import pytest
 
 from boundary import HOP_S, items
-from boundary.features import targets
+from boundary.features import LEVEL_RANGE, targets
 from boundary.infer import onset_track, pick_peaks
 from boundary.sources import _vowel_onsets, textgrid_tiers
-from boundary.train import resung
+from boundary.train import Crops, resung
 
 
 def test_targets_peak_on_the_labelled_frames_and_taper():
@@ -58,12 +58,68 @@ def test_vowel_onsets_moves_a_consonant_start_to_its_vowel(tmp_path):
     assert _vowel_onsets([[0.0, 0.1, 60]], tiers[1]) == [[0.0, 0.1, 60]]     # would leave no note
 
 
+def test_m4singer_holds_out_a_validation_singers_songs_from_every_singer(tmp_path):
+    pretty_midi = pytest.importorskip("pretty_midi")
+    import soundfile as sf
+    from boundary.sources import m4singer
+
+    for d in ("Alto-1#song", "Bass-1#song", "Bass-1#other"):
+        (tmp_path / d).mkdir()
+        sf.write(tmp_path / d / "0000.wav", np.zeros(4800), 48000)
+        pm = pretty_midi.PrettyMIDI()
+        inst = pretty_midi.Instrument(0)
+        inst.notes.append(pretty_midi.Note(80, 60, 0.0, 0.05))
+        pm.instruments.append(inst)
+        pm.write(str(tmp_path / d / "0000.mid"))
+    split = {r["id"].split("/")[1]: r["split"] for r in m4singer(tmp_path, valid_singers=("Alto-1",))}
+    assert split == {"Alto-1#song": "valid", "Bass-1#song": "excluded", "Bass-1#other": "train"}
+
+
 def test_model_keeps_one_output_per_frame():
     torch = pytest.importorskip("torch")
     from boundary.model import BoundaryNet
 
     out = BoundaryNet()(torch.zeros(2, 123, 80), torch.zeros(2, 123, 5))
     assert out.shape == (2, 123, 3)
+
+
+def test_a_padded_batch_gives_each_recording_what_it_gives_alone():
+    torch = pytest.importorskip("torch")
+    from boundary.model import BoundaryNet
+
+    torch.manual_seed(0)
+    net = BoundaryNet().eval()
+    a, b = torch.randn(1, 90, 80), torch.randn(1, 140, 80)
+    xa, xb = torch.randn(1, 90, 5), torch.randn(1, 140, 5)
+    mel = torch.zeros(2, 140, 80)
+    aux = torch.zeros(2, 140, 5)
+    mel[0, :90], mel[1], aux[0, :90], aux[1] = a[0], b[0], xa[0], xb[0]
+    with torch.no_grad():
+        batched = net(mel, aux, torch.tensor([90, 140]))
+        assert torch.allclose(batched[0, :90], net(a, xa)[0], atol=1e-5)
+        assert torch.allclose(batched[1], net(b, xb)[0], atol=1e-5)
+
+
+def test_short_recordings_are_joined_to_others_not_padded():
+    data = [dict(mel=np.full((30, 2), k, np.float32), aux=np.zeros((30, 1), np.float32),
+                 y=np.zeros((30, 3), np.float32)) for k in (1, 2, 3)]
+    mel, aux, y = Crops(data, 100).batch(np.random.default_rng(0), 8)
+    assert mel.shape == (8, 100, 2) and (mel != 0).all()
+
+
+def test_silence_features_stay_in_range():
+    from boundary.features import frame_features
+    from transcpybe.f0 import F0Track
+
+    audio = np.zeros(16000, np.float32)
+    audio[4000:12000] = 0.1 * np.sin(2 * np.pi * 220 * np.arange(8000) / 16000)
+    n = 101
+    track = F0Track(times=np.arange(n) * HOP_S, f0_hz=np.full(n, np.nan), periodicity=np.zeros(n),
+                    loudness_db=np.r_[np.full(30, -200.0), np.full(41, -20.0), np.full(30, -200.0)],
+                    loudness_gate=np.zeros(n), voicing=np.zeros(n))
+    mel, aux = frame_features(audio, track)
+    assert aux[:, 4].min() >= LEVEL_RANGE[0] and np.isfinite(mel).all()
+    assert mel.min() > -10                       # the -80 dB floor, not log(1e-6)
 
 
 def _synthetic_vocals(tmp_path: Path) -> list:
@@ -83,8 +139,9 @@ def _synthetic_vocals(tmp_path: Path) -> list:
     return rows
 
 
-def test_whole_pipeline_on_three_synthetic_recordings(tmp_path: Path):
+def test_whole_pipeline_on_three_synthetic_recordings(tmp_path: Path, capsys):
     pytest.importorskip("torch")
+    import soundfile as sf
     from boundary import features, infer, mix, separate, train
 
     items.write(tmp_path / "vocals.jsonl", _synthetic_vocals(tmp_path))
@@ -92,19 +149,49 @@ def test_whole_pipeline_on_three_synthetic_recordings(tmp_path: Path):
     rows = items.read(tmp_path / "mix" / "mixes.jsonl")
     vocal = items.read(tmp_path / "vocals.jsonl")
     assert rows[0]["notes"][0][0] == pytest.approx(vocal[0]["notes"][0][0] + rows[0]["pad_before"], abs=1e-3)
+    assert all(Path(r["mix"]).is_absolute() for r in rows)
 
-    again = mix.render(vocal[0], 0, 0, 0, "synthetic", tmp_path / "mix", True)     # rebuilt from its draws
-    assert again["notes"] == rows[0]["notes"] and again["gain"] == rows[0]["gain"]
+    # rebuilt from its draws alone, elsewhere: the same id, the same labels, the same audio
+    again = mix.render(vocal[0], 0, 0, 0, "synthetic", tmp_path / "mix2", True, mix.setup_key("synthetic"))
+    assert (again["mix_id"], again["notes"], again["gain"]) == (rows[0]["mix_id"], rows[0]["notes"], rows[0]["gain"])
+    assert np.array_equal(sf.read(again["mix"])[0], sf.read(rows[0]["mix"])[0])
+    # a rerun renders nothing that is already there; a changed label is a different mix
+    stamp = Path(rows[0]["mix"]).stat().st_mtime_ns
+    mix.main([str(tmp_path / "vocals.jsonl"), str(tmp_path / "mix"), "--accomp", "synthetic", "--keep-dry"])
+    assert Path(rows[0]["mix"]).stat().st_mtime_ns == stamp
+    moved = dict(vocal[0], notes=[[a + 0.01, b, p] for a, b, p in vocal[0]["notes"]])
+    assert mix.render(moved, 0, 0, 0, "synthetic", tmp_path / "mix2", True, mix.setup_key("synthetic"))["mix_id"] != rows[0]["mix_id"]
 
     separate.main([str(tmp_path / "mix" / "mixes.jsonl"), str(tmp_path / "sep"), "--backend", "dry"])
-    features.main([str(tmp_path / "sep" / "stems.jsonl"), str(tmp_path / "feat"), "--f0-backend", "pyin", "--device", "cpu"])
+    feat = [str(tmp_path / "sep" / "stems.jsonl"), str(tmp_path / "feat"), "--f0-backend", "pyin", "--device", "cpu"]
+    features.main(feat)
     z = np.load(tmp_path / "feat" / f"{rows[0]['mix_id']}.npz")
     assert z["mel"].shape[0] == z["aux"].shape[0] == z["y"].shape[0] and z["y"][:, 0].max() == 1
+    features.main(feat)
+    assert "(0 computed, 3 reused)" in capsys.readouterr().out
 
-    train.main([str(tmp_path / "feat" / "features.jsonl"), "--out", str(tmp_path / "run"), "--steps", "20",
-                "--eval-every", "10", "--batch", "4", "--device", "cpu"])
+    run = [str(tmp_path / "feat" / "features.jsonl"), "--out", str(tmp_path / "run"), "--steps", "20",
+           "--eval-every", "10", "--batch", "4", "--device", "cpu"]
+    train.main(run)
     assert (tmp_path / "run" / "best.pt").exists() and len((tmp_path / "run" / "log.jsonl").read_text().splitlines()) == 2
+    best = (tmp_path / "run" / "best.pt").stat().st_mtime_ns
+    train.main(run)                                   # finished: resumes past the end, overwrites nothing
+    assert "resuming" in capsys.readouterr().out and (tmp_path / "run" / "best.pt").stat().st_mtime_ns == best
+    assert len((tmp_path / "run" / "log.jsonl").read_text().splitlines()) == 2
+    with pytest.raises(SystemExit):
+        train.main(run[:-2] + ["--seed", "1", "--device", "cpu"])   # a different run is refused, not mixed in
+
     stem = items.read(tmp_path / "sep" / "stems.jsonl")[0]["stem"]
     infer.main([str(tmp_path / "run" / "best.pt"), stem, "--out-dir", str(tmp_path / "inf"), "--device", "cpu",
                 "--f0-backend", "pyin"])
     assert (tmp_path / "inf" / f"{Path(stem).stem}.json").exists()
+
+
+def test_separate_fails_loudly_when_a_stem_is_missing(tmp_path):
+    from boundary import separate
+
+    items.write(tmp_path / "mixes.jsonl", [dict(mix_id="a", mix=str(tmp_path / "a.flac"), dry=str(tmp_path / "gone.flac"),
+                                                notes=[])])
+    with pytest.raises(SystemExit):
+        separate.main([str(tmp_path / "mixes.jsonl"), str(tmp_path / "sep"), "--backend", "dry"])
+    assert items.read(tmp_path / "sep" / "failed.jsonl")[0]["mix_id"] == "a"

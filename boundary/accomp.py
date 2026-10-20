@@ -22,7 +22,12 @@ AUDIO_EXT = {".wav", ".flac", ".mp3", ".ogg"}
 class Accompaniment:
     id: str
     files: List[str]
-    duration: float
+    rates: List[int]        # read once by scan(), so mixing never reopens a header
+    frames: List[int]
+
+    @property
+    def duration(self) -> float:
+        return min(n / r for n, r in zip(self.frames, self.rates))
 
 
 def scan(root: Path, depth: int) -> List[Accompaniment]:
@@ -33,12 +38,15 @@ def scan(root: Path, depth: int) -> List[Accompaniment]:
     """
     import soundfile as sf
 
+    root = root.resolve()
     out = []
     for song in sorted(p for p in root.glob("/".join("*" * depth)) if p.is_dir()):
         files = [str(p) for p in sorted(song.rglob("*")) if p.suffix.lower() in AUDIO_EXT
                  and "vocal" not in str(p.relative_to(song)).lower() and not p.stem.lower().startswith("mixture")]
         if files:
-            out.append(Accompaniment(str(song.relative_to(root)), files, min(sf.info(f).duration for f in files)))
+            infos = [sf.info(f) for f in files]
+            out.append(Accompaniment(str(song.relative_to(root)), files,
+                                     [i.samplerate for i in infos], [i.frames for i in infos]))
     return out
 
 
@@ -48,10 +56,11 @@ def load_segment(acc: Accompaniment, start: float, duration: float, sr: int) -> 
     import soundfile as sf
 
     total = np.zeros((2, int(round(duration * sr))), dtype=np.float32)
-    for f in acc.files:
-        info = sf.info(f)
-        a = int(start * info.samplerate) % max(1, info.frames)
-        n = int(np.ceil(duration * info.samplerate)) + 1
+    for f, rate, frames in zip(acc.files, acc.rates, acc.frames):
+        if frames == 0:
+            continue
+        a = int(start * rate) % frames
+        n = int(np.ceil(duration * rate)) + 1
         x, _ = sf.read(f, start=a, frames=n, dtype="float32", always_2d=True)
         while x.shape[0] < n:                      # loop a stem shorter than the segment
             more, _ = sf.read(f, start=0, frames=n - x.shape[0], dtype="float32", always_2d=True)
@@ -59,8 +68,8 @@ def load_segment(acc: Accompaniment, start: float, duration: float, sr: int) -> 
                 break
             x = np.concatenate([x, more])
         x = x.T if x.shape[1] == 2 else np.repeat(x.T[:1], 2, axis=0)
-        if info.samplerate != sr:
-            x = librosa.resample(x, orig_sr=info.samplerate, target_sr=sr)
+        if rate != sr:
+            x = librosa.resample(x, orig_sr=rate, target_sr=sr)
         m = min(total.shape[1], x.shape[1])
         total[:, :m] += x[:, :m]
     return total
