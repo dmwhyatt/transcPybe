@@ -38,6 +38,13 @@ An example is M4Singer's validation singers with vowel onsets
 (``sources --onsets vowel``) beside the consonant-onset training set: the
 dry pilot started notes 40-70 ms before the annotators of Molina and vocadito.
 
+``--channels``, ``--hidden`` and ``--dropout`` set the network's size and
+regularisation; the checkpoint records them, so inference needs no flags.
+``--augment`` varies every training crop afresh (``augment``): the mixes are
+fixed on disk, so without it the network sees the same audio on every pass.
+``--stop-after`` ends a run early while the learning-rate schedule still runs
+over ``--steps``, so a short run follows the first part of a long one.
+
 Resumable: ``last.pt`` holds the optimiser, schedule and random states as well
 as the weights, and a rerun with the same arguments carries on from it with
 the best score so far. A rerun with different arguments into the same
@@ -54,13 +61,46 @@ from pathlib import Path
 import numpy as np
 
 from . import HOP_S, items as manifest
+from .features import LEVEL_RANGE
 from .infer import pick_peaks
 
 TOL = 0.05
 TIMING_WINDOW = 0.15      # a reference onset counts for timing if an estimate is within 150 ms
 TIMING_MARGIN = 0.025     # early or late: more than 25 ms out
 EVAL_BATCH = 32
-RESUME_KEYS = ("features", "seed", "steps", "batch", "crop_s", "lr", "weight_decay", "warmup", "pos_weight", "no_aux")
+RESUME_KEYS = ("features", "seed", "steps", "batch", "crop_s", "lr", "weight_decay", "warmup", "pos_weight", "no_aux",
+               "channels", "hidden", "dropout", "augment")
+MEL_DB_PER_UNIT = 19.0    # one unit of the standardised log-mel: the median per-stem std in dB (dry4k, 30 stems)
+LEVEL_DB_PER_UNIT = 40.0  # the level feature's scale (features.frame_features)
+EQ_MAX_DB = 6.0
+COMPRESS_MAX = 0.5        # loud frames lose up to half their level above the crop's median
+MASK_MAX_BANDS = 8
+
+
+def augment(mel, aux, rng):
+    """One training crop varied in the feature domain, differently on every draw.
+
+    A smooth random EQ of up to 6 dB across the mel bands; half the time a
+    compressor that pulls frames louder than the crop's median down by up to
+    half the difference; half the time a block of up to 8 mel bands masked. The
+    f0 features were computed once and keep their values, except level, which
+    follows the compressor. Targets are not touched.
+    """
+    mel, aux = mel.copy(), aux.copy()
+    n = mel.shape[1]
+    x = np.linspace(0.0, np.pi, n)
+    curve = sum(rng.uniform(-1, 1) * np.cos(k * x) for k in (1, 2, 3))
+    mel += (curve * rng.uniform(0, EQ_MAX_DB) / MEL_DB_PER_UNIT / (np.abs(curve).max() + 1e-9))[None, :]
+    if rng.random() < 0.5:
+        lv = mel.mean(1)
+        cut = rng.uniform(0, COMPRESS_MAX) * np.maximum(0.0, lv - np.median(lv))
+        mel -= cut[:, None]
+        aux[:, 4] = np.clip(aux[:, 4] - cut * MEL_DB_PER_UNIT / LEVEL_DB_PER_UNIT, *LEVEL_RANGE)
+    if rng.random() < 0.5:
+        w = int(rng.integers(1, MASK_MAX_BANDS + 1))
+        f0 = int(rng.integers(0, n - w + 1))
+        mel[:, f0:f0 + w] = mel.mean()
+    return mel, aux
 
 
 def load_split(rows, split):
@@ -75,8 +115,8 @@ def load_split(rows, split):
 class Crops:
     """Random fixed-length crops, a recording drawn in proportion to its length."""
 
-    def __init__(self, data, crop: int):
-        self.data, self.crop = data, crop
+    def __init__(self, data, crop: int, augment: bool = False):
+        self.data, self.crop, self.augment = data, crop, augment
         lens = np.array([len(d["y"]) for d in data], dtype=float)
         self.p = lens / lens.sum()
 
@@ -93,7 +133,10 @@ class Crops:
         return tuple(np.concatenate([self.data[j][k] for j in parts])[a:a + self.crop] for k in ("mel", "aux", "y"))
 
     def batch(self, rng, size):
-        mel, aux, y = zip(*(self._one(rng, int(i)) for i in rng.choice(len(self.data), size=size, p=self.p)))
+        crops = [self._one(rng, int(i)) for i in rng.choice(len(self.data), size=size, p=self.p)]
+        if self.augment:
+            crops = [(*augment(m, a, rng), y) for m, a, y in crops]
+        mel, aux, y = zip(*crops)
         return np.stack(mel), np.stack(aux), np.stack(y)
 
 
@@ -178,7 +221,14 @@ def main(argv=None) -> None:
     ap.add_argument("--warmup", type=int, default=500)
     ap.add_argument("--pos-weight", type=float, default=8.0, help="for the onset and offset targets, which are rare")
     ap.add_argument("--eval-every", type=int, default=1000)
+    ap.add_argument("--stop-after", type=int, metavar="STEP",
+                    help="stop at this step; the learning-rate schedule still runs over --steps")
     ap.add_argument("--no-aux", action="store_true", help="ablation: log-mel only, no f0 features")
+    ap.add_argument("--channels", type=lambda s: tuple(int(c) for c in s.split(",")), default=(32, 64, 96),
+                    help="convolution channels per block, comma-separated")
+    ap.add_argument("--hidden", type=int, default=128, help="projection and GRU width")
+    ap.add_argument("--dropout", type=float, default=0.2)
+    ap.add_argument("--augment", action="store_true", help="vary every training crop afresh (see augment)")
     ap.add_argument("--device", default="auto")
     ap.add_argument("--extra-valid", action="append", default=[], metavar="NAME=FEATURES.jsonl",
                     help="another set to evaluate (its valid split) and log, never used to choose a checkpoint")
@@ -218,6 +268,7 @@ def main(argv=None) -> None:
     torch.manual_seed(args.seed)
     rng = np.random.default_rng(args.seed)
     model = BoundaryNet(NetConfig(n_mels=train[0]["mel"].shape[1], n_aux=train[0]["aux"].shape[1],
+                                  channels=args.channels, hidden=args.hidden, dropout=args.dropout,
                                   use_aux=not args.no_aux)).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / args.warmup)
@@ -229,7 +280,7 @@ def main(argv=None) -> None:
     if last.exists():
         ck = torch.load(last, map_location=device, weights_only=False)
         old = ck.get("run_args", {})
-        changed = [k for k in RESUME_KEYS if old.get(k) != run_args[k]]
+        changed = [k for k in RESUME_KEYS if old.get(k, ap.get_default(k)) != run_args[k]]   # older runs lack newer keys
         if changed:
             raise SystemExit(f"{args.out} holds a run with different {', '.join(changed)}; use a new --out")
         model.load_state_dict(ck["state"])
@@ -242,14 +293,16 @@ def main(argv=None) -> None:
         start, best = ck["step"] + 1, ck["best"]
         print(f"resuming {args.out} at step {start} (best score so far {best:.4f})", flush=True)
     with open(args.out / "args.json", "w") as f:
-        json.dump(dict(run_args, device=device, n_train=len(train), n_valid=len(valid)), f, indent=1, default=str)
+        json.dump(dict(run_args, device=device, n_train=len(train), n_valid=len(valid),
+                       n_params=sum(p.numel() for p in model.parameters())), f, indent=1, default=str)
 
-    crops = Crops(train, int(round(args.crop_s / HOP_S)))
+    crops = Crops(train, int(round(args.crop_s / HOP_S)), augment=args.augment)
+    end = min(args.steps, args.stop_after or args.steps)
     pw = torch.tensor([args.pos_weight, args.pos_weight, 1.0], device=device)
     head_w = torch.tensor([1.0, 0.5, 0.5], device=device)
     with open(args.out / "log.jsonl", "a" if start > 1 else "w") as log:
         t0, run_loss, since = time.time(), 0.0, 0
-        for step in range(start, args.steps + 1):
+        for step in range(start, end + 1):
             mel, aux, y = (torch.from_numpy(x).to(device) for x in crops.batch(rng, args.batch))
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp):
                 logits = model(mel, aux)
@@ -262,20 +315,20 @@ def main(argv=None) -> None:
             opt.step()
             sched.step()
             run_loss, since = run_loss + loss.item(), since + 1
-            if step % args.eval_every == 0 or step == args.steps:
+            if step % args.eval_every == 0 or step == end:
                 m = evaluate(model, valid, device)
                 m_extra = {name: evaluate(model, data, device) for name, data in extra.items()}
                 f, r = m["onset_f"], m["resung_recall"]
                 score = f if math.isnan(r) else (2 * f * r / (f + r) if f + r > 0 else 0.0)
                 el = time.time() - t0
                 rec = dict(step=step, loss=run_loss / since, lr=sched.get_last_lr()[0], elapsed_s=round(el),
-                           eta_s=round(el / (step - start + 1) * (args.steps - step)), best=max(best, score), score=score, **m)
+                           eta_s=round(el / (step - start + 1) * (end - step)), best=max(best, score), score=score, **m)
                 if m_extra:
                     rec["extra"] = m_extra
                 run_loss, since = 0.0, 0
                 log.write(json.dumps(rec) + "\n")
                 log.flush()
-                print(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} [train] step {step}/{args.steps}  "
+                print(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} [train] step {step}/{end}  "
                       f"score {score:.3f} (best {rec['best']:.3f})  onset F {f:.3f}  re-sung {r:.3f}  "
                       f"timing {m['timing_median_ms']:+.0f} ms  per note {m['onsets_per_note']:.2f}  "
                       f"loss {rec['loss']:.3f}  eta {rec['eta_s'] // 60} min", flush=True)

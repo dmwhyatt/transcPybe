@@ -169,6 +169,22 @@ def test_short_recordings_are_joined_to_others_not_padded():
     assert mel.shape == (8, 100, 2) and (mel != 0).all()
 
 
+def test_augment_varies_every_draw_and_leaves_the_targets_alone():
+    from boundary.train import augment
+
+    rng = np.random.default_rng(0)
+    mel = rng.normal(size=(400, 80)).astype(np.float32)
+    aux = np.full((400, 5), LEVEL_RANGE[0] + 0.01, np.float32)
+    kept = mel.copy()
+    (m1, a1), (m2, _) = augment(mel, aux, rng), augment(mel, aux, rng)
+    assert m1.shape == mel.shape and not np.allclose(m1, m2) and np.array_equal(mel, kept)
+    assert a1[:, 4].min() >= LEVEL_RANGE[0]
+    data = [dict(mel=mel, aux=aux, y=rng.random((400, 3)).astype(np.float32))]
+    _, _, y = Crops(data, 300).batch(np.random.default_rng(2), 3)
+    _, _, y_aug = Crops(data, 300, augment=True).batch(np.random.default_rng(2), 3)
+    assert np.array_equal(y, y_aug)
+
+
 def test_silence_features_stay_in_range():
     from boundary.features import frame_features
     from transcpybe.f0 import F0Track
@@ -249,6 +265,15 @@ def test_whole_pipeline_on_three_synthetic_recordings(tmp_path: Path, capsys):
     capsys.readouterr()
     train.main([str(tmp_path / "feat" / "features.jsonl"), "--eval-only", str(tmp_path / "run" / "best.pt"), "--device", "cpu"])
     assert "timing_median_ms" in json.loads(capsys.readouterr().out)   # a different run is refused, not mixed in
+
+    # a smaller, augmented network stopped early; its checkpoint carries its size
+    small = [str(tmp_path / "feat" / "features.jsonl"), "--out", str(tmp_path / "small"), "--steps", "40",
+             "--stop-after", "10", "--eval-every", "5", "--batch", "4", "--device", "cpu",
+             "--channels", "8,16", "--hidden", "16", "--augment"]
+    train.main(small)
+    assert [json.loads(line)["step"] for line in (tmp_path / "small" / "log.jsonl").read_text().splitlines()] == [5, 10]
+    from boundary.model import load
+    assert load(tmp_path / "small" / "best.pt").cfg.channels == (8, 16)
 
     stem = items.read(tmp_path / "sep" / "stems.jsonl")[0]["stem"]
     infer.main([str(tmp_path / "run" / "best.pt"), stem, "--out-dir", str(tmp_path / "inf"), "--device", "cpu",
