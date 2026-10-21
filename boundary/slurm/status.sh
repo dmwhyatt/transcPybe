@@ -38,7 +38,7 @@ try:
             if g and m: used += g * int(m.group(1)) / 3600; n += 1
 except FileNotFoundError:
     pass
-print(f"  {used:.1f} GPU hours over {n} finished GPU jobs (plan estimate: 55-110 A100 hours)")
+print(f"  {used:.1f} GPU hours over {n} finished GPU jobs (plan estimate: 10-15 A100 hours without separation, 21 Oct)")
 PY
 mybalance 2>/dev/null | grep -E "GPU|Account" || true
 echo; echo "=== storage"
