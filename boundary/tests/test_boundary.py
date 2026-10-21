@@ -67,6 +67,31 @@ def test_vowel_onsets_moves_a_consonant_start_to_its_vowel(tmp_path):
     assert len(tiers) == 2 and tiers[1][0] == (0.0, 0.08, "sh")
     assert _vowel_onsets([[0.0, 1.0, 60]], tiers[1]) == [[0.08, 1.0, 60]]
     assert _vowel_onsets([[0.0, 0.1, 60]], tiers[1]) == [[0.0, 0.1, 60]]     # would leave no note
+    assert _vowel_onsets([[0.0, 1.0, 60]], tiers[1], 0.5) == [[0.04, 1.0, 60]]   # half way to the vowel
+
+
+def test_relabel_moves_new_labels_by_the_pad_and_keeps_the_audio():
+    from boundary.relabel import relabel
+
+    rows = [dict(id="a", mix_id="000000-0-x", stem="/s.wav", pad_before=1.5, notes=[[1.5, 2.5, 60]], onsets="consonant")]
+    out = relabel(rows, [dict(id="a", notes=[[0.04, 1.0, 60]], onsets="between-0.5")])
+    assert out[0]["notes"] == [[1.54, 2.5, 60]] and out[0]["stem"] == "/s.wav" and out[0]["onsets"] == "between-0.5"
+    with pytest.raises(SystemExit):
+        relabel(rows, [])
+
+
+def test_same_pitch_policy_keeps_splits_where_pitch_is_level():
+    from types import SimpleNamespace
+
+    n = 200
+    f0 = np.where(np.arange(n) < 100, 220.0, 247.0)                    # a two-semitone step at frame 100
+    track = SimpleNamespace(f0_hz=f0, voicing=np.ones(n))
+    p = np.zeros(n)
+    p[[50, 100]] = [0.9, 0.9]
+    level = onset_track(p, 0.5, track=track, split_policy="same-pitch")
+    assert np.isfinite(level.strengths[0]) and np.isnan(level.strengths[1])   # inside the note may split; at the step, snap only
+    assert np.isfinite(onset_track(p, 0.5).strengths).all()                    # the default: every peak may split
+    assert np.isnan(onset_track(p, 0.5, track=track, split_policy="same-pitch", split_threshold=0.95).strengths).all()
 
 
 def test_m4singer_holds_out_a_validation_singers_songs_from_every_singer(tmp_path):

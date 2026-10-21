@@ -1,6 +1,6 @@
 """Labelled singing -> a manifest of vocals and their notes.
 
-    python -m boundary.sources m4singer ROOT OUT.jsonl [--onsets consonant|vowel]
+    python -m boundary.sources m4singer ROOT OUT.jsonl [--onsets consonant|vowel|between --fraction 0.5]
     python -m boundary.sources corpus OUT.jsonl --audio-dir DIR --n 2000 [--plain]
 
 Every source says which onset convention its notes follow, because annotators
@@ -53,24 +53,28 @@ def textgrid_tiers(path: Path) -> Dict[str, List[tuple]]:
     return tiers
 
 
-def _vowel_onsets(notes: List[list], phones: Sequence[tuple]) -> List[list]:
-    """Move each note that starts on a consonant to where its vowel starts.
+def _vowel_onsets(notes: List[list], phones: Sequence[tuple], fraction: float = 1.0) -> List[list]:
+    """Move each note that starts on a consonant ``fraction`` of the way to where its vowel starts.
 
-    A note keeps its end; a consonant so long it would leave the note under
-    30 ms is left alone rather than producing a note with no length.
+    1 is the vowel; 0.5 is half way, which is where the dry pilots placed
+    Molina's and vocadito's annotators: consonant labels put notes 40-70 ms early,
+    vowel labels 30-35 ms late. A note keeps its end; a consonant so long it
+    would leave the note under 30 ms is left alone rather than producing a note
+    with no length.
     """
     out = []
     for on, off, pitch in notes:
         for p0, p1, ph in phones:
-            if abs(p0 - on) < 0.006 and ph in PINYIN_INITIALS and p1 < off - 0.03:
-                on = p1
+            moved = round(p0 + fraction * (p1 - p0), 4)
+            if abs(p0 - on) < 0.006 and ph in PINYIN_INITIALS and moved < off - 0.03:
+                on = moved
                 break
         out.append([on, off, pitch])
     return out
 
 
 def m4singer(root: Path, onsets: str = "consonant",
-             valid_singers: Sequence[str] = M4SINGER_VALID) -> Iterator[dict]:
+             valid_singers: Sequence[str] = M4SINGER_VALID, fraction: float = 0.5) -> Iterator[dict]:
     import pretty_midi
 
     root = root.resolve()
@@ -88,13 +92,14 @@ def m4singer(root: Path, onsets: str = "consonant",
                            for inst in pm.instruments for n in inst.notes)
             if not notes:
                 continue
-            if onsets == "vowel":
+            if onsets in ("vowel", "between"):
                 tiers = list(textgrid_tiers(wav.with_suffix(".TextGrid")).values())
                 if len(tiers) < 2:
                     continue
-                notes = _vowel_onsets(notes, tiers[1])
+                notes = _vowel_onsets(notes, tiers[1], 1.0 if onsets == "vowel" else fraction)
             yield dict(id=f"m4singer/{song.name}/{wav.stem}", source="m4singer", audio=str(wav),
-                       notes=notes, onsets=onsets, singer=singer, title=title, split=split)
+                       notes=notes, onsets=onsets if onsets != "between" else f"between-{fraction}",
+                       singer=singer, title=title, split=split)
 
 
 def corpus(audio_dir: Path, n: int, start_seed: int = 0, syllabic: bool = True,
@@ -130,7 +135,8 @@ def main(argv=None) -> None:
     m = sub.add_parser("m4singer")
     m.add_argument("root", type=Path)
     m.add_argument("out", type=Path)
-    m.add_argument("--onsets", choices=("consonant", "vowel"), default="consonant")
+    m.add_argument("--onsets", choices=("consonant", "vowel", "between"), default="consonant")
+    m.add_argument("--fraction", type=float, default=0.5, help="for --onsets between: how far from consonant to vowel")
     c = sub.add_parser("corpus")
     c.add_argument("out", type=Path)
     c.add_argument("--audio-dir", type=Path, required=True)
@@ -139,7 +145,7 @@ def main(argv=None) -> None:
     c.add_argument("--plain", action="store_true", help="without the syllabic pitch movement")
     args = ap.parse_args(argv)
     if args.source == "m4singer":
-        rows = m4singer(args.root, args.onsets)
+        rows = m4singer(args.root, args.onsets, fraction=args.fraction)
     else:
         rows = corpus(args.audio_dir, args.n, args.start_seed, syllabic=not args.plain)
     counts: Dict[str, int] = {}

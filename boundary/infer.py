@@ -6,6 +6,16 @@ writes ``DIR/<name>.json`` with the onset posterior and the picked onsets, which
 ``onset_track`` turns back into an OnsetTrack for ``transcpybe.core.decode_notes``.
 The network's frames are the f0 frames, so its onsets sit on the f0 grid
 already: an onset off that grid stops the same-pitch merge seeing the split it made.
+
+transcPybe's decoder does two things with an onset. It **splits** a note at one
+strong enough to pass its bar, and it **snaps** a nearby note start to any
+onset. The decoder already puts a boundary wherever the pitch changes, so a
+network onset there is only needed for timing. Fed every peak as a split, the
+first pilots made half as many notes again as there were (Molina: 3,397 against
+2,269). With ``split_policy="same-pitch"`` a peak may split a note only where
+the pitch track cannot explain a boundary: voiced and level on both sides. It
+must also reach ``split_threshold``. Every other peak is passed with a NaN
+strength, which the decoder never splits on but still snaps to.
 """
 from __future__ import annotations
 
@@ -18,6 +28,8 @@ import numpy as np
 from . import FEATURE_SR, HOP_S
 
 MIN_GAP_FRAMES = 5      # two onsets closer than 50 ms are one onset
+LEVEL_SIDE_FRAMES = (2, 8)  # pitch is compared over 20-80 ms either side of a peak
+LEVEL_SEMITONES = 0.5       # level: the two sides' median pitches within half a semitone
 
 
 def pick_peaks(p: np.ndarray, threshold: float = 0.5, min_gap: int = MIN_GAP_FRAMES) -> np.ndarray:
@@ -42,13 +54,47 @@ def posteriors(model, mel: np.ndarray, aux: np.ndarray, device="cpu") -> np.ndar
         return torch.sigmoid(model(m, a))[0].float().cpu().numpy()
 
 
-def onset_track(prob_onset: np.ndarray, threshold: float = 0.5):
-    """An OnsetTrack whose envelope is the onset posterior and whose strengths are its peak values."""
+def pitch_level_across(track, frame: int, voicing_threshold: float = 0.3) -> bool:
+    """True where the pitch is voiced and level on both sides of ``frame``: no pitch change explains a boundary there."""
+    a, b = LEVEL_SIDE_FRAMES
+    f0, v = np.asarray(track.f0_hz, float), np.asarray(track.voicing, float)
+    sides = []
+    for lo, hi in ((frame - b, frame - a), (frame + a, frame + b)):
+        lo, hi = max(lo, 0), min(hi, len(f0))
+        ok = np.isfinite(f0[lo:hi]) & (f0[lo:hi] > 0) & (v[lo:hi] >= voicing_threshold)
+        if hi - lo < 3 or ok.mean() < 0.6:
+            return False
+        sides.append(np.median(12 * np.log2(f0[lo:hi][ok] / 440.0)))
+    return abs(sides[0] - sides[1]) < LEVEL_SEMITONES
+
+
+def onset_track(prob_onset: np.ndarray, threshold: float = 0.5, track=None,
+                split_policy: str = "all", split_threshold: float | None = None):
+    """An OnsetTrack whose envelope is the onset posterior and whose strengths are its peak values.
+
+    ``split_policy="all"`` lets every peak split a note; ``"same-pitch"`` (which
+    needs the f0 ``track``) lets a peak split only where the pitch is level
+    across it and it reaches ``split_threshold`` (default: ``threshold``).
+    Peaks that may not split get a NaN strength: the decoder still snaps note
+    starts to them.
+    """
     from transcpybe.onsets import OnsetTrack
 
+    if split_policy not in ("all", "same-pitch"):
+        raise ValueError(f"split_policy must be 'all' or 'same-pitch', not {split_policy!r}")
     times = np.arange(len(prob_onset)) * HOP_S
     frames = pick_peaks(prob_onset, threshold)
-    return OnsetTrack(times[frames], prob_onset[frames].astype(float), prob_onset.astype(float), times)
+    strengths = prob_onset[frames].astype(float)
+    bar = threshold if split_threshold is None else split_threshold
+    if split_policy == "same-pitch":
+        if track is None:
+            raise ValueError("split_policy='same-pitch' needs the f0 track")
+        may_split = np.array([strengths[i] >= bar and pitch_level_across(track, int(f))
+                              for i, f in enumerate(frames)], dtype=bool)
+        strengths[~may_split] = np.nan
+    elif bar > threshold:
+        strengths[strengths < bar] = np.nan
+    return OnsetTrack(times[frames], strengths, prob_onset.astype(float), times)
 
 
 def main(argv=None) -> None:
