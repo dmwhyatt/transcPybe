@@ -31,6 +31,7 @@ import subprocess
 from pathlib import Path
 
 from . import items as manifest
+from .progress import Progress
 
 HERE = Path(__file__).resolve().parent
 
@@ -92,6 +93,7 @@ def main(argv=None) -> None:
         failed = todo
     else:
         stage, store = out_dir / "_stage", out_dir / "_store"
+        prog = Progress(len(todo), "separate", every_s=0)
         for b in range(0, len(todo), args.batch):
             batch = todo[b:b + args.batch]
             _stage([r["mix"] for r in batch], stage)
@@ -109,6 +111,7 @@ def main(argv=None) -> None:
             print(f"batch {b // args.batch + 1}: exit {code}, {len(got)}/{len(batch)} stems"
                   + (f"; failed: {' '.join(r['mix_id'] for r in missing[:10])}{' ...' if len(missing) > 10 else ''}"
                      if missing else ""), flush=True)
+            prog.tick(len(batch))
             if not got:
                 break                  # the separator itself is broken: no point in trying the rest
         shutil.rmtree(stage, ignore_errors=True)

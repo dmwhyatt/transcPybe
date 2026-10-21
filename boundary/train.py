@@ -267,14 +267,18 @@ def main(argv=None) -> None:
                 m_extra = {name: evaluate(model, data, device) for name, data in extra.items()}
                 f, r = m["onset_f"], m["resung_recall"]
                 score = f if math.isnan(r) else (2 * f * r / (f + r) if f + r > 0 else 0.0)
-                rec = dict(step=step, loss=run_loss / since, lr=sched.get_last_lr()[0],
-                           elapsed_s=round(time.time() - t0), score=score, **m)
+                el = time.time() - t0
+                rec = dict(step=step, loss=run_loss / since, lr=sched.get_last_lr()[0], elapsed_s=round(el),
+                           eta_s=round(el / (step - start + 1) * (args.steps - step)), best=max(best, score), score=score, **m)
                 if m_extra:
                     rec["extra"] = m_extra
                 run_loss, since = 0.0, 0
                 log.write(json.dumps(rec) + "\n")
                 log.flush()
-                print(json.dumps(rec), flush=True)
+                print(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} [train] step {step}/{args.steps}  "
+                      f"score {score:.3f} (best {rec['best']:.3f})  onset F {f:.3f}  re-sung {r:.3f}  "
+                      f"timing {m['timing_median_ms']:+.0f} ms  per note {m['onsets_per_note']:.2f}  "
+                      f"loss {rec['loss']:.3f}  eta {rec['eta_s'] // 60} min", flush=True)
                 if score > best:
                     best = score
                     save(args.out / "best.pt", model, step=step, metrics=m)

@@ -32,6 +32,7 @@ from typing import Optional, Sequence
 import numpy as np
 
 from . import FEATURE_SR, HOP_S, items as manifest
+from .progress import Progress
 
 FEATURE_VERSION = 2
 N_MELS = 80
@@ -121,6 +122,7 @@ def main(argv=None) -> None:
     out_dir = args.out_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     out, made = [], 0
+    prog = Progress(len(rows), "features")
     for i, r in enumerate(rows):
         path = out_dir / f"{r['mix_id']}.npz"
         meta = _meta(r, cfg)
@@ -135,8 +137,7 @@ def main(argv=None) -> None:
             tmp.replace(path)
             made += 1
         out.append(dict(r, features=str(path)))
-        if (i + 1) % 200 == 0:
-            print(f"{i + 1}/{len(rows)}", flush=True)
+        prog.tick()
     manifest.write(out_dir / "features.jsonl", out)
     print(f"{len(out)} feature files -> {out_dir} ({made} computed, {len(out) - made} reused)")
 

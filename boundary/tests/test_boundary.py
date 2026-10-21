@@ -39,6 +39,17 @@ def test_onset_track_sits_on_the_f0_grid():
     assert len(tr.envelope) == len(tr.envelope_times) == 200
 
 
+def test_progress_prints_rate_and_eta_at_the_end(capsys):
+    from boundary.progress import Progress
+
+    p = Progress(4, "demo", every_s=3600)
+    p.tick(3)
+    assert capsys.readouterr().out == ""                       # nothing until a minute passes or it finishes
+    p.tick()
+    line = capsys.readouterr().out
+    assert "[demo] 4/4 (100%)" in line and "eta" in line
+
+
 def test_resung_finds_only_same_pitch_notes_with_no_gap():
     notes = [[0, 1, 60], [1, 2, 60], [2.2, 3, 60], [3, 4, 62]]
     assert resung(notes) == [1]

@@ -40,6 +40,7 @@ from pathlib import Path
 import numpy as np
 
 from . import MIX_SR, accomp, items as manifest
+from .progress import Progress
 
 MIX_VERSION = 2       # bump when a change here alters what an (item, seed, variant) renders
 VAR_DB = (-6.0, 4.0)
@@ -176,11 +177,16 @@ def main(argv=None) -> None:
     (out_dir / "mixes").mkdir(parents=True, exist_ok=True)
     jobs = [(it, i, v, args.seed, accs, out_dir, args.keep_dry, setup, tuple(args.var_db))
             for i, it in enumerate(vocals) for v in range(args.variants)]
+    prog, rows = Progress(len(jobs), "mix"), []
     if args.workers > 1:
         with mp.get_context("spawn").Pool(args.workers) as pool:
-            rows = pool.map(_job, jobs, chunksize=8)
+            for row in pool.imap(_job, jobs, chunksize=8):
+                rows.append(row)
+                prog.tick()
     else:
-        rows = [_job(j) for j in jobs]
+        for j in jobs:
+            rows.append(_job(j))
+            prog.tick()
     n = manifest.write(out_dir / "mixes.jsonl", rows)
     print(f"{n} mixes -> {out_dir / 'mixes'} (setup {setup})")
 

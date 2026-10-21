@@ -73,10 +73,15 @@ written before that check.
 
 ## CSD3
 
-Jobs are in `slurm/`. Each sources `slurm/env.sh`, which loads
-`rhel8/default-amp`, activates `$VENV` (default `~/venvs/boundary`) and puts
-this repository on `PYTHONPATH`. Data goes under
-`/rds/user/$USER/hpc-work/boundary`. One-off setup on CSD3:
+Jobs are in `slurm/`. Each one sources `slurm/env.sh`, which:
+- loads `rhel8/default-amp`;
+- activates `$VENV` (default `~/venvs/boundary`);
+- puts this repository on `PYTHONPATH`;
+- writes a line to the ledger when the job starts and when it ends.
+
+Data goes under `$DATA` (default `/rds/user/$USER/hpc-work/boundary`). That space is not backed up, so copy checkpoints, logs and manifests somewhere that is.
+
+One-off setup on CSD3:
 
 ```bash
 python -m venv ~/venvs/boundary && source ~/venvs/boundary/bin/activate
@@ -95,20 +100,42 @@ Then, on CSD3:
 apptainer build sep-bsroformer53.sif docker-archive://sep.tar
 ```
 
-Typical sequence. Every stage is resumable: resubmit the same command after a
-time-out and it carries on. First set `DATA` in the login shell. `env.sh` sets
-it only inside jobs, and the lines below expand it before they are submitted.
+### Submitting
+
+Use `submit.sh`. It writes each job's log to `$DATA/logs/<job name>-<job id>.out` and prints the job id and log path. Every stage is resumable: after a time-out, resubmit the same command.
 
 ```bash
 export DATA=/rds/user/$USER/hpc-work/boundary
+bash boundary/slurm/submit.sh mix VOCALS=$DATA/m4singer.jsonl ACCOMP=$DATA/musdb18hq DEPTH=2 OUT=$DATA/m4-musdb
+bash boundary/slurm/submit.sh separate OUT=$DATA/m4-musdb SIF=$DATA/sep-bsroformer53.sif
+bash boundary/slurm/submit.sh features OUT=$DATA/m4-musdb
+bash boundary/slurm/submit.sh train FEATURES=$DATA/m4-musdb/features/features.jsonl RUN=$DATA/runs/r1 --array=0-2
 ```
 
+Add `MAIL=you@cam.ac.uk` before `bash` to get an email from Slurm when a job ends or fails.
+
+### Following progress
+
+The status command shows everything at once:
+
 ```bash
-sbatch --export=ALL,VOCALS=$DATA/m4singer.jsonl,ACCOMP=$DATA/musdb18hq,DEPTH=2,OUT=$DATA/m4-musdb boundary/slurm/mix.sbatch
-sbatch --export=ALL,OUT=$DATA/m4-musdb,SIF=$DATA/sep-bsroformer53.sif boundary/slurm/separate.sbatch
-sbatch --export=ALL,OUT=$DATA/m4-musdb boundary/slurm/features.sbatch
-sbatch --export=ALL,FEATURES=$DATA/m4-musdb/features/features.jsonl,RUN=$DATA/runs/r1 --array=0-2 boundary/slurm/train.sbatch
+bash ~/transcPybe/boundary/slurm/status.sh
 ```
+
+It reports:
+- your queued and running jobs;
+- the latest progress line of each running job;
+- each dataset's mixes, stems and features done;
+- each training run's latest validation (score, onset F, onset timing, ETA);
+- GPU hours used so far from the ledger, against the plan's 55-110;
+- `mybalance`;
+- your quota.
+
+Every long stage logs a timestamped line at least once a minute with its count, rate and ETA. Training logs one line per evaluation and keeps the full record in `<run>/log.jsonl`.
+
+`$DATA/ledger.tsv` has one line per job start and end: time, job id, name, node, GPUs, exit code and elapsed seconds. A job killed at its time limit still gets its end line.
+
+After you log in once with `ssh hpc`, the connection is shared for 8 hours (`ControlPersist` in `~/.ssh/config`). Claude can then run the same status command, read the logs and submit jobs over that shared connection.
 
 ## Tests
 
