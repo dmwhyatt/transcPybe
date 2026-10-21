@@ -13,6 +13,10 @@ module load rhel8/default-amp
 source "$VENV/bin/activate"
 [ "$_boundary_nounset" = 1 ] && set -u
 export PYTHONPATH="$REPO:$REPO/src${PYTHONPATH:+:$PYTHONPATH}" PYTHONUNBUFFERED=1
+# One thread per allocated core, as CSD3's PyTorch guide sets. Without this the libraries see all 128 cores of a
+# Wilkes-3 node while the job holds 32 per GPU. nproc counts what this job may use.
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-$(nproc)}
+export MKL_NUM_THREADS=$OMP_NUM_THREADS
 
 # The ledger: one line when a job starts and one when it ends (any exit, including a time-out's SIGTERM),
 # so status.sh can show what ran, for how long, and how many GPU hours it used.
