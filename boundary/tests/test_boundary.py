@@ -94,6 +94,21 @@ def test_same_pitch_policy_keeps_splits_where_pitch_is_level():
     assert np.isnan(onset_track(p, 0.5, track=track, split_policy="same-pitch", split_threshold=0.95).strengths).all()
 
 
+def test_across_gap_policy_splits_a_note_sung_again_after_a_consonant():
+    from types import SimpleNamespace
+
+    n = 200
+    f0, v = np.full(n, 220.0), np.ones(n)
+    f0[95:105], v[95:105] = np.nan, 0.0                                  # a 100 ms unvoiced consonant, same pitch either side
+    f0[150:], v[150:] = np.nan, 0.0                                      # then a rest
+    track = SimpleNamespace(f0_hz=f0, voicing=v)
+    p = np.zeros(n)
+    p[[96, 175]] = 0.9
+    assert np.isnan(onset_track(p, 0.5, track=track, split_policy="same-pitch").strengths[0])      # blocked by the gap
+    gap = onset_track(p, 0.5, track=track, split_policy="across-gap").strengths
+    assert np.isfinite(gap[0]) and np.isnan(gap[1])                      # re-sung note splits; nothing voiced near the rest
+
+
 def test_m4singer_holds_out_a_validation_singers_songs_from_every_singer(tmp_path):
     pretty_midi = pytest.importorskip("pretty_midi")
     import soundfile as sf

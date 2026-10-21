@@ -43,7 +43,7 @@ def main(argv=None) -> None:
     ap.add_argument("--work", type=Path, required=True)
     ap.add_argument("--name", required=True)
     ap.add_argument("--thresholds", type=float, nargs="+", default=[0.3, 0.5, 0.7])
-    ap.add_argument("--split-policies", nargs="+", default=["all"], choices=("all", "same-pitch"))
+    ap.add_argument("--split-policies", nargs="+", default=["all"], choices=("all", "same-pitch", "across-gap"))
     ap.add_argument("--split-thresholds", type=float, nargs="+", default=[None],
                     help="for same-pitch splitting: the bar a peak must reach to split (default: the peak threshold)")
     ap.add_argument("--device", default="cuda")
@@ -67,8 +67,9 @@ def main(argv=None) -> None:
     for v, ov in variants.items():
         for t in args.thresholds:
             for pol in args.split_policies:
-                for st in (args.split_thresholds if pol == "same-pitch" else [None]):
-                    name = f"{args.name}-{v}-t{t}" + ("" if pol == "all" else f"-sp{st if st is not None else t}")
+                for st in (args.split_thresholds if pol != "all" else [None]):
+                    tag = {"all": "", "same-pitch": "-sp", "across-gap": "-xg"}[pol]
+                    name = f"{args.name}-{v}-t{t}" + ("" if pol == "all" else f"{tag}{st if st is not None else t}")
                     runs[name] = (dataclasses.replace(TranscriptionConfig(device="cpu"), **ov), t, pol, st)
                     (W / "dev/runs/sp" / name / "midi").mkdir(parents=True, exist_ok=True)
                     with open(W / "dev/runs/sp" / name / "overrides.json", "w") as f:
