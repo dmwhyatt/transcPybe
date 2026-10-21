@@ -247,6 +247,9 @@ def test_whole_pipeline_on_three_synthetic_recordings(tmp_path: Path, capsys):
     assert z["mel"].shape[0] == z["aux"].shape[0] == z["y"].shape[0] and z["y"][:, 0].max() == 1
     features.main(feat)
     assert "(0 computed, 3 reused)" in capsys.readouterr().out
+    features.main([feat[0], str(tmp_path / "feat2")] + feat[2:] + ["--workers", "2"])   # two processes, same files
+    z2 = np.load(tmp_path / "feat2" / f"{rows[0]['mix_id']}.npz")
+    assert all(np.array_equal(z[k], z2[k]) for k in ("mel", "aux", "y"))
 
     run = [str(tmp_path / "feat" / "features.jsonl"), "--out", str(tmp_path / "run"), "--steps", "20",
            "--eval-every", "10", "--batch", "4", "--device", "cpu",
@@ -279,6 +282,50 @@ def test_whole_pipeline_on_three_synthetic_recordings(tmp_path: Path, capsys):
     infer.main([str(tmp_path / "run" / "best.pt"), stem, "--out-dir", str(tmp_path / "inf"), "--device", "cpu",
                 "--f0-backend", "pyin"])
     assert (tmp_path / "inf" / f"{Path(stem).stem}.json").exists()
+
+
+def test_a_shard_gives_back_what_the_feature_files_hold(tmp_path):
+    from boundary import pack
+    from boundary.train import load_split
+
+    rng = np.random.default_rng(0)
+    rows = []
+    for i, n in enumerate((40, 7, 25)):
+        path = tmp_path / f"m{i}.npz"
+        np.savez(path, mel=rng.normal(size=(n, 80)).astype(np.float16), aux=rng.normal(size=(n, 5)).astype(np.float16),
+                 y=rng.random((n, 3)).astype(np.float16), meta=np.array("x"))
+        rows.append(dict(mix_id=f"m{i}", notes=[[0.1, 0.2, 60]], split="train" if i else "valid", features=str(path)))
+    packed = pack.pack(rows, tmp_path / "s.npz")
+    assert [r["index"] for r in packed] == [0, 1, 2] and all("features" not in r for r in packed)
+    for split in ("train", "valid"):
+        for a, b in zip(load_split(rows, split), load_split(packed, split)):
+            assert a["id"] == b["id"] and all(np.array_equal(a[k], b[k]) for k in ("mel", "aux", "y"))
+
+
+def test_prepare_in_parts_makes_the_whole_runs_mixes_into_shards_that_train(tmp_path, capsys):
+    pytest.importorskip("torch")
+    from boundary import mix, prepare, train
+
+    items.write(tmp_path / "vocals.jsonl", _synthetic_vocals(tmp_path))
+    common = ["--accomp", "synthetic", "--var-db", "20", "35", "--scratch", str(tmp_path / "scratch"),
+              "--device", "cpu", "--f0-backend", "pyin", "--mix-workers", "1"]
+    prepare.main([str(tmp_path / "vocals.jsonl"), str(tmp_path / "out"), "--part", "0/2", "--workers", "2"] + common)
+    prepare.main([str(tmp_path / "vocals.jsonl"), str(tmp_path / "out"), "--part", "1/2", "--workers", "1"] + common)
+    shards = sorted((tmp_path / "out" / "shards").glob("*.jsonl"))
+    rows = [r for s in shards for r in items.read(s)]
+    assert len(shards) == 2 and not any((tmp_path / "scratch").iterdir())   # the node-local work is cleared away
+
+    # the parts' mixes are the ones a whole run makes: same ids, same labels
+    mix.main([str(tmp_path / "vocals.jsonl"), str(tmp_path / "whole"), "--accomp", "synthetic", "--var-db", "20", "35"])
+    whole = {r["mix_id"]: r["notes"] for r in items.read(tmp_path / "whole" / "mixes.jsonl")}
+    assert {r["mix_id"]: r["notes"] for r in rows} == whole
+
+    capsys.readouterr()
+    prepare.main([str(tmp_path / "vocals.jsonl"), str(tmp_path / "out"), "--part", "0/2", "--workers", "2"] + common)
+    assert "already done" in capsys.readouterr().out
+    train.main([str(s) for s in shards] + ["--out", str(tmp_path / "run"), "--steps", "10", "--eval-every", "5",
+                                           "--batch", "4", "--device", "cpu"])
+    assert len((tmp_path / "run" / "log.jsonl").read_text().splitlines()) == 2
 
 
 def test_var_db_sets_the_accompaniment_level_and_the_mix_backend_uses_the_mix(tmp_path):

@@ -7,7 +7,7 @@ squeue --me -o "%.14i %.22j %.9T %.10M %.10L %.4D %R" 2>/dev/null || echo "(sque
 echo; echo "=== latest progress of running jobs"
 for id in $(squeue --me -h -t R -o "%i" 2>/dev/null); do
   log=$(ls -t "$DATA"/logs/*-"${id}".out "$DATA"/logs/*-"${id%%_*}"_*.out 2>/dev/null | head -1)
-  [ -n "$log" ] && { echo "--- $id  $(basename "$log")"; grep -E "^[0-9]{4}-|batch [0-9]+:|Error|Traceback" "$log" | tail -n 2; }
+  [ -n "$log" ] && { echo "--- $id  $(basename "$log")"; grep -E "^(\[seed [0-9]+\] )?[0-9]{4}-|batch [0-9]+:|Error|Traceback" "$log" | tail -n 4; }
 done
 echo; echo "=== stages (rows done / rows in the manifest)"
 for d in "$DATA"/*/; do
@@ -15,6 +15,11 @@ for d in "$DATA"/*/; do
   m=$(wc -l < "$d/mixes.jsonl"); s=$( [ -f "$d/stems.jsonl" ] && wc -l < "$d/stems.jsonl" || echo 0 )
   f=$( [ -f "$d/features/features.jsonl" ] && wc -l < "$d/features/features.jsonl" || echo 0 )
   printf "  %-30s mixes %7s   stems %7s   features %7s\n" "$(basename "$d")" "$m" "$s" "$f"
+done
+for d in "$DATA"/*/shards/; do                       # prepare.sbatch output: parts finished, recordings packed
+  [ -d "$d" ] || continue
+  p=$(ls "$d" | grep -c '\.done$'); r=$(cat "$d"/*.jsonl 2>/dev/null | wc -l)
+  printf "  %-30s parts done %4s   recordings in shards %8s\n" "$(basename "$(dirname "$d")")" "$p" "$r"
 done
 echo; echo "=== training runs (latest evaluation; best score)"
 python3 - "$DATA" <<'PY'

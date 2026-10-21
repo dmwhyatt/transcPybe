@@ -21,7 +21,9 @@ stage's JSONL manifest and writes its own, adding fields rather than replacing t
 | `mix` | vocals, multitrack accompaniment | `mixes/*.flac` 44.1 kHz stereo + `mixes.jsonl` | CPU |
 | `separate` | mixes | `stems/*.wav` (BS-RoFormer lead vocal) + `stems.jsonl` | GPU |
 | `features` | stems | `features/*.npz`: log-mel, transcPybe f0 features, targets | GPU (CREPE) |
-| `train` | feature manifests | `best.pt`, `last.pt`, `log.jsonl` | GPU |
+| `pack` | feature manifest | one shard `.npz` + its `.jsonl` | CPU |
+| `prepare` | vocals, accompaniment | `shards/part-*.npz`: mix, features and pack for one part, no separator | GPU |
+| `train` | feature or shard manifests | `best.pt`, `last.pt`, `log.jsonl` | GPU |
 | `infer` | checkpoint + audio | onset posterior and picked onsets per file | GPU/CPU |
 
 The separator runs in the image built from audio-symbolic-pipeline (on musix:
@@ -75,56 +77,87 @@ written before that check.
 
 The bulk work runs on CSD3 (Cambridge HPC), so that musix stays free for other
 users. The account is `HARRISON-SL3-GPU` for the A100s (Wilkes-3, partition
-`ampere`), with `HARRISON-SL3-CPU` for CPU work. Both are SL3, the lowest
-priority, so jobs queue: the first timing job waited 1 h 26 min.
+`ampere`), with `HARRISON-SL3-CPU` for CPU work.
 
 ### How we use it
 
-Measured on 21 October with one A100 against musix's RTX 3080:
-- training ran at the same speed;
-- CREPE features ran a little slower per process.
+The choices below follow CSD3's documentation; each point names the page.
 
-The network is small, so the CPU side sets the pace, not the GPU. Each GPU
-comes with 32 cores and 250 GB of memory. Billing is per GPU-hour.
+**Service level: SL3.**
+- SL3 runs as QOS2: lower priority than paid levels, 12 hours at most per job,
+  and at most 32 GPUs or 448 CPU cores per user at once
+  ([policies](https://docs.hpc.cam.ac.uk/hpc/user-guide/policies.html)).
+- Queue waits on 21 October:
+  - a GPU job waited 1 h 26 min;
+  - a CPU job was still waiting after more than 3 hours, at priority 104 with
+    4,474 of 4,537 waiting CPU jobs ranked above it.
+- Priority rises slowly with age. Idle nodes are held for higher-priority work
+  and lent out only to jobs that fit the gaps, so ask for no more time than a
+  job needs.
 
-**What runs where**
+**What runs where.**
 - **Login nodes:** editing, submitting, monitoring, the tests, small downloads.
-  Large or long processes are killed by CSD3's watchdog.
-- **CPU partitions:** mixing, data preparation, packing, scoring.
-- **GPU partition:** CREPE features and training only. Pack each GPU:
-  - several feature workers at once;
-  - several seeds in one job.
-- **Building a container image:** an interactive session (`sintr`), with the
-  node's `/local` as scratch.
+  They are "not intended for production workload", and "any large or
+  long-lasting job is liable to be terminated by an automatic script called
+  watchdog" ([connecting](https://docs.hpc.cam.ac.uk/hpc/user-guide/connecting.html)).
+- **GPU jobs:** almost everything else. CPU-only jobs at SL3 queue too long to
+  rely on, so `prepare` mixes inside the GPU job that computes the features.
+- **Heavier interactive work** (the Ampere page's example is recompiling; ours
+  is building a container image): an interactive node, `sintr`
+  ([Ampere](https://docs.hpc.cam.ac.uk/hpc/user-guide/a100.html)).
+
+**Packing GPUs.**
+- Each Ampere GPU comes with 32 cores, and "1 credit = 1 GPU for 1 hour"
+  ([Ampere](https://docs.hpc.cam.ac.uk/hpc/user-guide/a100.html)).
+- Measured on 21 October, one A100 against musix's RTX 3080:
+  - training ran at the same speed;
+  - CREPE features ran a little slower per process.
+
+  The network is small, so the CPU sets the pace.
+- So every GPU job keeps its GPU busy:
+  - `prepare` runs 8 feature processes on one GPU;
+  - `train.sbatch` trains several seeds side by side (`SEEDS="0 1 2"`).
 
 **Where files live**
-- **`$DATA`** (default `/rds/user/$USER/hpc-work/boundary`): the shared
-  filesystem (Lustre). It is fast for large files and slow for many small ones,
-  and it is **not backed up**: copy checkpoints, logs and manifests somewhere
-  that is once a campaign ends.
+([file and I/O management](https://docs.hpc.cam.ac.uk/hpc/user-guide/io_management.html)).
+- **`$DATA`** (default `/rds/user/$USER/hpc-work/boundary`) is on RDS, the
+  Lustre filesystem where "active data to be read or written by jobs should be
+  placed". It is built for large files. Its file quota is about a million
+  files, and it is **not backed up**: copy checkpoints, logs and manifests
+  somewhere that is once a campaign ends.
+- **`/local` and `/ramdisks`** are each node's own disk and memory, "private
+  to each compute node", and their files are "destroyed after completion of
+  the current job". `prepare` keeps every per-recording file there and copies
+  only one shard per part to `$DATA`: about 115 KB of compressed features per
+  clip, a few hundred files for the whole plan.
+- **Home** holds the Python environment and the code: "your home directory
+  should not be used for I/O from running jobs", and jobs only read it at
+  start-up.
 - **Raw datasets:** download straight into `$DATA` from their sources. Relaying
   through a laptop ran at 1-9 MB/s.
-- **`/local` and `/ramdisks`:** every node has its own. On a compute node they
-  belong to the job and are deleted when it ends. Per-clip working files belong
-  there, with only packed results copied to `$DATA`. The login node's `/local`
-  exists on that node only, and suits scratch for builds, nothing to keep.
-- **Home:** the Python environment and the code. The CSD3 docs say home should
-  not take job I/O; jobs only read the environment.
+- The login node's `/local` exists on that node only. It suits build scratch,
+  nothing to keep.
 
-**How to submit**
-- Few long jobs (SL3 allows up to 12 h) and arrays, submitted early or
-  overnight: every queue wait is long, however short the job.
-- Every stage resumes after a time-out, so a time-out only means resubmitting.
-- Quick experiments do not suit SL3 queues; use an interactive session or a
-  small CPU job.
+**Jobs.**
+- Arrays rather than a loop of submissions: "Array jobs should be prefered to
+  multiple `sbatch` calls in a loop"
+  ([batch](https://docs.hpc.cam.ac.uk/hpc/user-guide/batch.html)).
+- Size each array task well inside the 12-hour limit. Every stage resumes after
+  a time-out, so a time-out only means resubmitting.
+- Quick experiments do not suit SL3 queues.
+
+**Python** follows CSD3's
+[PyTorch guide](https://docs.hpc.cam.ac.uk/hpc/software-packages/pytorch.html):
+- a venv with pip, not conda;
+- `rhel8/default-amp` loaded;
+- `OMP_NUM_THREADS` and `MKL_NUM_THREADS` set to the job's cores.
 
 **Not done yet**
-- Mixing, features and packing in one job on a node's local disk, writing
-  shards.
-- Several training seeds per GPU.
 - A pinned lock file for the environment.
 - A read-only GitHub deploy key, so CSD3 can `git pull` the private repository.
   Until then, update it from a git bundle made on a machine with access.
+- Checking that Wilkes-3 nodes have a writable `/local`. `prepare.sbatch`
+  falls back to `/ramdisks`, then to `$TMPDIR`.
 
 ### Setting up
 
@@ -169,19 +202,31 @@ Two snags:
 
 Use `submit.sh`. It writes each job's log to `$DATA/logs/<job name>-<job id>.out` and prints the job id and log path. Every stage is resumable: after a time-out, resubmit the same command.
 
+The bulk recipe has no separator. `prepare` does one part of a dataset per
+array task:
+1. it mixes with the accompaniment 20-35 dB under the voice;
+2. it computes the features;
+3. it writes one shard.
+
+Training then reads the shards, with three seeds on one GPU:
+
 ```bash
 export DATA=/rds/user/$USER/hpc-work/boundary
-bash boundary/slurm/submit.sh mix VOCALS=$DATA/m4singer.jsonl ACCOMP=$DATA/musdb18hq DEPTH=2 OUT=$DATA/m4-musdb
-bash boundary/slurm/submit.sh separate OUT=$DATA/m4-musdb SIF=$DATA/sep-bsroformer53.sif
-bash boundary/slurm/submit.sh features OUT=$DATA/m4-musdb
-bash boundary/slurm/submit.sh train FEATURES=$DATA/m4-musdb/features/features.jsonl RUN=$DATA/runs/r1 --array=0-2
+bash boundary/slurm/submit.sh prepare VOCALS=$DATA/m4singer.jsonl ACCOMP=$DATA/musdb18hq DEPTH=2 \
+    OUT=$DATA/m4-musdb NPARTS=16 --array=0-15
+bash boundary/slurm/submit.sh train FEATURES="$DATA/m4-musdb/shards/*.jsonl" RUN=$DATA/runs/r1 SEEDS="0 1 2"
 ```
 
-Add `MAIL=you@cam.ac.uk` before `bash` to get an email from Slurm when a job ends or fails.
+Choose `NPARTS` so that one part fits well inside 12 hours. The rate with 8
+feature processes is not measured yet. At the single-process rate (about
+3 clips/s on an A100), 10,000 clips take under an hour. So a few large parts
+are enough, and each waits in the queue only once. Rerunning the same array
+skips finished parts.
 
-The example still includes separation. The bulk recipe now skips it: mix with
-`--var-db 20 35`, then `separate --backend mix`, which needs no separator.
-`mix.sbatch` and `separate.sbatch` do not pass those options yet.
+The validation-size set of real separated audio uses the stage-by-stage route:
+`mix`, then `separate` with the Apptainer image (`SIF=...`), then `features`.
+
+Add `MAIL=you@cam.ac.uk` before `bash` to get an email from Slurm when a job ends or fails.
 
 ### Following progress
 
@@ -194,7 +239,7 @@ bash ~/transcPybe/boundary/slurm/status.sh
 It reports:
 - your queued and running jobs;
 - the latest progress line of each running job;
-- each dataset's mixes, stems and features done;
+- each dataset's mixes, stems and features done, or its `prepare` parts finished;
 - each training run's latest validation (score, onset F, onset timing, ETA);
 - GPU hours used so far from the ledger, against the plan's 10-15;
 - `mybalance`;

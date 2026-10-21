@@ -1,6 +1,7 @@
 #!/bin/bash
 # Separate every mix in $OUT/mixes.jsonl with the pipeline's BS-RoFormer, from an Apptainer image ($SIF).
-# Resumable: resubmit the same command if it runs out of time.
+# Resumable: resubmit the same command if it runs out of time. Since 21 Oct the bulk data has no separator
+# (prepare.sbatch); this is for the validation-size set of real separated audio.
 #   sbatch --export=ALL,OUT=...,SIF=... boundary/slurm/separate.sbatch
 #SBATCH -J boundary-separate
 #SBATCH -A HARRISON-SL3-GPU

@@ -104,11 +104,18 @@ def augment(mel, aux, rng):
 
 
 def load_split(rows, split):
-    out = []
+    """One split's recordings, from per-recording feature files or from shards (boundary.pack)."""
+    from .pack import read
+
+    out, shards = [], {}
     for r in manifest.split(rows, split):
-        with np.load(r["features"]) as z:
-            out.append(dict(id=r["mix_id"], notes=r["notes"], mel=z["mel"].astype(np.float32),
-                            aux=z["aux"].astype(np.float32), y=z["y"].astype(np.float32)))
+        if "shard" in r:
+            z = read(r["shard"], r["index"], shards)
+        else:
+            with np.load(r["features"]) as f:
+                z = {k: f[k] for k in ("mel", "aux", "y")}
+        out.append(dict(id=r["mix_id"], notes=r["notes"], mel=z["mel"].astype(np.float32),
+                        aux=z["aux"].astype(np.float32), y=z["y"].astype(np.float32)))
     return out
 
 

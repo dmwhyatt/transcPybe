@@ -1,5 +1,6 @@
 #!/bin/bash
-# Mix every vocal in $VOCALS over the accompaniments in $ACCOMP (CPU only).
+# Mix every vocal in $VOCALS over the accompaniments in $ACCOMP (CPU only). VAR_DB="20 35" for the no-separator
+# stand-in. For the bulk data, prepare.sbatch mixes inside the GPU job instead: SL3 CPU jobs can queue for hours.
 #   sbatch --export=ALL,VOCALS=...,ACCOMP=...,DEPTH=2,OUT=... boundary/slurm/mix.sbatch
 #SBATCH -J boundary-mix
 #SBATCH -A HARRISON-SL3-CPU
@@ -12,4 +13,4 @@
 set -euo pipefail
 source "${REPO:-$HOME/transcPybe}/boundary/slurm/env.sh"   # sbatch runs a spooled copy, so not $0
 python -m boundary.mix "$VOCALS" "$OUT" --accomp "$ACCOMP" --accomp-depth "${DEPTH:-2}" \
-    --variants "${VARIANTS:-1}" --seed "${SEED:-0}" --workers 32 ${KEEP_DRY:+--keep-dry}
+    --variants "${VARIANTS:-1}" --seed "${SEED:-0}" --workers 32 ${KEEP_DRY:+--keep-dry} ${VAR_DB:+--var-db $VAR_DB}

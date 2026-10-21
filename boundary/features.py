@@ -20,12 +20,20 @@ network can learn those as a shortcut that never fires on separated audio.
 
 The f0 features come from ``transcpybe.f0.estimate_f0`` with the shipped
 settings, so at inference the network is given exactly what the decoder has.
+
+Most of the time per stem goes to the CPU (reading, resampling, the log-mel),
+not to CREPE on the GPU: one process ran at 3 stems/s on an A100 against 4.3 on
+musix's 3080. ``--workers N`` runs N processes, each with its own CREPE, the
+same GPU and its share of the job's cores. A CSD3 Ampere job gets 32 cores
+per GPU (https://docs.hpc.cam.ac.uk/hpc/user-guide/a100.html).
 """
 from __future__ import annotations
 
 import argparse
 import dataclasses
 import json
+import multiprocessing as mp
+import os
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -104,6 +112,42 @@ def _current(path: Path, meta: str) -> bool:
         return False
 
 
+_WORKER: dict = {}
+
+
+def _init_worker(device, crepe_model, backend, out_dir, threads) -> None:
+    """Each worker process: its own f0 settings (and CREPE, loaded on first use) and its share of the cores."""
+    try:
+        import torch
+
+        torch.set_num_threads(threads)
+    except ImportError:                      # pyin needs no torch
+        pass
+    _WORKER.update(cfg=f0_config(device, crepe_model, backend), out_dir=out_dir)
+
+
+def _feature_file(r: dict) -> tuple:
+    """(the row with ``features`` added, whether the file had to be computed)."""
+    from transcpybe.audio import load_audio
+    from transcpybe.f0 import estimate_f0
+    from transcpybe.progress import null_reporter
+
+    cfg = _WORKER["cfg"]
+    path = _WORKER["out_dir"] / f"{r['mix_id']}.npz"
+    meta = _meta(r, cfg)
+    made = not _current(path, meta)
+    if made:
+        audio, _ = load_audio(r["stem"], FEATURE_SR)
+        track = estimate_f0(audio, cfg, null_reporter())
+        mel, aux = frame_features(audio, track)
+        y = targets(r["notes"], len(mel))
+        tmp = path.with_name(path.stem + ".part.npz")
+        np.savez_compressed(tmp, mel=mel.astype(np.float16), aux=aux.astype(np.float16), y=y.astype(np.float16),
+                            meta=np.array(meta))
+        tmp.replace(path)
+    return dict(r, features=str(path)), made
+
+
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("stems", type=Path)
@@ -111,33 +155,29 @@ def main(argv=None) -> None:
     ap.add_argument("--device", default="auto")
     ap.add_argument("--crepe-model", default="full")
     ap.add_argument("--f0-backend", default=None, help="override, e.g. pyin for quick tests")
+    ap.add_argument("--workers", type=int, default=1, help="processes, each with its own CREPE on the same device")
     args = ap.parse_args(argv)
 
-    from transcpybe.audio import load_audio
-    from transcpybe.f0 import estimate_f0
-    from transcpybe.progress import null_reporter
-
-    cfg = f0_config(args.device, args.crepe_model, args.f0_backend)
     rows = manifest.read(args.stems)
     out_dir = args.out_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    cores = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1
+    init = (args.device, args.crepe_model, args.f0_backend, out_dir, max(1, cores // max(1, args.workers)))
     out, made = [], 0
     prog = Progress(len(rows), "features")
-    for i, r in enumerate(rows):
-        path = out_dir / f"{r['mix_id']}.npz"
-        meta = _meta(r, cfg)
-        if not _current(path, meta):
-            audio, _ = load_audio(r["stem"], FEATURE_SR)
-            track = estimate_f0(audio, cfg, null_reporter())
-            mel, aux = frame_features(audio, track)
-            y = targets(r["notes"], len(mel))
-            tmp = path.with_name(path.stem + ".part.npz")
-            np.savez(tmp, mel=mel.astype(np.float16), aux=aux.astype(np.float16), y=y.astype(np.float16),
-                     meta=np.array(meta))
-            tmp.replace(path)
-            made += 1
-        out.append(dict(r, features=str(path)))
-        prog.tick()
+    if args.workers > 1:
+        with mp.get_context("spawn").Pool(args.workers, initializer=_init_worker, initargs=init) as pool:
+            for row, m in pool.imap(_feature_file, rows, chunksize=4):
+                out.append(row)
+                made += m
+                prog.tick()
+    else:
+        _init_worker(*init)
+        for r in rows:
+            row, m = _feature_file(r)
+            out.append(row)
+            made += m
+            prog.tick()
     manifest.write(out_dir / "features.jsonl", out)
     print(f"{len(out)} feature files -> {out_dir} ({made} computed, {len(out) - made} reused)")
 

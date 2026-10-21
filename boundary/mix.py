@@ -3,6 +3,7 @@
     python -m boundary.mix VOCALS.jsonl OUT_DIR --accomp ROOT --accomp-depth 2 [--variants 1] [--workers 8]
     python -m boundary.mix VOCALS.jsonl OUT_DIR --accomp synthetic          # tests only
     python -m boundary.mix VOCALS.jsonl OUT_DIR --accomp none               # dry baseline: no mix at all
+    python -m boundary.mix VOCALS.jsonl OUT_DIR --accomp ROOT --part 3/16   # one of 16 parts (see prepare)
 
 Writes ``OUT_DIR/mixes/<mix_id>.flac`` (44.1 kHz stereo, what the separator
 expects), a ``<mix_id>.json`` beside each with how it was made, and
@@ -202,7 +203,13 @@ def main(argv=None) -> None:
     ap.add_argument("--var-db", type=float, nargs=2, default=list(VAR_DB), metavar=("LO", "HI"),
                     help="vocal-to-accompaniment level range in dB; e.g. 20 35 leaves only faint bleed, a stand-in for separation")
     ap.add_argument("--workers", type=int, default=1)
+    ap.add_argument("--part", default="0/1", metavar="I/N",
+                    help="render only the vocals whose position modulo N is I; each keeps its position, so the "
+                         "parts of a split run are exactly the mixes of a whole one")
     args = ap.parse_args(argv)
+    part, n_parts = (int(x) for x in args.part.split("/"))
+    if not 0 <= part < n_parts:
+        raise SystemExit(f"--part wants I/N with 0 <= I < N, not {args.part}")
 
     out_dir = args.out_dir.resolve()          # manifests carry absolute paths: later stages may run elsewhere
     vocals = manifest.read(args.vocals)
@@ -213,7 +220,7 @@ def main(argv=None) -> None:
     setup = setup_key(accs, args.var_db, mp3)
     (out_dir / "mixes").mkdir(parents=True, exist_ok=True)
     jobs = [(it, i, v, args.seed, accs, out_dir, args.keep_dry, setup, tuple(args.var_db), mp3)
-            for i, it in enumerate(vocals) for v in range(args.variants)]
+            for i, it in enumerate(vocals) if i % n_parts == part for v in range(args.variants)]
     prog, rows = Progress(len(jobs), "mix"), []
     if args.workers > 1:
         with mp.get_context("spawn").Pool(args.workers) as pool:
