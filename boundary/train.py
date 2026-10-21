@@ -287,9 +287,10 @@ def main(argv=None) -> None:
         opt.load_state_dict(ck["opt"])
         sched.load_state_dict(ck["sched"])
         rng.bit_generator.state = ck["np_rng"]
-        torch.set_rng_state(ck["torch_rng"])
+        # map_location moved every tensor to the device, the saved generator states too; torch wants them on the CPU
+        torch.set_rng_state(ck["torch_rng"].cpu())
         if amp and ck.get("cuda_rng") is not None:
-            torch.cuda.set_rng_state_all(ck["cuda_rng"])
+            torch.cuda.set_rng_state_all([s.cpu() for s in ck["cuda_rng"]])
         start, best = ck["step"] + 1, ck["best"]
         print(f"resuming {args.out} at step {start} (best score so far {best:.4f})", flush=True)
     with open(args.out / "args.json", "w") as f:
