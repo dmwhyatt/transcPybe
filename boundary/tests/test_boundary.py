@@ -267,6 +267,21 @@ def test_var_db_sets_the_accompaniment_level_and_the_mix_backend_uses_the_mix(tm
     assert items.read(tmp_path / "s" / "stems.jsonl")[0]["stem"] == rows[0]["mix"]
 
 
+def test_mp3_round_trip_is_realigned_even_where_the_encoder_delays_it():
+    from boundary.mix import MIX_SR, _mp3
+
+    rng = np.random.default_rng(0)
+    x = np.zeros((MIX_SR * 3, 2), np.float32)
+    for k in range(6):
+        a = int((0.3 + 0.4 * k) * MIX_SR)
+        x[a:a + 400] = rng.standard_normal((400, 2)) * 0.5
+    for kbps in (320, 128, 48):                                # 48 kbps is where libsndfile's MP3 comes back late
+        y, lag = _mp3(x, kbps)
+        n = len(x)
+        cc = np.fft.irfft(np.fft.rfft(x.sum(1), 2 * n).conj() * np.fft.rfft(y.sum(1), 2 * n))
+        assert y.shape == x.shape and int(np.argmax(np.r_[cc[-500:], cc[:501]]) - 500) == 0
+
+
 def test_separate_fails_loudly_when_a_stem_is_missing(tmp_path):
     from boundary import separate
 

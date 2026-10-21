@@ -26,7 +26,12 @@ The ranges are assumptions about commercial pop, not measurements:
 - a noise floor 55-75 dB under the voice, so no frame is digital silence:
   a separated stem never is, and features of exact zeros are values the
   network would never meet in use;
-- 10% with no accompaniment at all, so a dry take is not out of distribution.
+- 10% with no accompaniment at all, so a dry take is not out of distribution;
+- with ``--p-mp3 P``, that share of mixes goes through an MP3 round trip at a
+  bitrate drawn from ``--mp3-kbps`` before it is written, as a lossy source
+  would reach the separator. The encoder can delay the audio (1,105 samples at
+  low bitrates), so the decoded mix is realigned to the original by
+  cross-correlation and the labels stay true.
 """
 from __future__ import annotations
 
@@ -56,11 +61,14 @@ def digest(obj) -> str:
     return hashlib.sha1(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:10]
 
 
-def setup_key(accs, var_db=VAR_DB) -> str:
+def setup_key(accs, var_db=VAR_DB, mp3=(0.0, (96, 320))) -> str:
     """What every mix in a run shares and depends on: the accompaniment set and the ranges."""
     acc = accs if isinstance(accs, str) else [(a.id, a.files) for a in accs]
-    return digest(dict(version=MIX_VERSION, accomp=acc, var=tuple(var_db), pads=(PAD_BEFORE, PAD_AFTER),
-                       reverb=(P_REVERB, RT60, WET), floor=NOISE_FLOOR_DB, dry=P_DRY, peak=PEAK))
+    key = dict(version=MIX_VERSION, accomp=acc, var=tuple(var_db), pads=(PAD_BEFORE, PAD_AFTER),
+               reverb=(P_REVERB, RT60, WET), floor=NOISE_FLOOR_DB, dry=P_DRY, peak=PEAK)
+    if mp3[0] > 0:                     # only then, so mixes made before this option keep their ids
+        key["mp3"] = [mp3[0], list(mp3[1])]
+    return digest(key)
 
 
 def _reverb(x: np.ndarray, rng: np.random.Generator, sr: int):
@@ -82,6 +90,26 @@ def _active_rms(x: np.ndarray, sr: int) -> float:
     return float(np.sqrt(np.mean(e[e > e.max() * 10 ** (-40 / 20)] ** 2)))
 
 
+def _mp3(x: np.ndarray, kbps: float):
+    """(n, 2) audio after an MP3 round trip at about ``kbps``, realigned to ``x``; and the delay removed, in samples."""
+    import io
+    import soundfile as sf
+
+    peak = max(float(np.abs(x).max()), 1e-9)
+    buf = io.BytesIO()
+    sf.write(buf, x / peak * 0.98, MIX_SR, format="MP3", bitrate_mode="CONSTANT",
+             compression_level=float(np.clip((320.0 - kbps) / 314.0, 0.0, 1.0)))   # libsndfile: 0 -> 320 kbps, 0.5 -> ~160
+    buf.seek(0)
+    y, _ = sf.read(buf, dtype="float32", always_2d=True)
+    n = min(len(x), len(y), 10 * MIX_SR)
+    a, b = x[:n].sum(1), y[:n].sum(1)
+    cc = np.fft.irfft(np.fft.rfft(a, 2 * n).conj() * np.fft.rfft(b, 2 * n))
+    lag = int(np.argmax(np.r_[cc[-3000:], cc[:3001]]) - 3000)
+    y = y[lag:] if lag >= 0 else np.concatenate([np.zeros((-lag, 2), np.float32), y])
+    y = y[:len(x)] if len(y) >= len(x) else np.concatenate([y, np.zeros((len(x) - len(y), 2), np.float32)])
+    return y * peak / 0.98, lag
+
+
 def _write(path: Path, data: np.ndarray) -> None:
     """Write through a temporary name, so a killed job never leaves a truncated file under the real one."""
     import soundfile as sf
@@ -92,7 +120,7 @@ def _write(path: Path, data: np.ndarray) -> None:
 
 
 def render(item: dict, index: int, variant: int, seed: int, accs, out_dir: Path, keep_dry: bool,
-           setup: str, var_db=VAR_DB) -> dict:
+           setup: str, var_db=VAR_DB, mp3=(0.0, (96, 320))) -> dict:
     import librosa
 
     mix_id = f"{index:06d}-{variant}-{digest([item['id'], item['audio'], item['notes'], seed, variant, setup])}"
@@ -138,7 +166,13 @@ def render(item: dict, index: int, variant: int, seed: int, accs, out_dir: Path,
         mix = acc + vocal[None, :]
         gain = min(1.0, PEAK / max(float(np.abs(mix).max()), 1e-6))
         path = out_dir / "mixes" / f"{mix_id}.flac"
-        _write(path, (mix * gain).T)
+        if mp3[0] > 0 and rng.random() < mp3[0]:
+            kbps = float(rng.uniform(*mp3[1]))
+            coded, lag = _mp3((mix * gain).T.astype(np.float32), kbps)
+            rec["mp3_kbps"], rec["mp3_realigned_samples"] = round(kbps), lag
+            _write(path, coded)
+        else:
+            _write(path, (mix * gain).T)
         rec["mix"], rec["gain"] = str(path), round(gain, 4)
         if keep_dry:                   # the vocal as it is in the mix: the 'no separator' ablation
             dry = out_dir / "mixes" / f"{mix_id}.dry.flac"
@@ -163,6 +197,8 @@ def main(argv=None) -> None:
     ap.add_argument("--variants", type=int, default=1, help="mixes per vocal, each with its own draws")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--keep-dry", action="store_true")
+    ap.add_argument("--p-mp3", type=float, default=0.0, help="share of mixes put through an MP3 round trip before writing")
+    ap.add_argument("--mp3-kbps", type=float, nargs=2, default=[96, 320], metavar=("LO", "HI"))
     ap.add_argument("--var-db", type=float, nargs=2, default=list(VAR_DB), metavar=("LO", "HI"),
                     help="vocal-to-accompaniment level range in dB; e.g. 20 35 leaves only faint bleed, a stand-in for separation")
     ap.add_argument("--workers", type=int, default=1)
@@ -173,9 +209,10 @@ def main(argv=None) -> None:
     accs = args.accomp if args.accomp in ("synthetic", "none") else accomp.scan(Path(args.accomp), args.accomp_depth)
     if not accs:
         raise SystemExit(f"no accompaniment found under {args.accomp}")
-    setup = setup_key(accs, args.var_db)
+    mp3 = (args.p_mp3, tuple(args.mp3_kbps))
+    setup = setup_key(accs, args.var_db, mp3)
     (out_dir / "mixes").mkdir(parents=True, exist_ok=True)
-    jobs = [(it, i, v, args.seed, accs, out_dir, args.keep_dry, setup, tuple(args.var_db))
+    jobs = [(it, i, v, args.seed, accs, out_dir, args.keep_dry, setup, tuple(args.var_db), mp3)
             for i, it in enumerate(vocals) for v in range(args.variants)]
     prog, rows = Progress(len(jobs), "mix"), []
     if args.workers > 1:
