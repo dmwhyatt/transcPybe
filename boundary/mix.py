@@ -55,10 +55,10 @@ def digest(obj) -> str:
     return hashlib.sha1(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:10]
 
 
-def setup_key(accs) -> str:
+def setup_key(accs, var_db=VAR_DB) -> str:
     """What every mix in a run shares and depends on: the accompaniment set and the ranges."""
     acc = accs if isinstance(accs, str) else [(a.id, a.files) for a in accs]
-    return digest(dict(version=MIX_VERSION, accomp=acc, var=VAR_DB, pads=(PAD_BEFORE, PAD_AFTER),
+    return digest(dict(version=MIX_VERSION, accomp=acc, var=tuple(var_db), pads=(PAD_BEFORE, PAD_AFTER),
                        reverb=(P_REVERB, RT60, WET), floor=NOISE_FLOOR_DB, dry=P_DRY, peak=PEAK))
 
 
@@ -91,7 +91,7 @@ def _write(path: Path, data: np.ndarray) -> None:
 
 
 def render(item: dict, index: int, variant: int, seed: int, accs, out_dir: Path, keep_dry: bool,
-           setup: str) -> dict:
+           setup: str, var_db=VAR_DB) -> dict:
     import librosa
 
     mix_id = f"{index:06d}-{variant}-{digest([item['id'], item['audio'], item['notes'], seed, variant, setup])}"
@@ -131,7 +131,7 @@ def render(item: dict, index: int, variant: int, seed: int, accs, out_dir: Path,
                 a, start = accomp.choose(accs, rng, len(vocal) / MIX_SR)
                 acc = accomp.load_segment(a, start, len(vocal) / MIX_SR, MIX_SR)
                 rec["accomp"], rec["accomp_start"] = a.id, round(start, 3)
-            var = float(rng.uniform(*VAR_DB))
+            var = float(rng.uniform(*var_db))
             acc *= 0.1 * 10 ** (-var / 20) / max(float(np.sqrt(np.mean(acc ** 2))), 1e-6)
             rec["var_db"] = round(var, 2)
         mix = acc + vocal[None, :]
@@ -162,6 +162,8 @@ def main(argv=None) -> None:
     ap.add_argument("--variants", type=int, default=1, help="mixes per vocal, each with its own draws")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--keep-dry", action="store_true")
+    ap.add_argument("--var-db", type=float, nargs=2, default=list(VAR_DB), metavar=("LO", "HI"),
+                    help="vocal-to-accompaniment level range in dB; e.g. 20 35 leaves only faint bleed, a stand-in for separation")
     ap.add_argument("--workers", type=int, default=1)
     args = ap.parse_args(argv)
 
@@ -170,9 +172,9 @@ def main(argv=None) -> None:
     accs = args.accomp if args.accomp in ("synthetic", "none") else accomp.scan(Path(args.accomp), args.accomp_depth)
     if not accs:
         raise SystemExit(f"no accompaniment found under {args.accomp}")
-    setup = setup_key(accs)
+    setup = setup_key(accs, args.var_db)
     (out_dir / "mixes").mkdir(parents=True, exist_ok=True)
-    jobs = [(it, i, v, args.seed, accs, out_dir, args.keep_dry, setup)
+    jobs = [(it, i, v, args.seed, accs, out_dir, args.keep_dry, setup, tuple(args.var_db))
             for i, it in enumerate(vocals) for v in range(args.variants)]
     if args.workers > 1:
         with mp.get_context("spawn").Pool(args.workers) as pool:

@@ -245,6 +245,17 @@ def test_whole_pipeline_on_three_synthetic_recordings(tmp_path: Path, capsys):
     assert (tmp_path / "inf" / f"{Path(stem).stem}.json").exists()
 
 
+def test_var_db_sets_the_accompaniment_level_and_the_mix_backend_uses_the_mix(tmp_path):
+    from boundary import mix, separate
+
+    items.write(tmp_path / "vocals.jsonl", _synthetic_vocals(tmp_path)[:1])
+    mix.main([str(tmp_path / "vocals.jsonl"), str(tmp_path / "m"), "--accomp", "synthetic", "--var-db", "30", "30"])
+    rows = items.read(tmp_path / "m" / "mixes.jsonl")
+    assert rows[0]["var_db"] in (30.0, None)                    # None: the 10% drawn with no accompaniment
+    separate.main([str(tmp_path / "m" / "mixes.jsonl"), str(tmp_path / "s"), "--backend", "mix"])
+    assert items.read(tmp_path / "s" / "stems.jsonl")[0]["stem"] == rows[0]["mix"]
+
+
 def test_separate_fails_loudly_when_a_stem_is_missing(tmp_path):
     from boundary import separate
 

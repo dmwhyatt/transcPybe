@@ -3,6 +3,8 @@
     python -m boundary.separate MIXES.jsonl OUT_DIR --backend docker [--image sep-bsroformer53:b24ab72]
     python -m boundary.separate MIXES.jsonl OUT_DIR --backend apptainer --sif sep-bsroformer53.sif
     python -m boundary.separate MIXES.jsonl OUT_DIR --backend dry       # no separator: the vocal as mixed
+    python -m boundary.separate MIXES.jsonl OUT_DIR --backend mix       # no separator: the whole mix (with
+                                                                         # mix --var-db 20 35, a bleed stand-in)
 
 Writes ``OUT_DIR/stems/<mix_id>.wav`` and ``OUT_DIR/stems.jsonl`` (each mix's
 line plus ``stem``). Resumable: a mix whose stem exists is not separated again
@@ -63,7 +65,7 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("mixes", type=Path)
     ap.add_argument("out_dir", type=Path)
-    ap.add_argument("--backend", choices=("docker", "apptainer", "dry"), required=True)
+    ap.add_argument("--backend", choices=("docker", "apptainer", "dry", "mix"), required=True)
     ap.add_argument("--image", default="sep-bsroformer53:b24ab72")
     ap.add_argument("--sif", type=Path)
     ap.add_argument("--batch", type=int, default=400)
@@ -78,13 +80,14 @@ def main(argv=None) -> None:
     stems.mkdir(parents=True, exist_ok=True)
     for r in rows:
         # The dry backend's stem is the dry vocal itself: nothing to separate, nothing to copy.
-        r["stem"] = r["dry"] if args.backend == "dry" and "dry" in r else str(stems / f"{r['mix_id']}.wav")
+        r["stem"] = (r["dry"] if args.backend == "dry" and "dry" in r else r["mix"] if args.backend == "mix"
+                     else str(stems / f"{r['mix_id']}.wav"))
     todo = [r for r in rows if not Path(r["stem"]).exists()]
     print(f"{len(rows)} mixes, {len(todo)} to separate ({args.backend})", flush=True)
 
     failed = []
-    if args.backend == "dry":
-        if any("dry" not in r for r in rows):
+    if args.backend in ("dry", "mix"):
+        if args.backend == "dry" and any("dry" not in r for r in rows):
             raise SystemExit("the dry backend needs mixes rendered with --keep-dry or --accomp none")
         failed = todo
     else:
