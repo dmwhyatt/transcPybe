@@ -138,7 +138,30 @@ The choices below follow CSD3's documentation; each point names the page.
 - The login node's `/local` exists on that node only. It suits build scratch,
   nothing to keep.
 
-**Jobs.**
+**Jobs: ask for what the job needs, specifically and realistically.**
+- Every script names its time, cores and memory, and says what measurement the
+  numbers come from.
+- Shorter, smaller jobs fit the gaps the scheduler fills between
+  higher-priority work, so they start sooner. Asking for the maximum only makes
+  a job wait longer.
+- On Icelake, asking for more memory than 3,370 MB per core makes Slurm
+  allocate, and charge for, more cores
+  ([icelake](https://docs.hpc.cam.ac.uk/hpc/user-guide/icelake.html)).
+- On Ampere, each GPU comes with 32 cores and 250 GB, charged as one GPU-hour
+  per hour.
+- To trim a job that is still waiting:
+  `scontrol update JobId=N TimeLimit=... NumCPUs=... CPUsPerTask=...`.
+  Memory per core takes plain megabytes (`MinMemoryCPU=3370`). The job keeps
+  its place in the queue.
+
+| Script | Asks for | Basis (21 October) |
+|---|---|---|
+| `prepare.sbatch` | 1 GPU, 2 h | one feature process managed 3 clips/s, so 10,000 clips take under 1 h; override `--time=` for bigger parts |
+| `train.sbatch` | 1 GPU, 3 h | 2,000 steps with one evaluation took 105 s; 30,000 steps take about 40 min per seed, and 3 seeds share the GPU |
+| `features.sbatch` | 1 GPU, 1 h | validation-size sets only; 8 workers |
+| `separate.sbatch` | 1 GPU, 2 h | validation-size sets only; musix separated at 2.86x real time |
+| `mix.sbatch` | 8 cores, 30 min | validation-size sets only; musix mixed 17,000 clips in 11 min on 16 cores |
+
 - Arrays rather than a loop of submissions: "Array jobs should be prefered to
   multiple `sbatch` calls in a loop"
   ([batch](https://docs.hpc.cam.ac.uk/hpc/user-guide/batch.html)).

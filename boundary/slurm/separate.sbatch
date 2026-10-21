@@ -1,14 +1,15 @@
 #!/bin/bash
 # Separate every mix in $OUT/mixes.jsonl with the pipeline's BS-RoFormer, from an Apptainer image ($SIF).
 # Resumable: resubmit the same command if it runs out of time. Since 21 Oct the bulk data has no separator
-# (prepare.sbatch); this is for the validation-size set of real separated audio.
+# (prepare.sbatch); this is for the validation-size set of real separated audio. 2 h: musix's 3080 separated at
+# 2.86x real time, so a set of a few hours of audio takes about an hour there; the A100 rate is not measured yet.
 #   sbatch --export=ALL,OUT=...,SIF=... boundary/slurm/separate.sbatch
 #SBATCH -J boundary-separate
 #SBATCH -A HARRISON-SL3-GPU
 #SBATCH -p ampere
 #SBATCH -N 1
 #SBATCH --gres=gpu:1
-#SBATCH -t 12:00:00
+#SBATCH -t 02:00:00
 #SBATCH -o %x-%j.out
 set -euo pipefail
 source "${REPO:-$HOME/transcPybe}/boundary/slurm/env.sh"   # sbatch runs a spooled copy, so not $0

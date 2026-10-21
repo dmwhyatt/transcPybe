@@ -5,6 +5,9 @@
 # the features into its own memory. The network is small: one run on an A100 went no faster than on musix's 3080,
 # because the CPU sets the pace. GPUs are billed by the hour each is held
 # (https://docs.hpc.cam.ac.uk/hpc/user-guide/a100.html). Without SEEDS, one seed per array task.
+# Time: on 21 Oct an A100 ran 2,000 steps with one evaluation in 105 s, so 30,000 steps with 30 evaluations take
+# about 40 min for one seed; three side by side are CPU-bound, so 3 h leaves room. Memory: each seed holds the
+# features as float32, about 33 GB for the whole plan, inside the 250 GB that comes with the GPU.
 #   bash boundary/slurm/submit.sh train FEATURES="$DATA/m4-musdb/shards/*.jsonl" RUN=$DATA/runs/r1 SEEDS="0 1 2"
 #   bash boundary/slurm/submit.sh train FEATURES=... RUN=... --array=0-2
 #SBATCH -J boundary-train
@@ -12,7 +15,7 @@
 #SBATCH -p ampere
 #SBATCH -N 1
 #SBATCH --gres=gpu:1
-#SBATCH -t 12:00:00
+#SBATCH -t 03:00:00
 #SBATCH -o %x-%A_%a.out
 set -euo pipefail
 source "${REPO:-$HOME/transcPybe}/boundary/slurm/env.sh"   # sbatch runs a spooled copy, so not $0
