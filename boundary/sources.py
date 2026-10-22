@@ -156,10 +156,15 @@ def gtsinger(root: Path, onsets: str = "consonant", valid_singers: Sequence[str]
                    and (not languages or p.relative_to(root).parts[0] in languages))
     key = lambda p: (p.relative_to(root).parts[0], p.relative_to(root).parts[3].casefold())
     held_out = {key(p) for p in clips if p.relative_to(root).parts[1] in valid_singers}
+    if not clips:
+        raise SystemExit(f"no GTSinger annotations under {root}: expected <Language>/<Singer>/<Technique>/<Song>/"
+                         "<Group>/NNNN.json")
+    missing = 0
     for path in clips:
         language, singer, technique, title, group = path.relative_to(root).parts[:5]
         wav = path.with_suffix(".wav")
         if not wav.exists():
+            missing += 1
             continue
         words = json.loads(path.read_text(encoding="utf-8"))
         notes = sorted([round(s, 4), round(e, 4), int(n)] for w in words
@@ -176,6 +181,10 @@ def gtsinger(root: Path, onsets: str = "consonant", valid_singers: Sequence[str]
                    audio=str(wav), notes=notes, onsets=onsets if onsets != "between" else f"between-{fraction}",
                    singer=singer, title=title, language=language, technique=group.removesuffix("_Group"),
                    split=split)
+    if missing:
+        # an annotation without its audio is a broken download, not a clip to skip quietly (22 Oct: every .wav missing)
+        raise SystemExit(f"{missing} of {len(clips)} GTSinger clips under {root} have a .json but no .wav: "
+                         "finish the download first")
 
 
 def m4singer(root: Path, onsets: str = "consonant",

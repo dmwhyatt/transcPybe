@@ -134,6 +134,12 @@ def test_gtsinger_reads_notes_holds_out_singers_and_moves_onsets_with_care(tmp_p
     japanese = next(r for r in rows.values() if r["language"] == "Japanese")
     assert japanese["notes"] == [[0.03, 0.5, 64], [1.0, 1.5, 65]]
     assert [r["notes"][0][0] for r in gtsinger(tmp_path, "consonant", languages=["English"])] == [1.0] * 3
+    # annotations without their audio are a broken download: refuse, rather than write a short or empty list
+    (tmp_path / "Japanese/JA-Soprano-1/Breathy/Uta/Control_Group/0000.wav").unlink()
+    with pytest.raises(SystemExit, match="1 of 4 GTSinger clips"):
+        list(gtsinger(tmp_path, "between"))
+    with pytest.raises(SystemExit, match="no GTSinger annotations"):
+        list(gtsinger(tmp_path / "nowhere", "between"))
 
 
 def test_relabel_moves_new_labels_by_the_pad_and_keeps_the_audio():
