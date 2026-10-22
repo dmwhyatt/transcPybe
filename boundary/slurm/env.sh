@@ -13,9 +13,10 @@ module load rhel8/default-amp
 source "$VENV/bin/activate"
 [ "$_boundary_nounset" = 1 ] && set -u
 export PYTHONPATH="$REPO:$REPO/src${PYTHONPATH:+:$PYTHONPATH}" PYTHONUNBUFFERED=1
-# One thread per allocated core, as CSD3's PyTorch guide sets. Without this the libraries see all 128 cores of a
-# Wilkes-3 node while the job holds 32 per GPU. nproc counts what this job may use.
-export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-$(nproc)}
+# One thread per allocated core, as CSD3's PyTorch guide sets. CSD3's login environment sets OMP_NUM_THREADS=1 and
+# sbatch carries it into the job, and nproc obeys OMP_NUM_THREADS, so count the job's cores without it: on 21 Oct
+# every job ran single-threaded because of this (nproc said 1; the real count on a login node was 76).
+export OMP_NUM_THREADS=$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc)
 export MKL_NUM_THREADS=$OMP_NUM_THREADS
 
 # The ledger: one line when a job starts and one when it ends (any exit, including a time-out's SIGTERM),
