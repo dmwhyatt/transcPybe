@@ -6,16 +6,17 @@
 # $OUT on hpc-work (https://docs.hpc.cam.ac.uk/hpc/user-guide/io_management.html). Each GPU comes with 32 cores
 # (https://docs.hpc.cam.ac.uk/hpc/user-guide/a100.html), shared by the feature workers. SL3 jobs stop at 12 h
 # (https://docs.hpc.cam.ac.uk/hpc/user-guide/policies.html), but ask for what a part needs, not the maximum: shorter
-# jobs fit the gaps the scheduler fills first. 2 h covers about 10,000 clips at the single-process rate measured on
-# 21 Oct (3 clips/s, under 1 h) twice over; override with --time= for bigger parts. Slurm gives each Ampere GPU 32
-# cores and 250 GB, which 8 feature workers and one part's audio fit comfortably.
+# jobs fit the gaps the scheduler fills first. 20 min: on 22 Oct a part of 1,003 clips (1/45 of M4Singer and GTSinger)
+# took 8.5 min on one A100, mixing and features together at about 2 clips/s; margin x2. Override with --time= for
+# bigger parts. Slurm gives each Ampere GPU 32 cores and 250 GB, which 8 feature workers and one part's audio fit
+# comfortably.
 # A rerun skips finished parts.
 #SBATCH -J boundary-prepare
 #SBATCH -A HARRISON-SL3-GPU
 #SBATCH -p ampere
 #SBATCH -N 1
 #SBATCH --gres=gpu:1
-#SBATCH -t 02:00:00
+#SBATCH -t 00:20:00
 set -euo pipefail
 source "${REPO:-$HOME/transcPybe}/boundary/slurm/env.sh"   # sbatch runs a spooled copy, so not $0
 PART=${SLURM_ARRAY_TASK_ID:-0}
