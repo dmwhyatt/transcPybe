@@ -49,7 +49,18 @@ the network never learns from values a separated stem cannot produce.
   one per voice type, are held out for validation (`sources.M4SINGER_VALID`).
   Other singers' recordings of the same songs are left out of training
   (`split: excluded`), so validation never scores a melody the network trained on.
-  To add next: GTSinger and Opencpop. transcPybe's synthetic corpus is
+- **GTSinger** (`sources gtsinger`; Hugging Face `GTSinger/GTSinger`, CC BY-NC-SA 4.0):
+  20 singers in 9 languages, 3 of them English, each song sung with a technique and
+  plainly. Speech recordings are skipped. Its notes also start at the consonant.
+  The half-way labels move a note start towards the first vowel after it, past
+  consonant clusters. Two cases keep the consonant start:
+  - a held, pitched consonant longer than 0.25 s, such as the sung W of "word";
+  - words whose phones look evenly divided rather than aligned. In a sample,
+    none of the English or Mandarin words looked like this, but up to a quarter
+    of the Japanese, Korean and Spanish ones did.
+
+  Validation holds out EN-Alto-2 and KO-Soprano-2 (`sources.GTSINGER_VALID`).
+  To add next: Opencpop. transcPybe's synthetic corpus is
   also a source, but it is synthesised at 16 kHz, so it is weak material for the
   separator.
 - **Accompaniment.** MUSDB18-HQ (`--accomp-depth 2`) or MoisesDB (`--accomp-depth 1`):

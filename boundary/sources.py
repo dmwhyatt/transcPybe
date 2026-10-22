@@ -1,19 +1,22 @@
 """Labelled singing -> a manifest of vocals and their notes.
 
     python -m boundary.sources m4singer ROOT OUT.jsonl [--onsets consonant|vowel|between --fraction 0.5]
+    python -m boundary.sources gtsinger ROOT OUT.jsonl [--onsets ...] [--languages English Chinese ...]
     python -m boundary.sources corpus OUT.jsonl --audio-dir DIR --n 2000 [--plain]
 
 Every source says which onset convention its notes follow, because annotators
 differ on it and the target the network learns is whatever convention it is
-given: M4Singer's MIDI starts a syllable at its consonant, and its TextGrids
-allow the vowel reading too.
+given. M4Singer's MIDI and GTSinger's notes both start a syllable at its
+consonant, and their phoneme timings allow the vowel and half-way readings too.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import re
+import unicodedata
 from pathlib import Path
-from typing import Dict, Iterator, List, Sequence
+from typing import Callable, Dict, Iterator, List, Sequence
 
 from . import items as manifest
 
@@ -26,6 +29,27 @@ M4SINGER_VALID = ("Alto-3", "Bass-3", "Soprano-2", "Tenor-4")
 
 # Mandarin initials as M4Singer spells them: the consonant a syllable may start on.
 PINYIN_INITIALS = frozenset("b p m f d t n l g k h j q x zh ch sh r z c s y w".split())
+
+# GTSinger (20 singers, 9 languages), held out the same way. One English voice, because English pop is the
+# target and M4Singer has none, and one Korean voice, because Korean is the only other language with three
+# singers. That leaves every held-out language with a voice of each sex in training.
+GTSINGER_VALID = ("EN-Alto-2", "KO-Soprano-2")
+GTSINGER_SILENCE = frozenset({"<SP>", "<AP>"})
+# IPA vowel letters, for the languages GTSinger transcribes in IPA (all but English and Chinese).
+IPA_VOWELS = frozenset("aeiouyæøœɐɑɒɔəɛɜɤɨɪɯɵɶʉʊʌʏ")
+
+
+def gtsinger_is_vowel(phone: str, language: str) -> bool:
+    """Whether a GTSinger phone is a vowel. English is ARPAbet, where vowels carry a stress digit; Chinese is
+    pinyin initials and finals; the rest are IPA, with diacritics and length marks stripped before the test."""
+    if phone in GTSINGER_SILENCE or not phone:
+        return False
+    if language == "English":
+        return phone[-1].isdigit()
+    if language == "Chinese":
+        return phone not in PINYIN_INITIALS
+    base = "".join(c for c in unicodedata.normalize("NFD", phone) if not unicodedata.combining(c))
+    return base[:1] in IPA_VOWELS
 
 
 def textgrid_tiers(path: Path) -> Dict[str, List[tuple]]:
@@ -71,6 +95,87 @@ def _vowel_onsets(notes: List[list], phones: Sequence[tuple], fraction: float = 
                 break
         out.append([on, off, pitch])
     return out
+
+
+MAX_CONSONANT_S = 0.25   # longer than this before the vowel: a held, pitched consonant, where the note starts
+
+
+def _first_vowel_onsets(notes: List[list], phones: Sequence[tuple], is_vowel: Callable[[str], bool],
+                        fraction: float, untrusted: Sequence[tuple] = (),
+                        max_consonant: float = MAX_CONSONANT_S) -> List[list]:
+    """Move each note that starts on a consonant ``fraction`` of the way to the start of its first vowel.
+
+    Unlike ``_vowel_onsets``, the consonant may be a cluster (English "street" is
+    S T R before the vowel), so the distance is from the note's start to the first
+    vowel at or after it. A note keeps its start when:
+    - it starts on a vowel, or between phones (a second note within a syllable);
+    - the move would leave it under 30 ms;
+    - the consonant lasts longer than ``max_consonant``. Singers hold pitched
+      consonants: in GTSinger, "word" opens on 685 ms of W and Japanese "む" on
+      700 ms of m, and the note audibly starts there. Every Mandarin consonant
+      in a sample stayed under 0.25 s;
+    - its start lies in one of the ``untrusted`` (start, end) spans, whose phone
+      timing is not to be relied on.
+    """
+    out = []
+    for on, off, pitch in notes:
+        trusted = not any(a - 0.006 <= on < b for a, b in untrusted)
+        if trusted and any(abs(p0 - on) < 0.006 for p0, _, _ in phones):
+            vowel = next((p0 for p0, _, ph in phones if on - 0.006 <= p0 < off and is_vowel(ph)), None)
+            if vowel is not None and on + 0.006 < vowel <= on + max_consonant:
+                moved = round(on + fraction * (vowel - on), 4)
+                if moved < off - 0.03:
+                    on = moved
+        out.append([on, off, pitch])
+    return out
+
+
+def _evenly_divided(word: dict) -> bool:
+    """Whether a GTSinger word's phones look divided evenly rather than aligned: two neighbours of equal length.
+    In a sample, no English or Mandarin word did, but 11-27% of neighbouring phones within Japanese, Korean
+    and Spanish words had identical lengths (Spanish "brille": b, ɾ, i, ʝ at 178 ms each)."""
+    lengths = [e - s for s, e in zip(word["ph_start"], word["ph_end"])]
+    return any(abs(a - b) < 0.0015 for a, b in zip(lengths, lengths[1:]))
+
+
+def gtsinger(root: Path, onsets: str = "consonant", valid_singers: Sequence[str] = GTSINGER_VALID,
+             fraction: float = 0.5, languages: Sequence[str] = ()) -> Iterator[dict]:
+    """GTSinger as downloaded from Hugging Face: ROOT/<Language>/<Singer>/<Technique>/<Song>/<Group>/NNNN.{wav,json}.
+
+    Each song is sung with a technique (``<Technique>_Group``) and plainly
+    (``Control_Group``); both are singing and both are used. ``Paired_Speech_Group``
+    is the lyrics spoken, not sung, and is skipped. Notes come from the JSON
+    (``note``, ``note_start``, ``note_end``, MIDI pitch, 0 for rests); phones from
+    ``ph``, ``ph_start``, ``ph_end``. Notes start at the syllable's consonant, as
+    in M4Singer. A song title held out with a validation singer is matched within
+    its language, ignoring case.
+    """
+    root = root.resolve()
+    clips = sorted(p for p in root.glob("*/*/*/*/*/*.json")
+                   if not p.parent.name.startswith("Paired_Speech")
+                   and (not languages or p.relative_to(root).parts[0] in languages))
+    key = lambda p: (p.relative_to(root).parts[0], p.relative_to(root).parts[3].casefold())
+    held_out = {key(p) for p in clips if p.relative_to(root).parts[1] in valid_singers}
+    for path in clips:
+        language, singer, technique, title, group = path.relative_to(root).parts[:5]
+        wav = path.with_suffix(".wav")
+        if not wav.exists():
+            continue
+        words = json.loads(path.read_text(encoding="utf-8"))
+        notes = sorted([round(s, 4), round(e, 4), int(n)] for w in words
+                       for n, s, e in zip(w["note"], w["note_start"], w["note_end"]) if n and e > s)
+        if not notes:
+            continue
+        if onsets in ("vowel", "between"):
+            phones = [(s, e, ph) for w in words for ph, s, e in zip(w["ph"], w["ph_start"], w["ph_end"])]
+            untrusted = [(w["start_time"], w["end_time"]) for w in words if _evenly_divided(w)]
+            notes = _first_vowel_onsets(notes, phones, lambda ph: gtsinger_is_vowel(ph, language),
+                                        1.0 if onsets == "vowel" else fraction, untrusted)
+        split = "valid" if singer in valid_singers else "excluded" if key(path) in held_out else "train"
+        yield dict(id=f"gtsinger/{language}/{singer}/{technique}/{title}/{group}/{path.stem}", source="gtsinger",
+                   audio=str(wav), notes=notes, onsets=onsets if onsets != "between" else f"between-{fraction}",
+                   singer=singer, title=title, language=language, technique=group.removesuffix("_Group"),
+                   split=split)
 
 
 def m4singer(root: Path, onsets: str = "consonant",
@@ -137,6 +242,12 @@ def main(argv=None) -> None:
     m.add_argument("out", type=Path)
     m.add_argument("--onsets", choices=("consonant", "vowel", "between"), default="consonant")
     m.add_argument("--fraction", type=float, default=0.5, help="for --onsets between: how far from consonant to vowel")
+    g = sub.add_parser("gtsinger")
+    g.add_argument("root", type=Path, help="the folder holding the language folders")
+    g.add_argument("out", type=Path)
+    g.add_argument("--onsets", choices=("consonant", "vowel", "between"), default="consonant")
+    g.add_argument("--fraction", type=float, default=0.5)
+    g.add_argument("--languages", nargs="*", default=(), help="only these language folders (default: all)")
     c = sub.add_parser("corpus")
     c.add_argument("out", type=Path)
     c.add_argument("--audio-dir", type=Path, required=True)
@@ -146,6 +257,8 @@ def main(argv=None) -> None:
     args = ap.parse_args(argv)
     if args.source == "m4singer":
         rows = m4singer(args.root, args.onsets, fraction=args.fraction)
+    elif args.source == "gtsinger":
+        rows = gtsinger(args.root, args.onsets, fraction=args.fraction, languages=args.languages)
     else:
         rows = corpus(args.audio_dir, args.n, args.start_seed, syllabic=not args.plain)
     counts: Dict[str, int] = {}

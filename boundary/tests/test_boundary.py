@@ -81,6 +81,61 @@ def test_vowel_onsets_moves_a_consonant_start_to_its_vowel(tmp_path):
     assert _vowel_onsets([[0.0, 1.0, 60]], tiers[1], 0.5) == [[0.04, 1.0, 60]]   # half way to the vowel
 
 
+def _gtsinger_clip(root: Path, rel: str, words: list) -> None:
+    import soundfile as sf
+
+    path = root / f"{rel}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(words), encoding="utf-8")
+    sf.write(path.with_suffix(".wav"), np.zeros(1600, np.float32), 16000)
+
+
+def _word(text, phones, notes):
+    """A GTSinger JSON word: phones as (phone, start, end), notes as (midi, start, end)."""
+    return dict(word=text, start_time=phones[0][1], end_time=phones[-1][2], ph=[p for p, _, _ in phones],
+                ph_start=[s for _, s, _ in phones], ph_end=[e for _, _, e in phones], note=[n for n, _, _ in notes],
+                note_start=[s for _, s, _ in notes], note_end=[e for _, _, e in notes])
+
+
+def test_gtsinger_vowels_in_each_transcription():
+    from boundary.sources import gtsinger_is_vowel
+
+    assert gtsinger_is_vowel("AH0", "English") and not gtsinger_is_vowel("DH", "English")
+    assert gtsinger_is_vowel("iang", "Chinese") and not gtsinger_is_vowel("sh", "Chinese")
+    assert gtsinger_is_vowel("i̥", "Japanese") and not gtsinger_is_vowel("ɰ̃", "Japanese")   # devoiced vowel; glide
+    assert gtsinger_is_vowel("ɛː", "Korean") and not gtsinger_is_vowel("<SP>", "English")
+
+
+def test_gtsinger_reads_notes_holds_out_singers_and_moves_onsets_with_care(tmp_path):
+    from boundary.sources import gtsinger
+
+    song = [
+        _word("<SP>", [("<SP>", 0.0, 1.0)], [(0, 0.0, 1.0)]),
+        # a cluster before the vowel: half way is from the note start to the first vowel
+        _word("street", [("S", 1.0, 1.05), ("T", 1.05, 1.08), ("R", 1.08, 1.12), ("IY1", 1.12, 1.6)], [(60, 1.0, 1.6)]),
+        # a held, pitched consonant longer than 0.25 s: the note starts there
+        _word("word", [("W", 2.0, 2.7), ("ER1", 2.7, 3.0)], [(62, 2.0, 3.0)]),
+    ]
+    _gtsinger_clip(tmp_path, "English/EN-Alto-1/Breathy/Song A/Breathy_Group/0000", song)
+    _gtsinger_clip(tmp_path, "English/EN-Alto-1/Breathy/Song A/Paired_Speech_Group/0000", song)   # spoken: skipped
+    _gtsinger_clip(tmp_path, "English/EN-Alto-2/Vibrato/song a/Control_Group/0000", song)        # held-out singer
+    _gtsinger_clip(tmp_path, "English/EN-Tenor-1/Vibrato/Other Song/Vibrato_Group/0000", song)
+    _gtsinger_clip(tmp_path, "Japanese/JA-Soprano-1/Breathy/Uta/Control_Group/0000", [
+        _word("き", [("k", 0.0, 0.06), ("i̥", 0.06, 0.1)], [(64, 0.0, 0.5)]),
+        # evenly divided phones (b and ɾ both 0.1 s): timing not trusted, so the note keeps its start
+        _word("ぶら", [("b", 1.0, 1.1), ("ɾ", 1.1, 1.2), ("a", 1.2, 1.5)], [(65, 1.0, 1.5)]),
+    ])
+    rows = {r["id"]: r for r in gtsinger(tmp_path, "between")}
+    assert len(rows) == 4 and not any("Paired_Speech" in i for i in rows)
+    splits = {r["singer"]: r["split"] for r in rows.values()}
+    assert splits == {"EN-Alto-1": "excluded", "EN-Alto-2": "valid", "EN-Tenor-1": "train", "JA-Soprano-1": "train"}
+    english = rows["gtsinger/English/EN-Tenor-1/Vibrato/Other Song/Vibrato_Group/0000"]
+    assert english["notes"] == [[1.06, 1.6, 60], [2.0, 3.0, 62]] and english["technique"] == "Vibrato"
+    japanese = next(r for r in rows.values() if r["language"] == "Japanese")
+    assert japanese["notes"] == [[0.03, 0.5, 64], [1.0, 1.5, 65]]
+    assert [r["notes"][0][0] for r in gtsinger(tmp_path, "consonant", languages=["English"])] == [1.0] * 3
+
+
 def test_relabel_moves_new_labels_by_the_pad_and_keeps_the_audio():
     from boundary.relabel import relabel
 
