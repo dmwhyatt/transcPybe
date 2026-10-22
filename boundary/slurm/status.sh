@@ -39,7 +39,7 @@ try:
     for line in open(sys.argv[1]):
         f = line.rstrip("\n").split("\t")
         if len(f) >= 7 and f[4] == "end":
-            g = int(f[5].split("=")[1]); m = re.search(r"elapsed_s=(\d+)", f[6])
+            g = int(f[5].split("=")[1] or 0); m = re.search(r"elapsed_s=(\d+)", f[6])
             if g and m: used += g * int(m.group(1)) / 3600; n += 1
 except FileNotFoundError:
     pass
