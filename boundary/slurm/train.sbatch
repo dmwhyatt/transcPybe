@@ -19,6 +19,9 @@
 #SBATCH -o %x-%A_%a.out
 set -euo pipefail
 source "${REPO:-$HOME/transcPybe}/boundary/slurm/env.sh"   # sbatch runs a spooled copy, so not $0
+# Each evaluation also goes to the MLflow server on musix (boundary/track.py; README, "Dashboard"). Pass
+# MLFLOW_TRACKING_URI= (empty) to submit.sh to keep a run off it.
+export MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI-http://musix.mus.cam.ac.uk:5000}
 SEEDS=${SEEDS:-${SLURM_ARRAY_TASK_ID:-0}}
 n=$(echo $SEEDS | wc -w)
 export OMP_NUM_THREADS=$(( OMP_NUM_THREADS / n > 0 ? OMP_NUM_THREADS / n : 1 ))

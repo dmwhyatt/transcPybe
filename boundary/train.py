@@ -49,12 +49,17 @@ Resumable: ``last.pt`` holds the optimiser, schedule and random states as well
 as the weights, and a rerun with the same arguments carries on from it with
 the best score so far. A rerun with different arguments into the same
 ``--out`` is refused rather than mixed into the old run.
+
+With MLFLOW_TRACKING_URI set, each evaluation is also sent to that MLflow
+server (``track``), so runs can be watched in a browser as they go.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import math
+import signal
+import sys
 import time
 from pathlib import Path
 
@@ -63,6 +68,7 @@ import numpy as np
 from . import HOP_S, items as manifest
 from .features import LEVEL_RANGE
 from .infer import pick_peaks
+from .track import Tracker, context_tags
 
 TOL = 0.05
 TIMING_WINDOW = 0.15      # a reference onset counts for timing if an estimate is within 150 ms
@@ -300,15 +306,21 @@ def main(argv=None) -> None:
             torch.cuda.set_rng_state_all([s.cpu() for s in ck["cuda_rng"]])
         start, best = ck["step"] + 1, ck["best"]
         print(f"resuming {args.out} at step {start} (best score so far {best:.4f})", flush=True)
+    info = dict(run_args, device=device, n_train=len(train), n_valid=len(valid),
+                n_params=sum(p.numel() for p in model.parameters()))
     with open(args.out / "args.json", "w") as f:
-        json.dump(dict(run_args, device=device, n_train=len(train), n_valid=len(valid),
-                       n_params=sum(p.numel() for p in model.parameters())), f, indent=1, default=str)
+        json.dump(info, f, indent=1, default=str)
+    out = args.out.resolve()
+    tracker = Tracker.start(out, f"{out.parent.name}/{out.name}", tags=context_tags(out), params={
+        k: " ".join(v) if k == "features" else v for k, v in info.items() if v is not None and v != []})
+    # Slurm ends a job at its time limit with SIGTERM; as SystemExit it lets the tracker mark the run KILLED
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(128 + signal.SIGTERM))
 
     crops = Crops(train, int(round(args.crop_s / HOP_S)), augment=args.augment)
     end = min(args.steps, args.stop_after or args.steps)
     pw = torch.tensor([args.pos_weight, args.pos_weight, 1.0], device=device)
     head_w = torch.tensor([1.0, 0.5, 0.5], device=device)
-    with open(args.out / "log.jsonl", "a" if start > 1 else "w") as log:
+    with tracker, open(args.out / "log.jsonl", "a" if start > 1 else "w") as log:
         t0, run_loss, since = time.time(), 0.0, 0
         for step in range(start, end + 1):
             mel, aux, y = (torch.from_numpy(x).to(device) for x in crops.batch(rng, args.batch))
@@ -336,6 +348,7 @@ def main(argv=None) -> None:
                 run_loss, since = 0.0, 0
                 log.write(json.dumps(rec) + "\n")
                 log.flush()
+                tracker.log(rec, step)
                 print(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} [train] step {step}/{end}  "
                       f"score {score:.3f} (best {rec['best']:.3f})  onset F {f:.3f}  re-sung {r:.3f}  "
                       f"timing {m['timing_median_ms']:+.0f} ms  per note {m['onsets_per_note']:.2f}  "

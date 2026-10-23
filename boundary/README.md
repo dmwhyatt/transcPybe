@@ -285,6 +285,63 @@ Every long stage logs a timestamped line at least once a minute with its count, 
 
 After you log in once with `ssh hpc` (password and phone code), the connection is shared for 8 hours (`ControlPersist` in `~/.ssh/config`). Claude can then run the same status command, read the logs and submit jobs over that shared connection. The connection runs through the VPN. If the VPN drops for more than a few minutes, the shared connection dies and needs `ssh hpc` again. Jobs, and anything started on CSD3 detached from the session, carry on regardless.
 
+### Dashboard
+
+Training runs send each evaluation to an MLflow server on musix as they go. You can follow them in a browser without
+logging in to CSD3, and Claude can read the same numbers from musix without polling CSD3.
+
+- **How runs report.** `train.sbatch` sets `MLFLOW_TRACKING_URI=http://musix.mus.cam.ac.uk:5000`. The CMS guide
+  records that musix's firewall opens port 5000 to CSD3. Reporting uses only the standard library (`boundary/track.py`),
+  so the venv needs nothing new.
+- **Turning it off.** Pass `MLFLOW_TRACKING_URI=` (empty) to `submit.sh`. `MLFLOW_EXPERIMENT_NAME=...` groups runs
+  under another name than `boundary`.
+- **If musix is down.** A run says so once in its log and carries on. `<run>/log.jsonl` stays the record; the
+  dashboard is only a view of it.
+- **What a run shows.** Each run is named after its directory, such as `r1/seed0`. Its settings are parameters, and
+  its Slurm job, node and commit are tags. Every evaluation logs score, onset F, re-sung recall, precision, recall,
+  onsets per note, timing, loss and ETA, and `extra.NAME.*` for each `--extra-valid` set. A run stopped at its time
+  limit is marked KILLED.
+
+To view it, open a tunnel from your own machine, then browse to <http://localhost:5001> (macOS keeps port 5000 for
+AirPlay):
+
+```bash
+ssh -N -L 5001:localhost:5000 musix
+```
+
+To compare seeds, tick their runs and choose Compare, or chart `score` against step.
+
+The server runs as your user on musix. It is MLflow 3.17.2 with its login extra, installed in `~/venvs/mlflow` with
+`pip install "mlflow[auth]==3.17.2"`. `boundary/mlflow_server.py` starts it, with its data in `~/mlflow`, and its
+docstring gives the details:
+- every request needs a login;
+- it takes no file uploads;
+- it runs none of MLflow's background workers.
+
+To start it (once, and again after musix restarts), copy the script to musix and run it there:
+
+```bash
+scp boundary/mlflow_server.py musix:mlflow/server.py
+```
+
+```bash
+python3 ~/mlflow/server.py start
+```
+
+The first start makes the passwords at random and keeps them in `~/mlflow`, which only you can read; nothing prints
+them. It also makes the account the jobs use, `boundary`, and writes it to `~/mlflow/credentials`. To copy that to
+CSD3 without it showing on screen, run this from your Mac:
+
+```bash
+ssh musix cat mlflow/credentials | ssh hpc 'umask 077; mkdir -p ~/.mlflow; cat > ~/.mlflow/credentials'
+```
+
+The browser asks for a login: use `boundary` and the password in that file. `python3 ~/mlflow/server.py status` and
+`stop` do what they say.
+
+Plain HTTP carries the jobs' login across the University network between CSD3 and musix. Viewing goes through the
+SSH tunnel, which is encrypted.
+
 ## Tests
 
 ```bash

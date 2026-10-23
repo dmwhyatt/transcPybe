@@ -423,3 +423,120 @@ def test_separate_fails_loudly_when_a_stem_is_missing(tmp_path):
     with pytest.raises(SystemExit):
         separate.main([str(tmp_path / "mixes.jsonl"), str(tmp_path / "sep"), "--backend", "dry"])
     assert items.read(tmp_path / "sep" / "failed.jsonl")[0]["mix_id"] == "a"
+
+
+class _FakeMlflow:
+    """Answers the few MLflow REST calls the tracker makes, and records them."""
+
+    def __init__(self):
+        import http.server
+        import threading
+
+        calls, logins, experiments = [], [], {}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _reply(self, code, body):
+                data = json.dumps(body).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):
+                calls.append(("experiments/get-by-name", None))
+                logins.append(self.headers.get("Authorization"))
+                name = self.path.split("experiment_name=")[1]
+                if name in experiments:
+                    self._reply(200, {"experiment": {"experiment_id": experiments[name]}})
+                else:
+                    self._reply(404, {"error_code": "RESOURCE_DOES_NOT_EXIST"})
+
+            def do_POST(self):
+                endpoint = self.path.split("/api/2.0/mlflow/")[1]
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                calls.append((endpoint, body))
+                logins.append(self.headers.get("Authorization"))
+                if endpoint == "experiments/create":
+                    experiments[body["name"]] = "7"
+                    self._reply(200, {"experiment_id": "7"})
+                elif endpoint == "runs/create":
+                    self._reply(200, {"run": {"info": {"run_id": "run1"}}})
+                else:
+                    self._reply(200, {})
+
+        self.calls, self.logins = calls, logins
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.uri = f"http://127.0.0.1:{self.server.server_port}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def sent(self, endpoint):
+        return [body for e, body in self.calls if e == endpoint]
+
+
+def test_tracker_reports_a_run_and_resumes_it_in_the_same_mlflow_run(tmp_path, monkeypatch, capsys):
+    from boundary.track import Tracker
+
+    server = _FakeMlflow()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", server.uri)
+    with Tracker.start(tmp_path, "r1/seed0", {"seed": 0, "features": "a.jsonl"}, {"node": "gpu-q-8"}) as t:
+        t.log({"score": 0.8, "timing_median_ms": float("nan"), "augment": True, "extra": {"vowel": {"onset_f": 0.6}}}, 1000)
+    assert server.sent("experiments/create") == [{"name": "boundary"}]
+    assert server.sent("runs/create")[0]["run_name"] == "r1/seed0"
+    params, metrics = server.sent("runs/log-batch")
+    assert {p["key"]: p["value"] for p in params["params"]} == {"seed": "0", "features": "a.jsonl"}
+    assert {m["key"]: (m["value"], m["step"]) for m in metrics["metrics"]} == {   # no NaN, no flags, nested sets named
+        "score": (0.8, 1000), "extra.vowel.onset_f": (0.6, 1000)}
+    assert server.sent("runs/update")[-1]["status"] == "FINISHED"
+    assert (tmp_path / "mlflow_run_id").read_text().strip() == "run1"
+
+    with pytest.raises(SystemExit), Tracker.start(tmp_path, "r1/seed0", {"seed": 0}, {}) as t:   # resumed, then stopped
+        raise SystemExit(143)
+    assert len(server.sent("runs/create")) == 1 and len(server.sent("runs/log-batch")) == 2   # no new run, no params
+    assert [u["status"] for u in server.sent("runs/update")[-2:]] == ["RUNNING", "KILLED"]
+    server.server.shutdown()
+
+
+def test_tracker_gives_up_quietly_when_the_server_is_unreachable(tmp_path, monkeypatch, capsys):
+    import socket
+
+    from boundary.track import MAX_FAILURES, Tracker
+
+    with socket.socket() as s:                       # a port that nothing listens on
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", f"http://127.0.0.1:{port}")
+    with Tracker.start(tmp_path, "r1/seed0", {}, {}) as t:
+        for step in range(5):
+            t.log({"score": 0.5}, step)
+    out = capsys.readouterr().out
+    assert out.count("[track]") == MAX_FAILURES + 1 and "stops reporting" in out
+    assert t.uri is None and not (tmp_path / "mlflow_run_id").exists()
+
+    monkeypatch.delenv("MLFLOW_TRACKING_URI")
+    with Tracker.start(tmp_path, "r1/seed0", {}, {}) as t:   # not configured: silent
+        t.log({"score": 0.5}, 1)
+    assert capsys.readouterr().out == ""
+
+
+def test_tracker_signs_in_with_the_account_in_the_mlflow_credentials_file(tmp_path, monkeypatch):
+    import base64
+
+    from boundary.track import Tracker
+
+    server = _FakeMlflow()
+    (tmp_path / ".mlflow").mkdir()
+    (tmp_path / ".mlflow" / "credentials").write_text(
+        "[mlflow]\nmlflow_tracking_username = boundary\nmlflow_tracking_password = not-a-real-one\n")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("MLFLOW_TRACKING_USERNAME", raising=False)
+    monkeypatch.delenv("MLFLOW_TRACKING_PASSWORD", raising=False)
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", server.uri)
+    with Tracker.start(tmp_path, "r1/seed0", {}, {}) as t:
+        t.log({"score": 0.5}, 1)
+    login = "Basic " + base64.b64encode(b"boundary:not-a-real-one").decode()
+    assert server.logins and set(server.logins) == {login}
+    server.server.shutdown()
