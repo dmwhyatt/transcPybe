@@ -38,6 +38,15 @@ An example is M4Singer's validation singers with vowel onsets
 (``sources --onsets vowel``) beside the consonant-onset training set: the
 dry pilot started notes 40-70 ms before the annotators of Molina and vocadito.
 
+A fourth output marks only re-sung note starts: the onset target, kept at
+the notes ``resung`` picks out. Every note start where the pitch changes is
+already a boundary for transcPybe's pitch decoder, so a split there can only
+add a note; this output is meant to tell the decoder where a split is needed.
+Its target is worked out from each recording's notes as it loads, so feature
+files and shards hold three targets and need no rebuilding. It is trained at
+half weight beside the offset and sounding outputs, and logged at every
+evaluation (``resung_head_*``) without taking part in choosing the checkpoint.
+
 ``--channels``, ``--hidden`` and ``--dropout`` set the network's size and
 regularisation; the checkpoint records them, so inference needs no flags.
 ``--augment`` varies every training crop afresh (``augment``): the mixes are
@@ -66,7 +75,7 @@ from pathlib import Path
 import numpy as np
 
 from . import HOP_S, items as manifest
-from .features import LEVEL_RANGE
+from .features import LEVEL_RANGE, targets
 from .infer import pick_peaks
 from .track import Tracker, context_tags
 
@@ -120,9 +129,21 @@ def load_split(rows, split):
         else:
             with np.load(r["features"]) as f:
                 z = {k: f[k] for k in ("mel", "aux", "y")}
+        y = z["y"].astype(np.float32)
+        # the fourth target comes from the notes, so they must be the notes the stored targets came from
+        if not np.allclose(targets(r["notes"], len(y))[:, 0], y[:, 0], atol=0.01):
+            raise SystemExit(f"{r['mix_id']}: the stored onset targets don't match its notes, so the re-sung target "
+                             "worked out from them would be misplaced")
+        y = np.concatenate([y, resung_target(r["notes"], len(y))[:, None]], axis=1)
         out.append(dict(id=r["mix_id"], notes=r["notes"], mel=z["mel"].astype(np.float32),
-                        aux=z["aux"].astype(np.float32), y=z["y"].astype(np.float32)))
+                        aux=z["aux"].astype(np.float32), y=y))
     return out
+
+
+def resung_target(notes, n_frames: int) -> np.ndarray:
+    """The fourth output's target: the onset target, kept only at re-sung note starts (``resung``)."""
+    keep = set(resung(notes))
+    return targets([n for n in notes if n[0] in keep], n_frames)[:, 0]
 
 
 class Crops:
@@ -189,6 +210,7 @@ def evaluate(model, data, device, threshold=0.5):
 
     model.eval()
     fs, ps, rs, hit, tot, n_est, n_ref, offsets = [], [], [], 0, 0, 0, 0, []
+    head_hit, head_est, head_est_hit = 0, 0, 0       # the fourth output, where the network has one
     order = sorted(range(len(data)), key=lambda k: len(data[k]["y"]))
     with torch.no_grad():
         for b in range(0, len(order), EVAL_BATCH):
@@ -200,9 +222,9 @@ def evaluate(model, data, device, threshold=0.5):
             for i, d in enumerate(chunk):
                 mel[i, :lens[i]], aux[i, :lens[i]] = d["mel"], d["aux"]
             p = torch.sigmoid(model(torch.from_numpy(mel).to(device), torch.from_numpy(aux).to(device),
-                                    torch.tensor(lens)))[..., 0].float().cpu().numpy()
+                                    torch.tensor(lens))).float().cpu().numpy()
             for i, d in enumerate(chunk):
-                est = pick_peaks(p[i, :lens[i]], threshold) * HOP_S
+                est = pick_peaks(p[i, :lens[i], 0], threshold) * HOP_S
                 ref = np.array([n[0] for n in d["notes"]])
                 f, pr, rc = mir_eval.onset.f_measure(ref, est, window=TOL) if len(ref) else (1.0, 1.0, 1.0)
                 fs.append(f)
@@ -210,13 +232,24 @@ def evaluate(model, data, device, threshold=0.5):
                 rs.append(rc)
                 n_est, n_ref = n_est + len(est), n_ref + len(ref)
                 offsets += onset_timing(ref, est)
-                for onset in resung(d["notes"]):
+                re_sung = np.array(resung(d["notes"]))
+                for onset in re_sung:
                     tot += 1
                     hit += int(np.any(np.abs(est - onset) <= TOL))
+                if p.shape[-1] > 3:
+                    est_r = pick_peaks(p[i, :lens[i], 3], threshold) * HOP_S
+                    head_est += len(est_r)
+                    head_hit += sum(int(np.any(np.abs(est_r - o) <= TOL)) for o in re_sung)
+                    head_est_hit += sum(int(np.any(np.abs(re_sung - e) <= TOL)) for e in est_r) if len(re_sung) else 0
     model.train()
+    head = {}
+    if p.shape[-1] > 3:
+        head = dict(resung_head_recall=head_hit / tot if tot else float("nan"),
+                    resung_head_precision=head_est_hit / head_est if head_est else float("nan"),
+                    resung_head_per_note=round(head_est / tot, 3) if tot else float("nan"))
     return dict(onset_f=float(np.mean(fs)), resung_recall=hit / tot if tot else float("nan"), n_resung=tot,
                 onset_p=float(np.mean(ps)), onset_r=float(np.mean(rs)),
-                onsets_per_note=round(n_est / n_ref, 3) if n_ref else float("nan"), **timing_summary(offsets))
+                onsets_per_note=round(n_est / n_ref, 3) if n_ref else float("nan"), **timing_summary(offsets), **head)
 
 
 def main(argv=None) -> None:
@@ -318,8 +351,8 @@ def main(argv=None) -> None:
 
     crops = Crops(train, int(round(args.crop_s / HOP_S)), augment=args.augment)
     end = min(args.steps, args.stop_after or args.steps)
-    pw = torch.tensor([args.pos_weight, args.pos_weight, 1.0], device=device)
-    head_w = torch.tensor([1.0, 0.5, 0.5], device=device)
+    pw = torch.tensor([args.pos_weight, args.pos_weight, 1.0, args.pos_weight], device=device)
+    head_w = torch.tensor([1.0, 0.5, 0.5, 0.5], device=device)    # onset, offset, sounding, re-sung onset
     with tracker, open(args.out / "log.jsonl", "a" if start > 1 else "w") as log:
         t0, run_loss, since = time.time(), 0.0, 0
         for step in range(start, end + 1):
@@ -352,7 +385,9 @@ def main(argv=None) -> None:
                 print(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} [train] step {step}/{end}  "
                       f"score {score:.3f} (best {rec['best']:.3f})  onset F {f:.3f}  re-sung {r:.3f}  "
                       f"timing {m['timing_median_ms']:+.0f} ms  per note {m['onsets_per_note']:.2f}  "
-                      f"loss {rec['loss']:.3f}  eta {rec['eta_s'] // 60} min", flush=True)
+                      f"loss {rec['loss']:.3f}  eta {rec['eta_s'] // 60} min"
+                      + (f"  re-sung output R {m['resung_head_recall']:.2f} P {m['resung_head_precision']:.2f}"
+                         if "resung_head_recall" in m else ""), flush=True)
                 if score > best:
                     best = score
                     save(args.out / "best.pt", model, step=step, metrics=m)

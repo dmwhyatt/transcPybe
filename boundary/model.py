@@ -1,8 +1,10 @@
 """The boundary network: a small convolutional front end over log-mel, then a
 bidirectional GRU over time with transcPybe's f0 features alongside.
 
-Time is never pooled, so every 10 ms frame gets its own three outputs (onset,
-offset, sounding) as logits. Frequency is pooled by the convolutions, which is
+Time is never pooled, so every 10 ms frame gets its own outputs as logits:
+onset, offset, sounding, and re-sung onset (a note start on the previous note's
+pitch with no gap; see train.py). Checkpoints from before the fourth output
+record n_out=3 and still load. Frequency is pooled by the convolutions, which is
 where consonants and vowel changes show: broadband noise, formant moves.
 About 0.8M parameters at the defaults.
 """
@@ -25,7 +27,7 @@ class NetConfig:
     gru_layers: int = 2
     dropout: float = 0.2
     use_aux: bool = True
-    n_out: int = 3
+    n_out: int = 4
 
 
 class BoundaryNet(nn.Module):

@@ -56,7 +56,7 @@ def pick_peaks(p: np.ndarray, threshold: float = 0.5, min_gap: int = MIN_GAP_FRA
 
 
 def posteriors(model, mel: np.ndarray, aux: np.ndarray, device="cpu") -> np.ndarray:
-    """(T, 3) probabilities: onset, offset, sounding."""
+    """(T, n_out) probabilities: onset, offset, sounding, and re-sung onset where the network has it."""
     import torch
 
     with torch.no_grad():

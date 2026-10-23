@@ -203,7 +203,7 @@ def test_model_keeps_one_output_per_frame():
     from boundary.model import BoundaryNet
 
     out = BoundaryNet()(torch.zeros(2, 123, 80), torch.zeros(2, 123, 5))
-    assert out.shape == (2, 123, 3)
+    assert out.shape == (2, 123, 4)
 
 
 def test_a_padded_batch_gives_each_recording_what_it_gives_alone():
@@ -354,7 +354,7 @@ def test_a_shard_gives_back_what_the_feature_files_hold(tmp_path):
     for i, n in enumerate((40, 7, 25)):
         path = tmp_path / f"m{i}.npz"
         np.savez(path, mel=rng.normal(size=(n, 80)).astype(np.float16), aux=rng.normal(size=(n, 5)).astype(np.float16),
-                 y=rng.random((n, 3)).astype(np.float16), meta=np.array("x"))
+                 y=targets([[0.1, 0.2, 60]], n).astype(np.float16), meta=np.array("x"))
         rows.append(dict(mix_id=f"m{i}", notes=[[0.1, 0.2, 60]], split="train" if i else "valid", features=str(path)))
     packed = pack.pack(rows, tmp_path / "s.npz")
     assert [r["index"] for r in packed] == [0, 1, 2] and all("features" not in r for r in packed)
@@ -540,3 +540,43 @@ def test_tracker_signs_in_with_the_account_in_the_mlflow_credentials_file(tmp_pa
     login = "Basic " + base64.b64encode(b"boundary:not-a-real-one").decode()
     assert server.logins and set(server.logins) == {login}
     server.server.shutdown()
+
+
+def test_the_fourth_target_marks_only_re_sung_note_starts():
+    from boundary.train import resung_target
+
+    notes = [[1.0, 1.5, 60], [1.52, 2.0, 60], [2.0, 2.5, 62], [2.8, 3.0, 62]]   # re-sung; pitch change; after a rest
+    t = resung_target(notes, 350)
+    assert t[152] == 1 and t[151] == pytest.approx(2 / 3)
+    assert t[100] == 0 and t[200] == 0 and t[280] == 0
+
+
+def test_loading_adds_the_fourth_target_and_refuses_notes_that_disagree_with_the_stored_targets(tmp_path):
+    from boundary.train import load_split
+
+    notes = [[0.5, 1.0, 60], [1.02, 1.5, 60]]
+    rows = []
+    for name, stored in (("good", notes), ("bad", [[0.7, 1.0, 60], [1.02, 1.5, 60]])):
+        path = tmp_path / f"{name}.npz"
+        np.savez(path, mel=np.zeros((200, 80)), aux=np.zeros((200, 5)), y=targets(stored, 200).astype(np.float16))
+        rows.append(dict(mix_id=name, notes=notes, features=str(path), split=name))
+    good = load_split(rows, "good")[0]["y"]
+    assert good.shape == (200, 4) and good[102, 3] == 1 and good[50, 3] == 0 and good[50, 0] == 1
+    with pytest.raises(SystemExit, match="don't match its notes"):
+        load_split(rows, "bad")
+
+
+def test_a_three_output_checkpoint_from_before_still_loads_and_evaluates(tmp_path):
+    pytest.importorskip("torch")
+    from boundary.model import BoundaryNet, NetConfig, load, save
+    from boundary.train import evaluate
+
+    save(tmp_path / "old.pt", BoundaryNet(NetConfig(n_out=3)), step=1)
+    model = load(tmp_path / "old.pt")
+    notes = [[0.5, 1.0, 60], [1.02, 1.5, 60]]
+    data = [dict(id="a", notes=notes, mel=np.zeros((200, 80), np.float32), aux=np.zeros((200, 5), np.float32),
+                 y=np.zeros((200, 4), np.float32))]
+    res = evaluate(model, data, "cpu")
+    assert model.cfg.n_out == 3 and res["n_resung"] == 1 and "resung_head_recall" not in res
+    res4 = evaluate(BoundaryNet().eval(), data, "cpu")
+    assert {"resung_head_recall", "resung_head_precision", "resung_head_per_note"} <= set(res4)
