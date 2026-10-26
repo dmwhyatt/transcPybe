@@ -611,3 +611,12 @@ def test_the_decoder_cuts_one_held_note_only_at_split_only_times():
     two = decode_notes(track, cfg, onsets=onset_track(p, 0.5, split_policy="none", split_only_times=[0.75]))[0]
     assert len(one) == 1
     assert len(two) == 2 and abs(two[1].onset - 0.75) <= 0.05 and two[0].pitch == two[1].pitch == 57
+
+
+def test_rwc_dev_reads_config_overrides_as_json_where_they_parse():
+    from boundary.rwc_dev import parse_overrides
+
+    assert parse_overrides(["measure_after_snap=true", "cut_settle_s=0.05", "onset_snap_direction=both"]) == dict(
+        measure_after_snap=True, cut_settle_s=0.05, onset_snap_direction="both")
+    with pytest.raises(SystemExit):
+        parse_overrides(["cut_settle_s"])

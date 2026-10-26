@@ -29,6 +29,9 @@ the onset output's peaks only move note starts and never cut a note:
   ``refs/notes``; development-only, it selects nothing.
 
 ``--variants`` limits the decoder configurations (the plan uses ``B-plain`` only).
+``--config-overrides KEY=VALUE ...`` sets further decoder options on top of the
+variant (values read as JSON where they parse, else as text), and ``--suffix``
+is appended to every run name, as the pitch plan does (``...-p1``).
 
 Then score with the work directory's own scorer, against B's replay:
 
@@ -50,6 +53,20 @@ import numpy as np
 from . import FEATURE_SR
 
 
+def parse_overrides(items) -> dict:
+    """``KEY=VALUE`` strings as a dict; a value is JSON where it parses (true, 0.05), else text."""
+    out = {}
+    for item in items:
+        key, sep, value = item.partition("=")
+        if not sep or not key:
+            raise SystemExit(f"--config-overrides wants KEY=VALUE, not {item!r}")
+        try:
+            out[key] = json.loads(value)
+        except json.JSONDecodeError:
+            out[key] = value
+    return out
+
+
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("checkpoint", type=Path)
@@ -61,8 +78,12 @@ def main(argv=None) -> None:
     ap.add_argument("--variants", nargs="+", default=["B", "B-plain"], choices=("B", "B-plain"))
     ap.add_argument("--split-thresholds", type=float, nargs="+", default=[None],
                     help="for same-pitch splitting: the bar a peak must reach to split (default: the peak threshold)")
+    ap.add_argument("--config-overrides", nargs="+", default=[], metavar="KEY=VALUE",
+                    help="further decoder options, applied on top of the variant")
+    ap.add_argument("--suffix", default="", help="appended to every run name")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args(argv)
+    extra = parse_overrides(args.config_overrides)
 
     from transcpybe.audio import load_audio
     from transcpybe.config import TranscriptionConfig
@@ -79,7 +100,7 @@ def main(argv=None) -> None:
     songs = json.load(open(W / "dev" / "split.json"))["dev"]
     b = json.load(open(W / "dev" / "frozen.json"))["B-full"]
     variants = {"B": b, "B-plain": dict(b, timbre_split_ratio=0.0, split_on_voicing_breaks=False)}
-    variants = {v: variants[v] for v in args.variants}
+    variants = {v: dict(variants[v], **extra) for v in args.variants}
     model = load(args.checkpoint, args.device)
     if "resung" in args.split_policies:
         if model.cfg.n_out < 4:
@@ -97,6 +118,7 @@ def main(argv=None) -> None:
                         name = f"{args.name}-{v}-t{t}{tag}"
                     else:
                         name = f"{args.name}-{v}-t{t}" + ("" if pol == "all" else f"{tag}{st if st is not None else t}")
+                    name += args.suffix
                     runs[name] = (dataclasses.replace(TranscriptionConfig(device="cpu"), **ov), t, pol, st)
                     (W / "dev/runs/sp" / name / "midi").mkdir(parents=True, exist_ok=True)
                     with open(W / "dev/runs/sp" / name / "overrides.json", "w") as f:
