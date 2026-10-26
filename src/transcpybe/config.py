@@ -462,6 +462,14 @@ class TranscriptionConfig:
     inside one note. Zero turns it off; a track without ``sounding`` merges
     nothing."""
 
+    end_snap_window_s: float = 0.0
+    """Move each note's end to the nearest of the onset track's ``end_times``
+    (note ends found elsewhere, such as a boundary network's offset peaks)
+    within this many seconds either side, once everything else is done. An end
+    never passes the next note's onset nor comes within
+    ``min_note_duration_s`` of its own; with no end time in reach it stays.
+    Zero turns it off."""
+
     reject_quiet_notes: bool = True
     """Drop notes far below the level of the rest of the performance. This is
     what removes phantom notes hallucinated from source-separation residue."""
@@ -721,6 +729,8 @@ class TranscriptionConfig:
             raise ValueError("cut_settle_s must be non-negative")
         if not 0.0 <= self.sustain_merge_above <= 1.0:
             raise ValueError("sustain_merge_above must be in [0, 1]")
+        if self.end_snap_window_s < 0:
+            raise ValueError("end_snap_window_s must be non-negative")
         if not 0.0 <= self.onset_split_min_periodicity_dip <= 1.0:
             raise ValueError("onset_split_min_periodicity_dip must be in [0, 1]")
         if self.onset_snap_direction not in ("both", "earlier", "later"):

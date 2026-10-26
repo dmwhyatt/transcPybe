@@ -31,7 +31,7 @@ class OnsetTrack:
 
     def __init__(self, times: np.ndarray, strengths: np.ndarray, envelope: np.ndarray,
                  envelope_times: np.ndarray, split_only_times: np.ndarray | None = None,
-                 sounding: np.ndarray | None = None) -> None:
+                 sounding: np.ndarray | None = None, end_times: np.ndarray | None = None) -> None:
         self.times = times
         self.strengths = strengths
         self.envelope = envelope
@@ -44,6 +44,9 @@ class OnsetTrack:
         # detector has none. Where it never dips, two touching notes are one
         # (``sustain_merge_above``).
         self.sounding = None if sounding is None else np.asarray(sounding, float)
+        # Note ends found elsewhere, such as a model's offset peaks: with
+        # ``end_snap_window_s`` a note's end moves to the nearest.
+        self.end_times = np.zeros(0) if end_times is None else np.sort(np.asarray(end_times, float))
 
     def __len__(self) -> int:
         return int(self.times.shape[0])
@@ -579,7 +582,8 @@ def refine_segments(
             all_strengths = np.concatenate([onsets.strengths, np.full(times.size, np.inf)])
             order = np.argsort(all_times, kind="stable")
             onsets = OnsetTrack(all_times[order], all_strengths[order], onsets.envelope,
-                                onsets.envelope_times, onsets.split_only_times, onsets.sounding)
+                                onsets.envelope_times, onsets.split_only_times, onsets.sounding,
+                                onsets.end_times)
     if (config.timbre_split_ratio > 0 and audio is not None
             and onsets.split_only_times.size == 0):
         # A strong change of timbre inside a note on one pitch is a new syllable:
@@ -588,7 +592,7 @@ def refine_segments(
         # pass reuses the track.
         onsets = OnsetTrack(onsets.times, onsets.strengths, onsets.envelope,
                             onsets.envelope_times, split_only_times=timbre_change_times(audio, config),
-                            sounding=onsets.sounding)
+                            sounding=onsets.sounding, end_times=onsets.end_times)
     segments = split_segments_on_onsets(segments, onsets, frame_times, config,
                                         loudness_db, periodicity, voicing)
     segments = snap_segment_starts(segments, onsets, frame_times, config, voicing)
