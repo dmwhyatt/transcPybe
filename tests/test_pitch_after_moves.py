@@ -11,7 +11,7 @@ import numpy as np
 from transcpybe.config import TranscriptionConfig
 from transcpybe.f0 import F0Track
 from transcpybe.notes import segments_to_notes
-from transcpybe.onsets import OnsetTrack, snap_segment_starts, split_segments_on_onsets
+from transcpybe.onsets import OnsetTrack, refine_segments, snap_segment_starts, split_segments_on_onsets
 from transcpybe.segment import Segment
 
 HZ = {60: 261.6256, 64: 329.6276}
@@ -53,3 +53,15 @@ def test_a_part_after_a_cut_is_measured_once_its_pitch_has_settled():
         assert [(s.start_frame, s.end_frame) for s in parts] == [(0, 30), (30, 48)]
         notes = segments_to_notes(parts, track, cfg)
         assert notes[1].onset == 0.30 and notes[1].pitch == expected
+
+
+def test_the_settling_point_survives_snapping_when_the_cut_sits_on_an_onset():
+    # the decoder's own path: cut, then snap. The cut is at an onset, so snapping rebuilds that part;
+    # on 26 October that rebuild dropped the settling point and cut_settle_s did nothing
+    track = _track([60] * 41 + [64] * 7 + [None] * 12)
+    for settle, expected in ((0.0, 60), (0.10, 64)):
+        cfg = TranscriptionConfig(device="cpu", cut_settle_s=settle)
+        parts, _ = refine_segments([Segment(0, 48, 60)], None, track.times, cfg, onsets=_onsets([0.30], 60),
+                                   loudness_db=track.loudness_db, periodicity=track.periodicity, voicing=track.voicing)
+        assert [(s.start_frame, s.end_frame) for s in parts] == [(0, 30), (30, 48)]
+        assert segments_to_notes(parts, track, cfg)[1].pitch == expected

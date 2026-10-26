@@ -369,6 +369,8 @@ def snap_segment_starts(
             nearest = int(np.argmin(np.abs(offsets)))
             if in_window[nearest] and onset_frames[nearest] < seg.end_frame:
                 candidate = int(onset_frames[nearest])
+        # a part made by a cut carries where its pitch settles (cut_settle_s); snapping must not discard it
+        settled = seg.measure_from if config.cut_settle_s > 0 and seg.measure_from is not None else None
 
         previous = out[-1] if out else None
         if candidate is not None and previous is not None and candidate < previous.end_frame:
@@ -386,7 +388,7 @@ def snap_segment_starts(
                 candidate = None
 
         if candidate is not None:
-            measure_from = None
+            measure_from = settled if settled is not None and settled > candidate else None
             if config.measure_after_snap and candidate < seg.start_frame:
                 # the start moves back onto the attack; the pitch is measured from where it had crossed over
                 measure_from = seg.measure_from if seg.measure_from is not None else seg.start_frame
@@ -396,8 +398,9 @@ def snap_segment_starts(
             # The start stays, but the attack is still where the pitch
             # settles: measure from there, as a start snapped to it would have
             # been.
+            attack = int(after.min())
             out.append(Segment(seg.start_frame, seg.end_frame, seg.pitch,
-                               measure_from=int(after.min())))
+                               measure_from=max(attack, settled) if settled is not None else attack))
         else:
             out.append(seg)
 
