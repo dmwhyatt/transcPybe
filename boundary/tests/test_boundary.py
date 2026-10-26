@@ -620,3 +620,18 @@ def test_rwc_dev_reads_config_overrides_as_json_where_they_parse():
         measure_after_snap=True, cut_settle_s=0.05, onset_snap_direction="both")
     with pytest.raises(SystemExit):
         parse_overrides(["cut_settle_s"])
+
+
+def test_onset_track_carries_the_sounding_output_for_the_sustain_merge():
+    from transcpybe.config import TranscriptionConfig
+    from transcpybe.onsets import merge_sustained_boundaries
+    from transcpybe.segment import Segment
+
+    p, sounding = np.zeros(80), np.full(80, 0.99)
+    p[15] = 0.9
+    tr = onset_track(p, 0.5, sounding=sounding)
+    assert tr.sounding is not None and len(tr.sounding) == len(tr.envelope_times) == 80
+    parts = [Segment(0, 15, 62), Segment(15, 60, 64)]
+    cfg = TranscriptionConfig(device="cpu", sustain_merge_above=0.98)
+    assert len(merge_sustained_boundaries(parts, tr, np.arange(80) * HOP_S, cfg)) == 1
+    assert onset_track(p, 0.5).sounding is None

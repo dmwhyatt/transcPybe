@@ -28,6 +28,12 @@ the onset output's peaks only move note starts and never cut a note:
 - ``oracle``: the reference's re-sung note starts cut (``...-oracle``), from
   ``refs/notes``; development-only, it selects nothing.
 
+The sounding plan (sounding-plan.md, 26 October) adds ``own``: transcPybe's own
+onset detector, as configuration B uses it, with only the network's sounding
+output added (``...-own``; ``--thresholds`` does not apply). Every hand-over
+carries the sounding output, which the decoder uses only when
+``sustain_merge_above`` is set (``--config-overrides sustain_merge_above=0.98``).
+
 ``--variants`` limits the decoder configurations (the plan uses ``B-plain`` only).
 ``--config-overrides KEY=VALUE ...`` sets further decoder options on top of the
 variant (values read as JSON where they parse, else as text), and ``--suffix``
@@ -74,7 +80,7 @@ def main(argv=None) -> None:
     ap.add_argument("--name", required=True)
     ap.add_argument("--thresholds", type=float, nargs="+", default=[0.3, 0.5, 0.7])
     ap.add_argument("--split-policies", nargs="+", default=["all"],
-                    choices=("all", "same-pitch", "across-gap", "resung", "snap", "oracle"))
+                    choices=("all", "same-pitch", "across-gap", "resung", "snap", "oracle", "own"))
     ap.add_argument("--variants", nargs="+", default=["B", "B-plain"], choices=("B", "B-plain"))
     ap.add_argument("--split-thresholds", type=float, nargs="+", default=[None],
                     help="for same-pitch splitting: the bar a peak must reach to split (default: the peak threshold)")
@@ -89,6 +95,7 @@ def main(argv=None) -> None:
     from transcpybe.config import TranscriptionConfig
     from transcpybe.core import decode_notes
     from transcpybe.midi_io import write_midi
+    from transcpybe.onsets import OnsetTrack, detect_onsets
 
     from . import HOP_S
     from .features import frame_features
@@ -113,12 +120,16 @@ def main(argv=None) -> None:
             for pol in args.split_policies:
                 for st in (args.split_thresholds if pol in ("same-pitch", "across-gap", "resung") else [None]):
                     tag = {"all": "", "same-pitch": "-sp", "across-gap": "-xg", "resung": "-rs",
-                           "snap": "-snap", "oracle": "-oracle"}[pol]
-                    if pol in ("snap", "oracle"):
+                           "snap": "-snap", "oracle": "-oracle", "own": "-own"}[pol]
+                    if pol == "own":
+                        name = f"{args.name}-{v}-own"
+                    elif pol in ("snap", "oracle"):
                         name = f"{args.name}-{v}-t{t}{tag}"
                     else:
                         name = f"{args.name}-{v}-t{t}" + ("" if pol == "all" else f"{tag}{st if st is not None else t}")
                     name += args.suffix
+                    if name in runs:                # own: one run whatever the threshold
+                        continue
                     runs[name] = (dataclasses.replace(TranscriptionConfig(device="cpu"), **ov), t, pol, st)
                     (W / "dev/runs/sp" / name / "midi").mkdir(parents=True, exist_ok=True)
                     with open(W / "dev/runs/sp" / name / "overrides.json", "w") as f:
@@ -129,18 +140,23 @@ def main(argv=None) -> None:
         track = pickle.load(open(W / "dev/f0cache/sp" / f"{s}.pkl", "rb"))
         mel, aux = frame_features(audio, track)
         post = posteriors(model, mel, aux, args.device)
-        p = post[:, 0]
+        p, sounding = post[:, 0], post[:, 2]
         ref = W / "refs/notes" / f"{s}.txt"
         ref_resung = resung(np.loadtxt(ref, ndmin=2).tolist()) if ref.exists() else []
         for name, (cfg, t, pol, st) in runs.items():
-            if pol == "resung":
-                tr = onset_track(p, t, split_policy="none", split_only_times=pick_peaks(post[:, 3], st) * HOP_S)
+            if pol == "own":
+                own = detect_onsets(audio, cfg)
+                tr = OnsetTrack(own.times, own.strengths, own.envelope, own.envelope_times,
+                                sounding=np.interp(own.envelope_times, np.arange(len(sounding)) * HOP_S, sounding))
+            elif pol == "resung":
+                tr = onset_track(p, t, split_policy="none", split_only_times=pick_peaks(post[:, 3], st) * HOP_S,
+                                 sounding=sounding)
             elif pol == "snap":
-                tr = onset_track(p, t, split_policy="none")
+                tr = onset_track(p, t, split_policy="none", sounding=sounding)
             elif pol == "oracle":
-                tr = onset_track(p, t, split_policy="none", split_only_times=ref_resung)
+                tr = onset_track(p, t, split_policy="none", split_only_times=ref_resung, sounding=sounding)
             else:
-                tr = onset_track(p, t, track=track, split_policy=pol, split_threshold=st)
+                tr = onset_track(p, t, track=track, split_policy=pol, split_threshold=st, sounding=sounding)
             notes, _, _, _ = decode_notes(track, cfg, audio=audio, onsets=tr)
             write_midi(notes, W / "dev/runs/sp" / name / "midi" / f"{s}.mid", cfg)
         print(f"{i + 1}/{len(songs)} {s}", flush=True)

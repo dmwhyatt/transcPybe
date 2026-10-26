@@ -92,7 +92,8 @@ def pitch_level_across_gap(track, frame: int, voicing_threshold: float = 0.3) ->
 
 
 def onset_track(prob_onset: np.ndarray, threshold: float = 0.5, track=None,
-                split_policy: str = "all", split_threshold: float | None = None, split_only_times=None):
+                split_policy: str = "all", split_threshold: float | None = None, split_only_times=None,
+                sounding=None):
     """An OnsetTrack whose envelope is the onset posterior and whose strengths are its peak values.
 
     ``split_policy="all"`` lets every peak split a note; ``"same-pitch"`` (which
@@ -104,6 +105,9 @@ def onset_track(prob_onset: np.ndarray, threshold: float = 0.5, track=None,
     ``split_only_times`` (seconds) are cuts from elsewhere, such as the fourth
     output's re-sung onsets: the decoder cuts the note each falls in and lets
     none of them move a note start. With ``"none"``, they are the only cuts.
+
+    ``sounding`` is the network's sounding output, on the same frames: the
+    decoder's ``sustain_merge_above`` rejoins touching notes where it stays high.
     """
     from transcpybe.onsets import OnsetTrack
 
@@ -125,7 +129,8 @@ def onset_track(prob_onset: np.ndarray, threshold: float = 0.5, track=None,
     elif bar > threshold:
         strengths[strengths < bar] = np.nan
     return OnsetTrack(times[frames], strengths, prob_onset.astype(float), times,
-                      split_only_times=None if split_only_times is None else np.sort(np.asarray(split_only_times, float)))
+                      split_only_times=None if split_only_times is None else np.sort(np.asarray(split_only_times, float)),
+                      sounding=sounding)
 
 
 def main(argv=None) -> None:
