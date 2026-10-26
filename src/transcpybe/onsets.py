@@ -285,8 +285,11 @@ def split_segments_on_onsets(
             continue
 
         boundaries = [seg.start_frame, *sorted(set(int(c) for c in cut_frames)), seg.end_frame]
+        settle = int(round(config.cut_settle_s * config.sample_rate / config.hop_length))
         for start, end in zip(boundaries[:-1], boundaries[1:]):
-            out.append(Segment(start_frame=start, end_frame=end, pitch=seg.pitch))
+            # a part that begins at a cut is measured once its pitch has had time to settle
+            measure_from = start + settle if settle > 0 and start != seg.start_frame else None
+            out.append(Segment(start_frame=start, end_frame=end, pitch=seg.pitch, measure_from=measure_from))
 
     return out
 
@@ -383,7 +386,12 @@ def snap_segment_starts(
                 candidate = None
 
         if candidate is not None:
-            out.append(Segment(start_frame=candidate, end_frame=seg.end_frame, pitch=seg.pitch))
+            measure_from = None
+            if config.measure_after_snap and candidate < seg.start_frame:
+                # the start moves back onto the attack; the pitch is measured from where it had crossed over
+                measure_from = seg.measure_from if seg.measure_from is not None else seg.start_frame
+            out.append(Segment(start_frame=candidate, end_frame=seg.end_frame, pitch=seg.pitch,
+                               measure_from=measure_from))
         elif direction == "earlier" and after.size:
             # The start stays, but the attack is still where the pitch
             # settles: measure from there, as a start snapped to it would have

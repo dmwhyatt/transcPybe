@@ -442,6 +442,18 @@ class TranscriptionConfig:
     attack_trim_max_s: float = 0.06
     """Absolute cap on the attack trim."""
 
+    measure_after_snap: bool = False
+    """When onset snapping pulls a note's start earlier, measure its pitch from
+    where the decoder had placed the start rather than from the snapped one.
+    The decoder puts a legato boundary where the pitch has crossed over, and
+    snapping pulls the start back onto the attack before it, so frames
+    between the two can still be on the previous note's pitch."""
+
+    cut_settle_s: float = 0.0
+    """When an onset cuts a note in two, skip this long after the cut, on top
+    of the attack trim, before measuring the second part's pitch: it can
+    begin with the slide into its pitch. Zero keeps the attack trim alone."""
+
     reject_quiet_notes: bool = True
     """Drop notes far below the level of the rest of the performance. This is
     what removes phantom notes hallucinated from source-separation residue."""
@@ -697,6 +709,8 @@ class TranscriptionConfig:
             raise ValueError("syllable_lead_s must be non-negative")
         if self.onset_split_min_dip_db < 0:
             raise ValueError("onset_split_min_dip_db must be non-negative")
+        if self.cut_settle_s < 0:
+            raise ValueError("cut_settle_s must be non-negative")
         if not 0.0 <= self.onset_split_min_periodicity_dip <= 1.0:
             raise ValueError("onset_split_min_periodicity_dip must be in [0, 1]")
         if self.onset_snap_direction not in ("both", "earlier", "later"):
