@@ -19,6 +19,17 @@ every combination is decoded as well, named ``<name>-<variant>-t<threshold>``
 for the default (every peak splits) and ``...-sp<split threshold>`` for
 same-pitch-only splitting.
 
+Three policies follow the decoder plan (decoder-plan.md, 26 October). In each,
+the onset output's peaks only move note starts and never cut a note:
+
+- ``resung``: the fourth output's peaks at each ``--split-thresholds`` value cut
+  notes (``...-rs<s>``); it needs a network with four outputs;
+- ``snap``: nothing cuts (``...-snap``);
+- ``oracle``: the reference's re-sung note starts cut (``...-oracle``), from
+  ``refs/notes``; development-only, it selects nothing.
+
+``--variants`` limits the decoder configurations (the plan uses ``B-plain`` only).
+
 Then score with the work directory's own scorer, against B's replay:
 
     python dev/score.py dev sp-f-delta0.6 sp-f-delta0.6=dev/runs/sp/f-delta0.6/midi \
@@ -34,6 +45,8 @@ import json
 import pickle
 from pathlib import Path
 
+import numpy as np
+
 from . import FEATURE_SR
 
 
@@ -43,7 +56,9 @@ def main(argv=None) -> None:
     ap.add_argument("--work", type=Path, required=True)
     ap.add_argument("--name", required=True)
     ap.add_argument("--thresholds", type=float, nargs="+", default=[0.3, 0.5, 0.7])
-    ap.add_argument("--split-policies", nargs="+", default=["all"], choices=("all", "same-pitch", "across-gap"))
+    ap.add_argument("--split-policies", nargs="+", default=["all"],
+                    choices=("all", "same-pitch", "across-gap", "resung", "snap", "oracle"))
+    ap.add_argument("--variants", nargs="+", default=["B", "B-plain"], choices=("B", "B-plain"))
     ap.add_argument("--split-thresholds", type=float, nargs="+", default=[None],
                     help="for same-pitch splitting: the bar a peak must reach to split (default: the peak threshold)")
     ap.add_argument("--device", default="cuda")
@@ -54,22 +69,34 @@ def main(argv=None) -> None:
     from transcpybe.core import decode_notes
     from transcpybe.midi_io import write_midi
 
+    from . import HOP_S
     from .features import frame_features
-    from .infer import onset_track, posteriors
+    from .infer import onset_track, pick_peaks, posteriors
     from .model import load
+    from .train import resung
 
     W = args.work
     songs = json.load(open(W / "dev" / "split.json"))["dev"]
     b = json.load(open(W / "dev" / "frozen.json"))["B-full"]
     variants = {"B": b, "B-plain": dict(b, timbre_split_ratio=0.0, split_on_voicing_breaks=False)}
+    variants = {v: variants[v] for v in args.variants}
     model = load(args.checkpoint, args.device)
+    if "resung" in args.split_policies:
+        if model.cfg.n_out < 4:
+            raise SystemExit(f"{args.checkpoint} has no re-sung output (n_out={model.cfg.n_out})")
+        if None in args.split_thresholds:
+            raise SystemExit("the resung policy needs --split-thresholds: the fourth output's peak thresholds")
     runs = {}
     for v, ov in variants.items():
         for t in args.thresholds:
             for pol in args.split_policies:
-                for st in (args.split_thresholds if pol != "all" else [None]):
-                    tag = {"all": "", "same-pitch": "-sp", "across-gap": "-xg"}[pol]
-                    name = f"{args.name}-{v}-t{t}" + ("" if pol == "all" else f"{tag}{st if st is not None else t}")
+                for st in (args.split_thresholds if pol in ("same-pitch", "across-gap", "resung") else [None]):
+                    tag = {"all": "", "same-pitch": "-sp", "across-gap": "-xg", "resung": "-rs",
+                           "snap": "-snap", "oracle": "-oracle"}[pol]
+                    if pol in ("snap", "oracle"):
+                        name = f"{args.name}-{v}-t{t}{tag}"
+                    else:
+                        name = f"{args.name}-{v}-t{t}" + ("" if pol == "all" else f"{tag}{st if st is not None else t}")
                     runs[name] = (dataclasses.replace(TranscriptionConfig(device="cpu"), **ov), t, pol, st)
                     (W / "dev/runs/sp" / name / "midi").mkdir(parents=True, exist_ok=True)
                     with open(W / "dev/runs/sp" / name / "overrides.json", "w") as f:
@@ -79,9 +106,19 @@ def main(argv=None) -> None:
         audio, _ = load_audio(W / "stems_flat" / f"{s}.wav", FEATURE_SR)
         track = pickle.load(open(W / "dev/f0cache/sp" / f"{s}.pkl", "rb"))
         mel, aux = frame_features(audio, track)
-        p = posteriors(model, mel, aux, args.device)[:, 0]
+        post = posteriors(model, mel, aux, args.device)
+        p = post[:, 0]
+        ref = W / "refs/notes" / f"{s}.txt"
+        ref_resung = resung(np.loadtxt(ref, ndmin=2).tolist()) if ref.exists() else []
         for name, (cfg, t, pol, st) in runs.items():
-            tr = onset_track(p, t, track=track, split_policy=pol, split_threshold=st)
+            if pol == "resung":
+                tr = onset_track(p, t, split_policy="none", split_only_times=pick_peaks(post[:, 3], st) * HOP_S)
+            elif pol == "snap":
+                tr = onset_track(p, t, split_policy="none")
+            elif pol == "oracle":
+                tr = onset_track(p, t, split_policy="none", split_only_times=ref_resung)
+            else:
+                tr = onset_track(p, t, track=track, split_policy=pol, split_threshold=st)
             notes, _, _, _ = decode_notes(track, cfg, audio=audio, onsets=tr)
             write_midi(notes, W / "dev/runs/sp" / name / "midi" / f"{s}.mid", cfg)
         print(f"{i + 1}/{len(songs)} {s}", flush=True)

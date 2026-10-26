@@ -580,3 +580,34 @@ def test_a_three_output_checkpoint_from_before_still_loads_and_evaluates(tmp_pat
     assert model.cfg.n_out == 3 and res["n_resung"] == 1 and "resung_head_recall" not in res
     res4 = evaluate(BoundaryNet().eval(), data, "cpu")
     assert {"resung_head_recall", "resung_head_precision", "resung_head_per_note"} <= set(res4)
+
+
+def test_onset_track_can_leave_cutting_to_split_only_times():
+    p = np.zeros(200)
+    p[[30, 90]] = [0.9, 0.8]
+    tr = onset_track(p, 0.5, split_policy="none", split_only_times=[1.2, 0.6])
+    assert np.isnan(tr.strengths).all() and tr.times.tolist() == [pytest.approx(0.3), pytest.approx(0.9)]
+    assert tr.split_only_times.tolist() == [0.6, 1.2]
+    with pytest.raises(ValueError):
+        onset_track(p, 0.5, split_policy="sometimes")
+
+
+def test_the_decoder_cuts_one_held_note_only_at_split_only_times():
+    import dataclasses
+
+    from transcpybe.config import TranscriptionConfig
+    from transcpybe.core import decode_notes
+    from transcpybe.f0 import F0Track
+
+    n = 150                                      # 1.5 s on one pitch, voiced from 0.1 to 1.4 s
+    voiced = np.r_[np.zeros(10), np.ones(130), np.zeros(10)]
+    track = F0Track(times=np.arange(n) * HOP_S, f0_hz=np.where(voiced > 0, 220.0, np.nan), periodicity=0.95 * voiced,
+                    loudness_db=np.where(voiced > 0, -20.0, -60.0), loudness_gate=voiced, voicing=0.95 * voiced)
+    cfg = dataclasses.replace(TranscriptionConfig(device="cpu"), timbre_split_ratio=0.0, split_on_voicing_breaks=False,
+                              onset_split_min_dip_db=0.0)
+    p = np.zeros(n)
+    p[[40, 75]] = 0.9                           # onset-output peaks: they may move starts, never cut
+    one = decode_notes(track, cfg, onsets=onset_track(p, 0.5, split_policy="none"))[0]
+    two = decode_notes(track, cfg, onsets=onset_track(p, 0.5, split_policy="none", split_only_times=[0.75]))[0]
+    assert len(one) == 1
+    assert len(two) == 2 and abs(two[1].onset - 0.75) <= 0.05 and two[0].pitch == two[1].pitch == 57

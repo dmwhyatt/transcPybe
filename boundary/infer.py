@@ -92,19 +92,23 @@ def pitch_level_across_gap(track, frame: int, voicing_threshold: float = 0.3) ->
 
 
 def onset_track(prob_onset: np.ndarray, threshold: float = 0.5, track=None,
-                split_policy: str = "all", split_threshold: float | None = None):
+                split_policy: str = "all", split_threshold: float | None = None, split_only_times=None):
     """An OnsetTrack whose envelope is the onset posterior and whose strengths are its peak values.
 
     ``split_policy="all"`` lets every peak split a note; ``"same-pitch"`` (which
     needs the f0 ``track``) lets a peak split only where the pitch is level
-    across it and it reaches ``split_threshold`` (default: ``threshold``).
-    Peaks that may not split get a NaN strength: the decoder still snaps note
-    starts to them.
+    across it and it reaches ``split_threshold`` (default: ``threshold``);
+    ``"none"`` lets no peak split. Peaks that may not split get a NaN strength:
+    the decoder still snaps note starts to them.
+
+    ``split_only_times`` (seconds) are cuts from elsewhere, such as the fourth
+    output's re-sung onsets: the decoder cuts the note each falls in and lets
+    none of them move a note start. With ``"none"``, they are the only cuts.
     """
     from transcpybe.onsets import OnsetTrack
 
-    if split_policy not in ("all", "same-pitch", "across-gap"):
-        raise ValueError(f"split_policy must be 'all', 'same-pitch' or 'across-gap', not {split_policy!r}")
+    if split_policy not in ("all", "same-pitch", "across-gap", "none"):
+        raise ValueError(f"split_policy must be 'all', 'same-pitch', 'across-gap' or 'none', not {split_policy!r}")
     times = np.arange(len(prob_onset)) * HOP_S
     frames = pick_peaks(prob_onset, threshold)
     strengths = prob_onset[frames].astype(float)
@@ -116,9 +120,12 @@ def onset_track(prob_onset: np.ndarray, threshold: float = 0.5, track=None,
         may_split = np.array([strengths[i] >= bar and level(track, int(f))
                               for i, f in enumerate(frames)], dtype=bool)
         strengths[~may_split] = np.nan
+    elif split_policy == "none":
+        strengths[:] = np.nan
     elif bar > threshold:
         strengths[strengths < bar] = np.nan
-    return OnsetTrack(times[frames], strengths, prob_onset.astype(float), times)
+    return OnsetTrack(times[frames], strengths, prob_onset.astype(float), times,
+                      split_only_times=None if split_only_times is None else np.sort(np.asarray(split_only_times, float)))
 
 
 def main(argv=None) -> None:
