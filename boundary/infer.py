@@ -93,7 +93,7 @@ def pitch_level_across_gap(track, frame: int, voicing_threshold: float = 0.3) ->
 
 def onset_track(prob_onset: np.ndarray, threshold: float = 0.5, track=None,
                 split_policy: str = "all", split_threshold: float | None = None, split_only_times=None,
-                sounding=None):
+                sounding=None, end_times=None):
     """An OnsetTrack whose envelope is the onset posterior and whose strengths are its peak values.
 
     ``split_policy="all"`` lets every peak split a note; ``"same-pitch"`` (which
@@ -108,6 +108,8 @@ def onset_track(prob_onset: np.ndarray, threshold: float = 0.5, track=None,
 
     ``sounding`` is the network's sounding output, on the same frames: the
     decoder's ``sustain_merge_above`` rejoins touching notes where it stays high.
+    ``end_times`` (seconds) are note ends, such as the offset output's peaks:
+    with ``end_snap_window_s`` the decoder moves each note's end to the nearest.
     """
     from transcpybe.onsets import OnsetTrack
 
@@ -130,7 +132,7 @@ def onset_track(prob_onset: np.ndarray, threshold: float = 0.5, track=None,
         strengths[strengths < bar] = np.nan
     return OnsetTrack(times[frames], strengths, prob_onset.astype(float), times,
                       split_only_times=None if split_only_times is None else np.sort(np.asarray(split_only_times, float)),
-                      sounding=sounding)
+                      sounding=sounding, end_times=end_times)
 
 
 def main(argv=None) -> None:

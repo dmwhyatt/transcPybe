@@ -635,3 +635,12 @@ def test_onset_track_carries_the_sounding_output_for_the_sustain_merge():
     cfg = TranscriptionConfig(device="cpu", sustain_merge_above=0.98)
     assert len(merge_sustained_boundaries(parts, tr, np.arange(80) * HOP_S, cfg)) == 1
     assert onset_track(p, 0.5).sounding is None
+
+
+def test_onset_track_carries_the_offset_peaks_as_note_end_times():
+    p, offset = np.zeros(120), np.zeros(120)
+    p[10] = 0.9
+    offset[[60, 95]] = [0.8, 0.6]
+    tr = onset_track(p, 0.5, end_times=pick_peaks(offset, 0.5) * HOP_S)
+    assert tr.end_times.tolist() == [pytest.approx(0.6), pytest.approx(0.95)]
+    assert onset_track(p, 0.5).end_times.size == 0

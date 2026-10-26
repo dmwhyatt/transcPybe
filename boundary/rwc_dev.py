@@ -33,6 +33,9 @@ onset detector, as configuration B uses it, with only the network's sounding
 output added (``...-own``; ``--thresholds`` does not apply). Every hand-over
 carries the sounding output, which the decoder uses only when
 ``sustain_merge_above`` is set (``--config-overrides sustain_merge_above=0.98``).
+The ends plan (ends-plan.md, 26 October) adds the offset output's peaks at 0.5
+as note end times, on every hand-over too; the decoder moves note ends to them
+only when ``end_snap_window_s`` is set.
 
 ``--variants`` limits the decoder configurations (the plan uses ``B-plain`` only).
 ``--config-overrides KEY=VALUE ...`` sets further decoder options on top of the
@@ -57,6 +60,8 @@ from pathlib import Path
 import numpy as np
 
 from . import FEATURE_SR
+
+OFFSET_THRESHOLD = 0.5      # the ends plan: offset-output peaks at this level are note end times
 
 
 def parse_overrides(items) -> dict:
@@ -141,22 +146,26 @@ def main(argv=None) -> None:
         mel, aux = frame_features(audio, track)
         post = posteriors(model, mel, aux, args.device)
         p, sounding = post[:, 0], post[:, 2]
+        ends = pick_peaks(post[:, 1], OFFSET_THRESHOLD) * HOP_S
         ref = W / "refs/notes" / f"{s}.txt"
         ref_resung = resung(np.loadtxt(ref, ndmin=2).tolist()) if ref.exists() else []
         for name, (cfg, t, pol, st) in runs.items():
             if pol == "own":
                 own = detect_onsets(audio, cfg)
                 tr = OnsetTrack(own.times, own.strengths, own.envelope, own.envelope_times,
-                                sounding=np.interp(own.envelope_times, np.arange(len(sounding)) * HOP_S, sounding))
+                                sounding=np.interp(own.envelope_times, np.arange(len(sounding)) * HOP_S, sounding),
+                                end_times=ends)
             elif pol == "resung":
                 tr = onset_track(p, t, split_policy="none", split_only_times=pick_peaks(post[:, 3], st) * HOP_S,
-                                 sounding=sounding)
+                                 sounding=sounding, end_times=ends)
             elif pol == "snap":
-                tr = onset_track(p, t, split_policy="none", sounding=sounding)
+                tr = onset_track(p, t, split_policy="none", sounding=sounding, end_times=ends)
             elif pol == "oracle":
-                tr = onset_track(p, t, split_policy="none", split_only_times=ref_resung, sounding=sounding)
+                tr = onset_track(p, t, split_policy="none", split_only_times=ref_resung, sounding=sounding,
+                                 end_times=ends)
             else:
-                tr = onset_track(p, t, track=track, split_policy=pol, split_threshold=st, sounding=sounding)
+                tr = onset_track(p, t, track=track, split_policy=pol, split_threshold=st, sounding=sounding,
+                                 end_times=ends)
             notes, _, _, _ = decode_notes(track, cfg, audio=audio, onsets=tr)
             write_midi(notes, W / "dev/runs/sp" / name / "midi" / f"{s}.mid", cfg)
         print(f"{i + 1}/{len(songs)} {s}", flush=True)
