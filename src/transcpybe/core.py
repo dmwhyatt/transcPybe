@@ -18,7 +18,7 @@ from .fragments import absorb_short_fragments
 from .glide import handle_glides
 from .notes import (Note, estimate_tuning_offset, postprocess_notes,
                     segments_to_notes)
-from .onsets import OnsetTrack, attach_late_arrivals, refine_segments
+from .onsets import OnsetTrack, attach_late_arrivals, merge_sustained_boundaries, refine_segments
 from .progress import ProgressReporter, format_duration, format_realtime_factor, null_reporter
 from .segment import segment_notes
 
@@ -150,6 +150,7 @@ def _decode_pass(
     if onsets is not None:
         segments = attach_late_arrivals(segments, onsets, track.times, config,
                                         track.loudness_db)
+        segments = merge_sustained_boundaries(segments, onsets, track.times, config)
     notes = segments_to_notes(segments, track, config, tuning_offset)
     notes = postprocess_notes(notes, track, config, onsets, tuning_offset)
     return notes, onsets, n_segments

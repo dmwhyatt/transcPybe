@@ -30,7 +30,8 @@ class OnsetTrack:
     """Detected onsets and the envelope they came from."""
 
     def __init__(self, times: np.ndarray, strengths: np.ndarray, envelope: np.ndarray,
-                 envelope_times: np.ndarray, split_only_times: np.ndarray | None = None) -> None:
+                 envelope_times: np.ndarray, split_only_times: np.ndarray | None = None,
+                 sounding: np.ndarray | None = None) -> None:
         self.times = times
         self.strengths = strengths
         self.envelope = envelope
@@ -39,6 +40,10 @@ class OnsetTrack:
         # a note on one pitch and block the same-pitch merge, but nothing is
         # snapped to them and they take no part in setting the strength bar.
         self.split_only_times = np.zeros(0) if split_only_times is None else np.asarray(split_only_times)
+        # A model's probability that a note is sounding, on envelope_times; the
+        # detector has none. Where it never dips, two touching notes are one
+        # (``sustain_merge_above``).
+        self.sounding = None if sounding is None else np.asarray(sounding, float)
 
     def __len__(self) -> int:
         return int(self.times.shape[0])
@@ -497,6 +502,43 @@ def attach_late_arrivals(
     return out
 
 
+def merge_sustained_boundaries(
+    segments: List[Segment],
+    onsets: OnsetTrack | None,
+    frame_times: np.ndarray,
+    config: TranscriptionConfig,
+) -> List[Segment]:
+    """Rejoin touching notes where the onset track's ``sounding`` says the voice never let go.
+
+    A scoop or slide into a note changes the pitch, so the decoder starts a new
+    note where the pitch arrives -- or an onset cuts there -- and the note is
+    left in two: a short piece at the wrong pitch, then the rest. A model of
+    whether a note is sounding (a boundary network's sounding output) dips at a
+    real boundary between notes and stays high through a scoop. Where it stays
+    above ``sustain_merge_above`` over every frame within 30 ms of the second
+    note's start, the two are one note: it starts where the first did, keeps
+    the first's measuring point, and its pitch is measured over the whole.
+    """
+    if (config.sustain_merge_above <= 0 or onsets is None or onsets.sounding is None
+            or len(segments) < 2):
+        return segments
+    hop_s = config.hop_length / config.sample_rate
+    reach_s = 0.03
+    touching = int(round(reach_s / hop_s))           # frames: a gap this small is legato
+    out = [segments[0]]
+    for seg in segments[1:]:
+        before = out[-1]
+        if seg.start_frame - before.end_frame <= touching:
+            t = frame_times[min(seg.start_frame, len(frame_times) - 1)]
+            near = np.abs(onsets.envelope_times - t) <= reach_s + 1e-6
+            if near.any() and np.all(onsets.sounding[near] > config.sustain_merge_above):
+                out[-1] = Segment(before.start_frame, seg.end_frame, before.pitch,
+                                  measure_from=before.measure_from)
+                continue
+        out.append(seg)
+    return out
+
+
 def refine_segments(
     segments: List[Segment],
     audio: np.ndarray | None,
@@ -537,7 +579,7 @@ def refine_segments(
             all_strengths = np.concatenate([onsets.strengths, np.full(times.size, np.inf)])
             order = np.argsort(all_times, kind="stable")
             onsets = OnsetTrack(all_times[order], all_strengths[order], onsets.envelope,
-                                onsets.envelope_times, onsets.split_only_times)
+                                onsets.envelope_times, onsets.split_only_times, onsets.sounding)
     if (config.timbre_split_ratio > 0 and audio is not None
             and onsets.split_only_times.size == 0):
         # A strong change of timbre inside a note on one pitch is a new syllable:
@@ -545,7 +587,8 @@ def refine_segments(
         # attack, so nothing is snapped to it. Computed once; a second decoding
         # pass reuses the track.
         onsets = OnsetTrack(onsets.times, onsets.strengths, onsets.envelope,
-                            onsets.envelope_times, split_only_times=timbre_change_times(audio, config))
+                            onsets.envelope_times, split_only_times=timbre_change_times(audio, config),
+                            sounding=onsets.sounding)
     segments = split_segments_on_onsets(segments, onsets, frame_times, config,
                                         loudness_db, periodicity, voicing)
     segments = snap_segment_starts(segments, onsets, frame_times, config, voicing)
