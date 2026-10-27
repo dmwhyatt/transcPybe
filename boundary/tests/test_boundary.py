@@ -644,3 +644,138 @@ def test_onset_track_carries_the_offset_peaks_as_note_end_times():
     tr = onset_track(p, 0.5, end_times=pick_peaks(offset, 0.5) * HOP_S)
     assert tr.end_times.tolist() == [pytest.approx(0.6), pytest.approx(0.95)]
     assert onset_track(p, 0.5).end_times.size == 0
+
+
+# ---- round 2 (ROUND2-PLAN.md): per-note landmarks, the vowel-initial move, landmark targets and their decoding ----
+
+def test_m4singer_landmarks_mark_the_consonant_the_vowel_and_vowel_initial_notes():
+    from boundary.sources import _m4singer_landmarks
+
+    notes = [[1.0, 1.5, 60], [1.5, 2.0, 62], [2.0, 2.3, 62], [3.0, 3.5, 64]]
+    phones = [(1.0, 1.08, "zh"), (1.08, 1.5, "ong"), (1.5, 2.3, "a"), (3.0, 3.5, "<SP>")]
+    assert _m4singer_landmarks(notes, phones) == [
+        [1.0, 1.08, False],      # a consonant, then its vowel
+        [1.5, 1.5, True],        # opens on a vowel
+        [2.0, 2.0, False],       # a second note on the same vowel: no phone starts with it
+        [3.0, 3.0, False]]       # silence is not a vowel
+    # the half-way notes themselves are untouched by the new field
+    assert _vowel_onsets(notes, phones, 0.5)[0] == [1.04, 1.5, 60]
+
+
+def test_gtsinger_landmarks_follow_the_first_vowel_rules():
+    from boundary.sources import _gtsinger_landmarks, gtsinger_is_vowel
+
+    notes = [[1.0, 1.6, 60], [2.0, 2.4, 62], [3.0, 4.0, 62]]
+    phones = [(1.0, 1.05, "S"), (1.05, 1.1, "T"), (1.1, 1.6, "IY1"), (2.0, 2.4, "AH0"), (3.0, 3.4, "W"), (3.4, 4.0, "ER1")]
+    lm = _gtsinger_landmarks(notes, phones, lambda ph: gtsinger_is_vowel(ph, "English"))
+    assert lm == [[1.0, 1.1, False],    # a cluster before the vowel
+                  [2.0, 2.0, True],     # opens on a vowel
+                  [3.0, 3.0, False]]    # a 400 ms W is a held, pitched consonant: the note starts there
+    untrusted = _gtsinger_landmarks(notes[:1], phones, lambda ph: gtsinger_is_vowel(ph, "English"), [(0.9, 1.7)])
+    assert untrusted == [[1.0, 1.0, False]]
+
+
+def test_relabel_carries_landmarks_moved_by_the_padding():
+    from boundary.relabel import relabel
+
+    rows = [dict(id="a", pad_before=0.5, notes=[[0.0, 1.0, 60]])]
+    vocals = [dict(id="a", notes=[[1.04, 1.5, 60]], landmarks=[[1.0, 1.08, False]], onsets="between-0.5")]
+    out = relabel(rows, vocals)[0]
+    assert out["notes"] == [[1.54, 2.0, 60]] and out["landmarks"] == [[1.5, 1.58, False]]
+    assert "landmarks" not in relabel(rows, [dict(id="a", notes=[[1.0, 1.5, 60]])])[0]
+
+
+def test_voicing_onset_finds_the_first_voiced_frame_within_reach_and_no_further():
+    from boundary.train import voicing_onset
+
+    v = np.zeros(300)
+    v[107:] = 0.9
+    assert voicing_onset(v, 1.0, 2.0) == pytest.approx(1.07)
+    assert voicing_onset(np.full(300, 0.9), 1.0, 2.0) is None          # already voiced: nothing to move to
+    late = np.zeros(300)
+    late[120:] = 0.9
+    assert voicing_onset(late, 1.0, 2.0) is None                       # 200 ms on is past the 150 ms reach
+    assert voicing_onset(v, 1.0, 1.09) is None                         # it would leave the note under 30 ms
+
+
+def _landmark_rows(tmp_path):
+    notes = [[0.5, 1.0, 60], [1.2, 1.8, 62]]           # half-way notes as stored: the second opens on a vowel
+    landmarks = [[0.42, 0.58, False], [1.2, 1.2, True]]
+    aux = np.zeros((250, 5))
+    aux[127:, 3] = 0.9                                 # voicing comes 70 ms after the vowel-initial note's label
+    path = tmp_path / "a.npz"
+    np.savez(path, mel=np.zeros((250, 80)), aux=aux, y=targets(notes, 250).astype(np.float16))
+    return [dict(mix_id="a", notes=notes, landmarks=landmarks, features=str(path), split="train")]
+
+
+def test_vowel_voicing_labels_move_only_vowel_initial_notes(tmp_path):
+    from boundary.train import label_report, load_split
+
+    rows = _landmark_rows(tmp_path)
+    stored = load_split(rows, "train")[0]
+    moved = load_split(rows, "train", "vowel-voicing")[0]
+    assert stored["y"].shape == moved["y"].shape == (250, 4)
+    assert moved["y"][50, 0] == 1 and stored["y"][50, 0] == 1           # the consonant-led note keeps its start
+    assert stored["y"][120, 0] == 1 and moved["y"][120, 0] == 0 and moved["y"][127, 0] == 1
+    assert np.array_equal(moved["y"][:, 1:], stored["y"][:, 1:])        # offset, sounding and re-sung untouched
+    rep = label_report([moved], "vowel-voicing")
+    assert rep["n_moved"] == 1 and rep["move_median_ms"] == pytest.approx(70.0)
+
+
+def test_landmark_labels_add_a_vowel_target_beside_the_articulation_target(tmp_path):
+    from boundary.train import label_report, load_split
+
+    d = load_split(_landmark_rows(tmp_path), "train", "landmarks")[0]
+    assert d["y"].shape == (250, 5)
+    assert d["y"][42, 0] == 1 and d["y"][50, 0] < 1                    # column 0: the consonant's start
+    assert d["y"][58, 4] == 1 and d["y"][127, 4] == 1                  # column 4: the vowel, and the voicing onset
+    assert d["onset_notes"][0][0] == 0.42 and d["vowel_onsets"] == [0.58, 1.27]
+    rep = label_report([d], "landmarks")       # gaps: 160 ms of consonant, 70 ms from a vowel's label to its voicing
+    assert rep["n_gaps"] == 2 and rep["gap_median_ms"] == pytest.approx(115.0)
+
+
+def test_onset_labels_other_than_stored_need_the_manifests_landmarks(tmp_path):
+    from boundary.train import load_split
+
+    rows = _landmark_rows(tmp_path)
+    del rows[0]["landmarks"]
+    assert load_split(rows, "train")[0]["y"].shape == (250, 4)
+    with pytest.raises(SystemExit, match="needs the manifest's per-note landmarks"):
+        load_split(rows, "train", "landmarks")
+
+
+def test_landmark_onsets_pair_each_vowel_with_its_articulation():
+    from boundary.infer import landmark_onsets
+
+    post = np.zeros((600, 5))
+    post[[100, 290, 300, 450], 0] = [0.9, 0.7, 0.8, 0.9]   # articulation peaks
+    post[[110, 200, 310], 4] = [0.6, 0.9, 0.95]            # vowel peaks
+    times, strengths = landmark_onsets(post, 0.5)
+    # 100->110 at half way; 200 alone; 300->310 (290 loses to the nearer 300 and is dropped); 450 has no vowel
+    assert times.tolist() == pytest.approx([1.05, 2.0, 3.05, 4.5])
+    assert strengths.tolist() == pytest.approx([0.9, 0.9, 0.95, 0.9])
+    assert landmark_onsets(post, 0.0)[0].tolist() == pytest.approx([1.0, 2.0, 3.0, 4.5])
+    with pytest.raises(ValueError):
+        landmark_onsets(post[:, :4], 0.5)
+
+
+def test_a_landmark_track_hands_the_paired_onsets_to_the_decoder():
+    from boundary.infer import landmark_track
+
+    post = np.zeros((300, 5))
+    post[100, 0], post[110, 4] = 0.9, 0.8
+    tr = landmark_track(post, 0.5, sounding=post[:, 2])
+    assert tr.times.tolist() == pytest.approx([1.05]) and tr.strengths.tolist() == pytest.approx([0.9])
+    assert len(tr.envelope) == len(tr.envelope_times) == 300 and tr.envelope[110] == pytest.approx(0.8)
+
+
+def test_a_five_output_network_reports_its_vowel_output():
+    pytest.importorskip("torch")
+    from boundary.model import BoundaryNet, NetConfig
+    from boundary.train import evaluate
+
+    notes = [[0.5, 1.0, 60], [1.02, 1.5, 60]]
+    data = [dict(id="a", notes=notes, onset_notes=notes, vowel_onsets=[0.58, 1.1], mel=np.zeros((200, 80), np.float32),
+                 aux=np.zeros((200, 5), np.float32), y=np.zeros((200, 5), np.float32))]
+    res = evaluate(BoundaryNet(NetConfig(n_out=5)).eval(), data, "cpu")
+    assert "vowel_onset_f" in res and "resung_head_recall" in res

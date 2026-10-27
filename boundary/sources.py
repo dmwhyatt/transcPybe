@@ -8,6 +8,12 @@ Every source says which onset convention its notes follow, because annotators
 differ on it and the target the network learns is whatever convention it is
 given. M4Singer's MIDI and GTSinger's notes both start a syllable at its
 consonant, and their phoneme timings allow the vowel and half-way readings too.
+
+With ``--onsets vowel`` or ``between``, each row also carries ``landmarks``: for
+every note, ``[articulation, vowel, opens_on_vowel]`` in the source's own
+timing (round 2's plan, ``ROUND2-PLAN.md``). The notes themselves are exactly
+as before, so a manifest built now matches one built earlier, field for field,
+apart from the new one.
 """
 from __future__ import annotations
 
@@ -97,6 +103,31 @@ def _vowel_onsets(notes: List[list], phones: Sequence[tuple], fraction: float = 
     return out
 
 
+SILENT_PHONES = frozenset({"<SP>", "<AP>", "sil", "sp", ""})
+
+
+def _m4singer_landmarks(notes: List[list], phones: Sequence[tuple]) -> List[list]:
+    """Each note's ``[articulation, vowel, opens_on_vowel]``, from M4Singer's phone tier, for the round-2 labels.
+
+    ``notes`` are M4Singer's own (consonant-start) notes. The articulation onset
+    is the note's labelled start. Where the note starts on a pinyin initial whose
+    vowel begins at least 30 ms before the note ends, the vowel onset is that
+    initial's end, the same phone ``_vowel_onsets`` moves towards. Otherwise the
+    two coincide. ``opens_on_vowel`` marks a note whose first phone, at its start,
+    is a final rather than an initial or silence; a note inside a syllable (a
+    second note on one vowel) has no phone starting with it and is not marked.
+    """
+    out = []
+    for on, off, _ in notes:
+        first = next(((p0, p1, ph) for p0, p1, ph in phones if abs(p0 - on) < 0.006), None)
+        if first is not None and first[2] in PINYIN_INITIALS and first[1] < off - 0.03:
+            out.append([on, round(first[1], 4), False])
+        else:
+            out.append([on, on, first is not None and first[2] not in PINYIN_INITIALS
+                        and first[2] not in SILENT_PHONES])
+    return out
+
+
 MAX_CONSONANT_S = 0.25   # longer than this before the vowel: a held, pitched consonant, where the note starts
 
 
@@ -127,6 +158,30 @@ def _first_vowel_onsets(notes: List[list], phones: Sequence[tuple], is_vowel: Ca
                 if moved < off - 0.03:
                     on = moved
         out.append([on, off, pitch])
+    return out
+
+
+def _gtsinger_landmarks(notes: List[list], phones: Sequence[tuple], is_vowel: Callable[[str], bool],
+                        untrusted: Sequence[tuple] = (), max_consonant: float = MAX_CONSONANT_S) -> List[list]:
+    """Each note's ``[articulation, vowel, opens_on_vowel]`` for GTSinger, by ``_first_vowel_onsets``'s rules.
+
+    ``notes`` are GTSinger's own (consonant-start) notes. Where that function
+    would move a note (a trusted start on a phone, a vowel after it within
+    ``max_consonant`` and at least 30 ms before the note ends), the vowel onset
+    is that vowel's start; otherwise it is the note's start. ``opens_on_vowel``
+    marks a trusted note whose first phone, at its start, is a vowel.
+    """
+    out = []
+    for on, off, _ in notes:
+        trusted = not any(a - 0.006 <= on < b for a, b in untrusted)
+        first = next((ph for p0, _, ph in phones if abs(p0 - on) < 0.006), None) if trusted else None
+        vowel = None
+        if first is not None:
+            vowel = next((p0 for p0, _, ph in phones if on - 0.006 <= p0 < off and is_vowel(ph)), None)
+        if vowel is not None and on + 0.006 < vowel <= on + max_consonant and vowel < off - 0.03:
+            out.append([on, round(vowel, 4), False])
+        else:
+            out.append([on, on, first is not None and is_vowel(first)])
     return out
 
 
@@ -171,16 +226,18 @@ def gtsinger(root: Path, onsets: str = "consonant", valid_singers: Sequence[str]
                        for n, s, e in zip(w["note"], w["note_start"], w["note_end"]) if n and e > s)
         if not notes:
             continue
+        extra = {}
         if onsets in ("vowel", "between"):
             phones = [(s, e, ph) for w in words for ph, s, e in zip(w["ph"], w["ph_start"], w["ph_end"])]
             untrusted = [(w["start_time"], w["end_time"]) for w in words if _evenly_divided(w)]
-            notes = _first_vowel_onsets(notes, phones, lambda ph: gtsinger_is_vowel(ph, language),
-                                        1.0 if onsets == "vowel" else fraction, untrusted)
+            is_vowel = lambda ph: gtsinger_is_vowel(ph, language)
+            extra["landmarks"] = _gtsinger_landmarks(notes, phones, is_vowel, untrusted)
+            notes = _first_vowel_onsets(notes, phones, is_vowel, 1.0 if onsets == "vowel" else fraction, untrusted)
         split = "valid" if singer in valid_singers else "excluded" if key(path) in held_out else "train"
         yield dict(id=f"gtsinger/{language}/{singer}/{technique}/{title}/{group}/{path.stem}", source="gtsinger",
                    audio=str(wav), notes=notes, onsets=onsets if onsets != "between" else f"between-{fraction}",
                    singer=singer, title=title, language=language, technique=group.removesuffix("_Group"),
-                   split=split)
+                   split=split, **extra)
     if missing:
         # an annotation without its audio is a broken download, not a clip to skip quietly (22 Oct: every .wav missing)
         raise SystemExit(f"{missing} of {len(clips)} GTSinger clips under {root} have a .json but no .wav: "
@@ -206,14 +263,16 @@ def m4singer(root: Path, onsets: str = "consonant",
                            for inst in pm.instruments for n in inst.notes)
             if not notes:
                 continue
+            extra = {}
             if onsets in ("vowel", "between"):
                 tiers = list(textgrid_tiers(wav.with_suffix(".TextGrid")).values())
                 if len(tiers) < 2:
                     continue
+                extra["landmarks"] = _m4singer_landmarks(notes, tiers[1])
                 notes = _vowel_onsets(notes, tiers[1], 1.0 if onsets == "vowel" else fraction)
             yield dict(id=f"m4singer/{song.name}/{wav.stem}", source="m4singer", audio=str(wav),
                        notes=notes, onsets=onsets if onsets != "between" else f"between-{fraction}",
-                       singer=singer, title=title, split=split)
+                       singer=singer, title=title, split=split, **extra)
 
 
 def corpus(audio_dir: Path, n: int, start_seed: int = 0, syllabic: bool = True,

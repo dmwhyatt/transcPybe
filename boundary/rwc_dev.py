@@ -42,6 +42,13 @@ only when ``end_snap_window_s`` is set.
 variant (values read as JSON where they parse, else as text), and ``--suffix``
 is appended to every run name, as the pitch plan does (``...-p1``).
 
+Round 2's landmark networks (``train --onset-labels landmarks``, five outputs)
+are decoded with ``--landmark-fractions F ...``. Each fraction is a run named
+``...-lm<F>``, whose onsets pair the articulation and vowel outputs at that
+fraction (``infer.landmark_track``), every onset may cut, and the sounding and
+offset outputs are handed over as usual. The posteriors are computed once per
+song for every fraction. Without the option, nothing here changes.
+
 Then score with the work directory's own scorer, against B's replay:
 
     python dev/score.py dev sp-f-delta0.6 sp-f-delta0.6=dev/runs/sp/f-delta0.6/midi \
@@ -92,6 +99,9 @@ def main(argv=None) -> None:
     ap.add_argument("--config-overrides", nargs="+", default=[], metavar="KEY=VALUE",
                     help="further decoder options, applied on top of the variant")
     ap.add_argument("--suffix", default="", help="appended to every run name")
+    ap.add_argument("--landmark-fractions", type=float, nargs="+", default=None, metavar="F",
+                    help="a landmark network (five outputs): decode its paired onsets at each fraction F from "
+                         "articulation to vowel (infer.landmark_track), as runs named ...-lm<F>; split policy all only")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args(argv)
     extra = parse_overrides(args.config_overrides)
@@ -104,7 +114,7 @@ def main(argv=None) -> None:
 
     from . import HOP_S
     from .features import frame_features
-    from .infer import onset_track, pick_peaks, posteriors
+    from .infer import landmark_track, onset_track, pick_peaks, posteriors
     from .model import load
     from .train import resung
 
@@ -119,6 +129,11 @@ def main(argv=None) -> None:
             raise SystemExit(f"{args.checkpoint} has no re-sung output (n_out={model.cfg.n_out})")
         if None in args.split_thresholds:
             raise SystemExit("the resung policy needs --split-thresholds: the fourth output's peak thresholds")
+    if args.landmark_fractions is not None:
+        if model.cfg.n_out < 5:
+            raise SystemExit(f"{args.checkpoint} has no vowel output (n_out={model.cfg.n_out}): not a landmark network")
+        if args.split_policies != ["all"]:
+            raise SystemExit("--landmark-fractions decodes with split policy all only")
     runs = {}
     for v, ov in variants.items():
         for t in args.thresholds:
@@ -132,14 +147,16 @@ def main(argv=None) -> None:
                         name = f"{args.name}-{v}-t{t}{tag}"
                     else:
                         name = f"{args.name}-{v}-t{t}" + ("" if pol == "all" else f"{tag}{st if st is not None else t}")
-                    name += args.suffix
-                    if name in runs:                # own: one run whatever the threshold
-                        continue
-                    runs[name] = (dataclasses.replace(TranscriptionConfig(device="cpu"), **ov), t, pol, st)
-                    (W / "dev/runs/sp" / name / "midi").mkdir(parents=True, exist_ok=True)
-                    with open(W / "dev/runs/sp" / name / "overrides.json", "w") as f:
-                        json.dump(dict(ov, checkpoint=str(args.checkpoint.resolve()), threshold=t,
-                                       split_policy=pol, split_threshold=st), f, indent=1)
+                    for lm in (args.landmark_fractions or [None]):
+                        full = name + ("" if lm is None else f"-lm{lm}") + args.suffix
+                        if full in runs:                # own: one run whatever the threshold
+                            continue
+                        runs[full] = (dataclasses.replace(TranscriptionConfig(device="cpu"), **ov), t, pol, st, lm)
+                        (W / "dev/runs/sp" / full / "midi").mkdir(parents=True, exist_ok=True)
+                        with open(W / "dev/runs/sp" / full / "overrides.json", "w") as f:
+                            json.dump(dict(ov, checkpoint=str(args.checkpoint.resolve()), threshold=t,
+                                           split_policy=pol, split_threshold=st,
+                                           **({} if lm is None else dict(landmark_fraction=lm))), f, indent=1)
     for i, s in enumerate(songs):
         audio, _ = load_audio(W / "stems_flat" / f"{s}.wav", FEATURE_SR)
         track = pickle.load(open(W / "dev/f0cache/sp" / f"{s}.pkl", "rb"))
@@ -149,8 +166,10 @@ def main(argv=None) -> None:
         ends = pick_peaks(post[:, 1], OFFSET_THRESHOLD) * HOP_S
         ref = W / "refs/notes" / f"{s}.txt"
         ref_resung = resung(np.loadtxt(ref, ndmin=2).tolist()) if ref.exists() else []
-        for name, (cfg, t, pol, st) in runs.items():
-            if pol == "own":
+        for name, (cfg, t, pol, st, lm) in runs.items():
+            if lm is not None:
+                tr = landmark_track(post, lm, t, sounding=sounding, end_times=ends)
+            elif pol == "own":
                 own = detect_onsets(audio, cfg)
                 tr = OnsetTrack(own.times, own.strengths, own.envelope, own.envelope_times,
                                 sounding=np.interp(own.envelope_times, np.arange(len(sounding)) * HOP_S, sounding),

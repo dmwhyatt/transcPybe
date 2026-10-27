@@ -47,6 +47,33 @@ files and shards hold three targets and need no rebuilding. It is trained at
 half weight beside the offset and sounding outputs, and logged at every
 evaluation (``resung_head_*``) without taking part in choosing the checkpoint.
 
+``--onset-labels`` chooses what the onset output learns (round 2, ``ROUND2-PLAN.md``):
+
+- ``stored`` (the default): the targets in the shard, made from the manifest's
+  notes, as in every run before round 2;
+- ``vowel-voicing``: the same, except that each note opening on a vowel starts
+  at its voicing onset. That is the first frame within 150 ms after the label
+  whose stored voicing (the f0 track the network is given) is at least 0.3,
+  after at least 3 frames below it. A note with no such frame, or one the move
+  would leave under 30 ms, keeps its start. M4Singer starts these notes a
+  median 70 ms before voicing; human-labelled sets start them within about
+  10 ms of it;
+- ``landmarks``: two onset outputs instead of one. The first (column 0) learns
+  where each note's syllable starts sounding, its consonant or labelled start.
+  A fifth output learns where its vowel starts, or for a note opening on a
+  vowel, its voicing onset by the rule above. The decoder places a note's start
+  between the two (``infer.landmark_track``), so the convention is chosen when
+  decoding, not by retraining.
+
+Both need the manifest's per-note ``landmarks`` (``sources --onsets between``,
+carried by ``relabel``). The offset, sounding and re-sung targets stay the
+stored ones. The checkpoint rule uses the onset output against the onsets it
+learned, so for ``landmarks`` that is the articulation onsets. The vowel
+output's F is logged beside it. ``--report-labels`` prints how many notes the
+vowel rule moves, how far, and the gap between the landmarks, then stops. A
+training run refuses to start if the median move is outside 20-120 ms, which
+would mean the rule is not doing what it is meant to.
+
 ``--channels``, ``--hidden`` and ``--dropout`` set the network's size and
 regularisation; the checkpoint records them, so inference needs no flags.
 ``--augment`` varies every training crop afresh (``augment``): the mixes are
@@ -84,7 +111,13 @@ TIMING_WINDOW = 0.15      # a reference onset counts for timing if an estimate i
 TIMING_MARGIN = 0.025     # early or late: more than 25 ms out
 EVAL_BATCH = 32
 RESUME_KEYS = ("features", "seed", "steps", "batch", "crop_s", "lr", "weight_decay", "warmup", "pos_weight", "no_aux",
-               "channels", "hidden", "dropout", "augment")
+               "channels", "hidden", "dropout", "augment", "onset_labels")
+ONSET_LABELS = ("stored", "vowel-voicing", "landmarks")
+VOICING_COLUMN = 3        # aux: pitch, pitched, periodicity, voicing, level (features.frame_features)
+VOICED_AT = 0.3           # the decoder's own voicing threshold
+VOWEL_REACH_S = 0.15      # how far after its label a vowel-initial note's voicing onset is looked for
+MIN_NOTE_S = 0.03
+VOWEL_MOVE_MS = (20.0, 120.0)   # the median move the rule must make, or training stops (ROUND2-PLAN.md)
 MEL_DB_PER_UNIT = 19.0    # one unit of the standardised log-mel: the median per-stem std in dB (dry4k, 30 stems)
 LEVEL_DB_PER_UNIT = 40.0  # the level feature's scale (features.frame_features)
 EQ_MAX_DB = 6.0
@@ -118,8 +151,51 @@ def augment(mel, aux, rng):
     return mel, aux
 
 
-def load_split(rows, split):
-    """One split's recordings, from per-recording feature files or from shards (boundary.pack)."""
+def voicing_onset(voicing: np.ndarray, start: float, end: float, reach: float = VOWEL_REACH_S,
+                  threshold: float = VOICED_AT):
+    """The first frame after ``start``, within ``reach``, whose voicing is at least ``threshold`` after at least
+    3 frames below it, in seconds; None if there is none, or if starting there would leave the note under 30 ms."""
+    s0 = int(round(start / HOP_S))
+    last = min(len(voicing) - 1, int(round((start + reach) / HOP_S)))
+    for i in range(max(s0 + 1, 3), last + 1):
+        if voicing[i] >= threshold and (voicing[i - 3:i] < threshold).all():
+            t = round(i * HOP_S, 4)
+            return t if t < end - MIN_NOTE_S else None
+    return None
+
+
+def onset_labels(r, voicing: np.ndarray, mode: str):
+    """What the onset outputs learn for one manifest row: (notes for column 0, notes for the vowel output or None,
+    the vowel rule's moves in seconds). See the module docstring for the modes."""
+    notes = r["notes"]
+    if mode == "stored":
+        return notes, None, []
+    lm = r.get("landmarks")
+    if lm is None or len(lm) != len(notes):
+        raise SystemExit(f"{r.get('mix_id', r.get('id'))}: --onset-labels {mode} needs the manifest's per-note "
+                         "landmarks (sources --onsets between, carried by relabel)")
+    moves, vowel_starts = [], []
+    for (on, off, _), (a, v, opens_on_vowel) in zip(notes, lm):
+        if opens_on_vowel:
+            t = voicing_onset(voicing, a, off)
+            if t is not None:
+                moves.append(t - a)
+            vowel_starts.append(t if t is not None else a)
+        else:
+            vowel_starts.append(v)
+    if mode == "vowel-voicing":   # half-way notes, with vowel-initial ones moved to their voicing onset
+        col0 = [[w if o else on, off, p] for (on, off, p), w, (_, _, o) in zip(notes, vowel_starts, lm)]
+        return col0, None, moves
+    articulation = [[a, off, p] for (_, off, p), (a, _, _) in zip(notes, lm)]
+    vowel = [[w, off, p] for (_, off, p), w in zip(notes, vowel_starts)]
+    return articulation, vowel, moves
+
+
+def load_split(rows, split, mode: str = "stored"):
+    """One split's recordings, from per-recording feature files or from shards (boundary.pack).
+
+    ``mode`` is ``--onset-labels``: with ``stored`` the onset target is the shard's; otherwise column 0 is rebuilt
+    from ``onset_labels``, and ``landmarks`` adds the vowel target as a fifth column."""
     from .pack import read
 
     out, shards = [], {}
@@ -134,10 +210,36 @@ def load_split(rows, split):
         if not np.allclose(targets(r["notes"], len(y))[:, 0], y[:, 0], atol=0.01):
             raise SystemExit(f"{r['mix_id']}: the stored onset targets don't match its notes, so the re-sung target "
                              "worked out from them would be misplaced")
+        aux = z["aux"].astype(np.float32)
+        col0, vowel, moves = onset_labels(r, aux[:, VOICING_COLUMN], mode)
+        if mode != "stored":
+            y[:, 0] = targets(col0, len(y))[:, 0]
         y = np.concatenate([y, resung_target(r["notes"], len(y))[:, None]], axis=1)
-        out.append(dict(id=r["mix_id"], notes=r["notes"], mel=z["mel"].astype(np.float32),
-                        aux=z["aux"].astype(np.float32), y=y))
+        if vowel is not None:
+            y = np.concatenate([y, targets(vowel, len(y))[:, :1]], axis=1)
+        d = dict(id=r["mix_id"], notes=r["notes"], onset_notes=col0, mel=z["mel"].astype(np.float32), aux=aux, y=y,
+                 moves=moves)
+        if vowel is not None:
+            d["vowel_onsets"] = [n[0] for n in vowel]
+            d["landmark_gaps"] = [w[0] - a[0] for a, w in zip(col0, vowel) if w[0] > a[0]]
+        out.append(d)
     return out
+
+
+def label_report(data, mode: str) -> dict:
+    """How the onset labels differ from the stored ones: notes opening on a vowel, how many the rule moves and how
+    far, and (landmarks) the gap from articulation to vowel."""
+    if mode == "stored":
+        return {}
+    ms = lambda xs, q: round(float(np.percentile(np.asarray(xs) * 1000, q)), 1) if len(xs) else float("nan")
+    moves = [m for d in data for m in d["moves"]]
+    n_notes = sum(len(d["notes"]) for d in data)
+    rep = dict(n_notes=n_notes, n_moved=len(moves), moved_share=round(len(moves) / n_notes, 4) if n_notes else 0.0,
+               move_median_ms=ms(moves, 50), move_p25_ms=ms(moves, 25), move_p75_ms=ms(moves, 75))
+    if mode == "landmarks":
+        gaps = [g for d in data for g in d["landmark_gaps"]]
+        rep.update(n_gaps=len(gaps), gap_median_ms=ms(gaps, 50), gap_p25_ms=ms(gaps, 25), gap_p75_ms=ms(gaps, 75))
+    return rep
 
 
 def resung_target(notes, n_frames: int) -> np.ndarray:
@@ -210,7 +312,8 @@ def evaluate(model, data, device, threshold=0.5):
 
     model.eval()
     fs, ps, rs, hit, tot, n_est, n_ref, offsets = [], [], [], 0, 0, 0, 0, []
-    head_hit, head_est, head_est_hit = 0, 0, 0       # the fourth output, where the network has one
+    head_hit, head_est, head_est_hit, head_tot = 0, 0, 0, 0   # the fourth output, where the network has one
+    vowel_fs = []                                    # the fifth (landmarks), against the vowel onsets it learned
     order = sorted(range(len(data)), key=lambda k: len(data[k]["y"]))
     with torch.no_grad():
         for b in range(0, len(order), EVAL_BATCH):
@@ -224,29 +327,37 @@ def evaluate(model, data, device, threshold=0.5):
             p = torch.sigmoid(model(torch.from_numpy(mel).to(device), torch.from_numpy(aux).to(device),
                                     torch.tensor(lens))).float().cpu().numpy()
             for i, d in enumerate(chunk):
+                onset_notes = d.get("onset_notes", d["notes"])   # what the onset output learned (--onset-labels)
                 est = pick_peaks(p[i, :lens[i], 0], threshold) * HOP_S
-                ref = np.array([n[0] for n in d["notes"]])
+                ref = np.array([n[0] for n in onset_notes])
                 f, pr, rc = mir_eval.onset.f_measure(ref, est, window=TOL) if len(ref) else (1.0, 1.0, 1.0)
                 fs.append(f)
                 ps.append(pr)
                 rs.append(rc)
                 n_est, n_ref = n_est + len(est), n_ref + len(ref)
                 offsets += onset_timing(ref, est)
-                re_sung = np.array(resung(d["notes"]))
-                for onset in re_sung:
+                for onset in resung(onset_notes):
                     tot += 1
                     hit += int(np.any(np.abs(est - onset) <= TOL))
                 if p.shape[-1] > 3:
+                    re_sung = np.array(resung(d["notes"]))   # the fourth output's target is the stored notes'
+                    head_tot += len(re_sung)
                     est_r = pick_peaks(p[i, :lens[i], 3], threshold) * HOP_S
                     head_est += len(est_r)
                     head_hit += sum(int(np.any(np.abs(est_r - o) <= TOL)) for o in re_sung)
                     head_est_hit += sum(int(np.any(np.abs(re_sung - e) <= TOL)) for e in est_r) if len(re_sung) else 0
+                if p.shape[-1] > 4 and "vowel_onsets" in d:
+                    est_v = pick_peaks(p[i, :lens[i], 4], threshold) * HOP_S
+                    ref_v = np.array(d["vowel_onsets"])
+                    vowel_fs.append(mir_eval.onset.f_measure(ref_v, est_v, window=TOL)[0] if len(ref_v) else 1.0)
     model.train()
     head = {}
     if p.shape[-1] > 3:
-        head = dict(resung_head_recall=head_hit / tot if tot else float("nan"),
+        head = dict(resung_head_recall=head_hit / head_tot if head_tot else float("nan"),
                     resung_head_precision=head_est_hit / head_est if head_est else float("nan"),
-                    resung_head_per_note=round(head_est / tot, 3) if tot else float("nan"))
+                    resung_head_per_note=round(head_est / head_tot, 3) if head_tot else float("nan"))
+    if vowel_fs:
+        head["vowel_onset_f"] = float(np.mean(vowel_fs))
     return dict(onset_f=float(np.mean(fs)), resung_recall=hit / tot if tot else float("nan"), n_resung=tot,
                 onset_p=float(np.mean(ps)), onset_r=float(np.mean(rs)),
                 onsets_per_note=round(n_est / n_ref, 3) if n_ref else float("nan"), **timing_summary(offsets), **head)
@@ -275,6 +386,10 @@ def main(argv=None) -> None:
     ap.add_argument("--hidden", type=int, default=128, help="projection and GRU width")
     ap.add_argument("--dropout", type=float, default=0.2)
     ap.add_argument("--augment", action="store_true", help="vary every training crop afresh (see augment)")
+    ap.add_argument("--onset-labels", choices=ONSET_LABELS, default="stored",
+                    help="what the onset output learns (see the module docstring); round 2's two arms")
+    ap.add_argument("--report-labels", action="store_true",
+                    help="print how --onset-labels changes the training labels, then stop")
     ap.add_argument("--device", default="auto")
     ap.add_argument("--extra-valid", action="append", default=[], metavar="NAME=FEATURES.jsonl",
                     help="another set to evaluate (its valid split) and log, never used to choose a checkpoint")
@@ -288,10 +403,10 @@ def main(argv=None) -> None:
     features = [str(f.resolve()) for f in args.features]
     run_args = dict(vars(args), features=features, out=str(args.out.resolve()) if args.out else None)
     rows = [r for f in features for r in manifest.read(f)]
-    if args.eval_only is None and args.out is None:
-        raise SystemExit("--out is required unless --eval-only is given")
-    train = [] if args.eval_only else load_split(rows, "train")
-    valid = load_split(rows, "valid")
+    if args.eval_only is None and args.out is None and not args.report_labels:
+        raise SystemExit("--out is required unless --eval-only or --report-labels is given")
+    train = [] if args.eval_only else load_split(rows, "train", args.onset_labels)
+    valid = load_split(rows, "valid", args.onset_labels)
     if (not train and not args.eval_only) or not valid:
         raise SystemExit(f"need both splits: {len(train)} train, {len(valid)} valid")
     extra = {}
@@ -299,9 +414,17 @@ def main(argv=None) -> None:
         name, _, path = spec.partition("=")
         if not name or not path:
             raise SystemExit(f"--extra-valid wants NAME=FEATURES.jsonl, not {spec!r}")
-        extra[name] = load_split(manifest.read(Path(path).resolve()), "valid")
+        extra[name] = load_split(manifest.read(Path(path).resolve()), "valid", args.onset_labels)
         if not extra[name]:
             raise SystemExit(f"--extra-valid {name}: no valid split in {path}")
+
+    labels = label_report(train or valid, args.onset_labels)
+    if args.report_labels:
+        print(json.dumps(dict(onset_labels=args.onset_labels, split="train" if train else "valid", **labels), indent=1))
+        return
+    if labels and not args.eval_only and not (VOWEL_MOVE_MS[0] <= labels["move_median_ms"] <= VOWEL_MOVE_MS[1]):
+        raise SystemExit(f"the vowel rule's median move is {labels['move_median_ms']} ms, outside {VOWEL_MOVE_MS}: "
+                         "it is not doing what ROUND2-PLAN.md means it to, so this run stops here")
 
     if args.eval_only:
         from .model import load
@@ -313,9 +436,10 @@ def main(argv=None) -> None:
 
     torch.manual_seed(args.seed)
     rng = np.random.default_rng(args.seed)
+    n_out = train[0]["y"].shape[1]            # 4, or 5 with --onset-labels landmarks
     model = BoundaryNet(NetConfig(n_mels=train[0]["mel"].shape[1], n_aux=train[0]["aux"].shape[1],
                                   channels=args.channels, hidden=args.hidden, dropout=args.dropout,
-                                  use_aux=not args.no_aux)).to(device)
+                                  use_aux=not args.no_aux, n_out=n_out)).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / args.warmup)
                                               * 0.5 * (1 + math.cos(math.pi * min(1.0, s / args.steps))))
@@ -340,7 +464,7 @@ def main(argv=None) -> None:
         start, best = ck["step"] + 1, ck["best"]
         print(f"resuming {args.out} at step {start} (best score so far {best:.4f})", flush=True)
     info = dict(run_args, device=device, n_train=len(train), n_valid=len(valid),
-                n_params=sum(p.numel() for p in model.parameters()))
+                n_params=sum(p.numel() for p in model.parameters()), labels=labels)
     with open(args.out / "args.json", "w") as f:
         json.dump(info, f, indent=1, default=str)
     out = args.out.resolve()
@@ -351,8 +475,9 @@ def main(argv=None) -> None:
 
     crops = Crops(train, int(round(args.crop_s / HOP_S)), augment=args.augment)
     end = min(args.steps, args.stop_after or args.steps)
-    pw = torch.tensor([args.pos_weight, args.pos_weight, 1.0, args.pos_weight], device=device)
-    head_w = torch.tensor([1.0, 0.5, 0.5, 0.5], device=device)    # onset, offset, sounding, re-sung onset
+    # onset, offset, sounding, re-sung onset, and with landmarks the vowel onset, weighted as the onset
+    pw = torch.tensor([args.pos_weight, args.pos_weight, 1.0, args.pos_weight, args.pos_weight][:n_out], device=device)
+    head_w = torch.tensor([1.0, 0.5, 0.5, 0.5, 1.0][:n_out], device=device)
     with tracker, open(args.out / "log.jsonl", "a" if start > 1 else "w") as log:
         t0, run_loss, since = time.time(), 0.0, 0
         for step in range(start, end + 1):
@@ -387,7 +512,8 @@ def main(argv=None) -> None:
                       f"timing {m['timing_median_ms']:+.0f} ms  per note {m['onsets_per_note']:.2f}  "
                       f"loss {rec['loss']:.3f}  eta {rec['eta_s'] // 60} min"
                       + (f"  re-sung output R {m['resung_head_recall']:.2f} P {m['resung_head_precision']:.2f}"
-                         if "resung_head_recall" in m else ""), flush=True)
+                         if "resung_head_recall" in m else "")
+                      + (f"  vowel onset F {m['vowel_onset_f']:.3f}" if "vowel_onset_f" in m else ""), flush=True)
                 if score > best:
                     best = score
                     save(args.out / "best.pt", model, step=step, metrics=m)

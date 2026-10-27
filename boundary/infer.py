@@ -135,6 +135,56 @@ def onset_track(prob_onset: np.ndarray, threshold: float = 0.5, track=None,
                       sounding=sounding, end_times=end_times)
 
 
+PAIR_WINDOW_S = 0.25      # a vowel takes an articulation onset at most this far before it (sources.MAX_CONSONANT_S)
+
+
+def landmark_onsets(post: np.ndarray, fraction: float, threshold: float = 0.5, window: float = PAIR_WINDOW_S):
+    """Note starts from a landmark network's two onset outputs (``train --onset-labels landmarks``): column 0, where
+    a syllable starts sounding, and column 4, where its vowel starts. Returns (times in seconds, strengths).
+
+    Each vowel peak takes the nearest articulation peak before it within ``window``, unless another vowel peak lies
+    between them, and gives an onset ``fraction`` of the way from the articulation to the vowel, with the larger
+    of the two peaks as its strength. A vowel peak with no articulation peak gives an onset at the vowel; an
+    articulation peak with no vowel peak within ``window`` after it gives one at the articulation. Onsets closer than
+    50 ms keep the stronger, as ``pick_peaks`` does.
+    """
+    if post.shape[1] < 5:
+        raise ValueError("landmark_onsets needs a network with the vowel output (five outputs)")
+    a_fr, v_fr = pick_peaks(post[:, 0], threshold), pick_peaks(post[:, 4], threshold)
+    a_t, v_t = a_fr * HOP_S, v_fr * HOP_S
+    used, out = set(), []
+    for k, (vf, vt) in enumerate(zip(v_fr, v_t)):
+        prev_v = v_t[k - 1] if k else -np.inf
+        cands = [i for i, at in enumerate(a_t) if i not in used and vt - window <= at < vt and at > prev_v]
+        if cands:
+            i = max(cands, key=lambda j: a_t[j])
+            used.add(i)
+            out.append((a_t[i] + fraction * (vt - a_t[i]), max(post[a_fr[i], 0], post[vf, 4])))
+        else:
+            out.append((vt, post[vf, 4]))
+    for i, (af, at) in enumerate(zip(a_fr, a_t)):
+        if i not in used and not np.any((v_t > at) & (v_t <= at + window)):
+            out.append((at, post[af, 0]))
+    out.sort()
+    keep = []                                       # 50 ms apart at least, the stronger kept
+    for t, s in sorted(out, key=lambda x: -x[1]):
+        if all(abs(t - k) >= MIN_GAP_FRAMES * HOP_S - 1e-9 for k, _ in keep):
+            keep.append((t, s))
+    keep.sort()
+    return (np.array([round(t, 4) for t, _ in keep]), np.array([float(s) for _, s in keep]))
+
+
+def landmark_track(post: np.ndarray, fraction: float, threshold: float = 0.5, sounding=None, end_times=None):
+    """An OnsetTrack from a landmark network (``landmark_onsets``), for the decoder as ``onset_track`` with
+    ``split_policy="all"``: every onset may cut. Its envelope is the larger of the two onset outputs."""
+    from transcpybe.onsets import OnsetTrack
+
+    times, strengths = landmark_onsets(post, fraction, threshold)
+    envelope = np.maximum(post[:, 0], post[:, 4]).astype(float)
+    return OnsetTrack(times, strengths, envelope, np.arange(len(envelope)) * HOP_S, split_only_times=None,
+                      sounding=sounding, end_times=end_times)
+
+
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("checkpoint", type=Path)

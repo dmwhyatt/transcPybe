@@ -12,6 +12,12 @@ part.
 The mix ids stay as they are, so run ``features`` into a new directory. A
 feature file records the notes it was made with, so a mismatched one is never
 reused, but in the same directory it would be overwritten.
+
+A vocals row's ``landmarks`` (``sources --onsets between``) are carried over,
+moved by the same padding as the notes. Round 2 relabels its shard manifests
+this way and keeps the half-way notes. ``train --onset-labels`` then builds
+its onset targets from the landmarks as each recording loads, so the shards'
+features are reused as they are.
 """
 from __future__ import annotations
 
@@ -29,8 +35,11 @@ def relabel(rows, vocals):
     out = []
     for r in rows:
         v, pad = by_id[r["id"]], r.get("pad_before", 0.0)
-        out.append(dict(r, onsets=v.get("onsets"), relabelled_from=r.get("onsets"),
-                        notes=[[round(a + pad, 4), round(b + pad, 4), p] for a, b, p in v["notes"]]))
+        row = dict(r, onsets=v.get("onsets"), relabelled_from=r.get("onsets"),
+                   notes=[[round(a + pad, 4), round(b + pad, 4), p] for a, b, p in v["notes"]])
+        if "landmarks" in v:                 # sources' per-note [articulation, vowel, opens_on_vowel], moved the same way
+            row["landmarks"] = [[round(a + pad, 4), round(w + pad, 4), bool(o)] for a, w, o in v["landmarks"]]
+        out.append(row)
     return out
 
 
