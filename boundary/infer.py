@@ -147,31 +147,37 @@ def landmark_onsets(post: np.ndarray, fraction: float, threshold: float = 0.5, w
     of the two peaks as its strength. A vowel peak with no articulation peak gives an onset at the vowel; an
     articulation peak with no vowel peak within ``window`` after it gives one at the articulation. Onsets closer than
     50 ms keep the stronger, as ``pick_peaks`` does.
+
+    Every onset is rounded to the nearest frame and given as that frame's time, exactly as ``onset_track`` gives a
+    peak's: the decoder works on the f0 grid, and an onset between frames stops the same-pitch merge seeing the split
+    it made. Round 2's first landmark decodes (27-28 October) interpolated between frames, and merged re-sung notes
+    about twice as often as the single-onset network (ROUND2-AMENDMENT-1.md).
     """
     if post.shape[1] < 5:
         raise ValueError("landmark_onsets needs a network with the vowel output (five outputs)")
+    grid = np.arange(len(post)) * HOP_S
     a_fr, v_fr = pick_peaks(post[:, 0], threshold), pick_peaks(post[:, 4], threshold)
-    a_t, v_t = a_fr * HOP_S, v_fr * HOP_S
-    used, out = set(), []
-    for k, (vf, vt) in enumerate(zip(v_fr, v_t)):
-        prev_v = v_t[k - 1] if k else -np.inf
-        cands = [i for i, at in enumerate(a_t) if i not in used and vt - window <= at < vt and at > prev_v]
+    win = window / HOP_S
+    used, out = set(), []                           # (frame, strength)
+    for k, vf in enumerate(v_fr):
+        prev_v = v_fr[k - 1] if k else -1
+        cands = [i for i, af in enumerate(a_fr) if i not in used and vf - win - 1e-9 <= af < vf and af > prev_v]
         if cands:
-            i = max(cands, key=lambda j: a_t[j])
+            i = max(cands, key=lambda j: a_fr[j])
             used.add(i)
-            out.append((a_t[i] + fraction * (vt - a_t[i]), max(post[a_fr[i], 0], post[vf, 4])))
+            frame = int(np.floor(a_fr[i] + fraction * (vf - a_fr[i]) + 0.5))
+            out.append((frame, max(post[a_fr[i], 0], post[vf, 4])))
         else:
-            out.append((vt, post[vf, 4]))
-    for i, (af, at) in enumerate(zip(a_fr, a_t)):
-        if i not in used and not np.any((v_t > at) & (v_t <= at + window)):
-            out.append((at, post[af, 0]))
-    out.sort()
+            out.append((int(vf), post[vf, 4]))
+    for i, af in enumerate(a_fr):
+        if i not in used and not np.any((v_fr > af) & (v_fr <= af + win + 1e-9)):
+            out.append((int(af), post[af, 0]))
     keep = []                                       # 50 ms apart at least, the stronger kept
-    for t, s in sorted(out, key=lambda x: -x[1]):
-        if all(abs(t - k) >= MIN_GAP_FRAMES * HOP_S - 1e-9 for k, _ in keep):
-            keep.append((t, s))
+    for f, s in sorted(out, key=lambda x: (-x[1], x[0])):
+        if all(abs(f - k) >= MIN_GAP_FRAMES for k, _ in keep):
+            keep.append((f, s))
     keep.sort()
-    return (np.array([round(t, 4) for t, _ in keep]), np.array([float(s) for _, s in keep]))
+    return grid[[f for f, _ in keep]], np.array([float(s) for _, s in keep])
 
 
 def landmark_track(post: np.ndarray, fraction: float, threshold: float = 0.5, sounding=None, end_times=None):

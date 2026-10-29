@@ -759,6 +759,19 @@ def test_landmark_onsets_pair_each_vowel_with_its_articulation():
         landmark_onsets(post[:, :4], 0.5)
 
 
+def test_landmark_onsets_land_on_the_frame_grid_as_onset_track_s_do():
+    from boundary.infer import landmark_onsets
+
+    post = np.zeros((300, 5))
+    post[100, 0], post[110, 4] = 0.9, 0.8
+    for fraction, frame in ((0.35, 104), (0.5, 105), (0.65, 107), (0.25, 103), (0.75, 108)):
+        times, _ = landmark_onsets(post, fraction)
+        assert times[0] == (np.arange(300) * HOP_S)[frame]      # the very value onset_track gives that frame
+    odd = np.zeros((300, 5))
+    odd[100, 0], odd[111, 4] = 0.9, 0.8                          # half way is 105.5 frames: rounded, never between
+    assert landmark_onsets(odd, 0.5)[0][0] == (np.arange(300) * HOP_S)[106]
+
+
 def test_a_landmark_track_hands_the_paired_onsets_to_the_decoder():
     from boundary.infer import landmark_track
 
