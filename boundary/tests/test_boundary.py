@@ -772,6 +772,36 @@ def test_landmark_onsets_land_on_the_frame_grid_as_onset_track_s_do():
     assert landmark_onsets(odd, 0.5)[0][0] == (np.arange(300) * HOP_S)[106]
 
 
+def test_lone_peaks_can_be_dropped_near_a_pair_and_kept_from_cutting_elsewhere():
+    from boundary.infer import landmark_onsets, landmark_track
+
+    post = np.zeros((600, 5))
+    post[100, 0], post[[110, 124], 4] = 0.9, [0.8, 0.95]   # a pair, then a stronger lone vowel 140 ms after it
+    post[300, 0], post[400, 4] = 0.7, 0.6                  # lone peaks far from any pair
+    times, strengths = landmark_onsets(post, 1.0)
+    assert times.tolist() == pytest.approx([1.1, 1.24, 3.0, 4.0])
+    assert strengths.tolist() == pytest.approx([0.9, 0.95, 0.7, 0.6])
+    times, strengths = landmark_onsets(post, 1.0, lone="drop")
+    assert times.tolist() == pytest.approx([1.1, 3.0, 4.0])
+    assert strengths.tolist() == pytest.approx([0.9, 0.7, 0.6])
+    times, strengths = landmark_onsets(post, 1.0, lone="snap")
+    assert times.tolist() == pytest.approx([1.1, 3.0, 4.0])
+    assert strengths[0] == pytest.approx(0.9) and np.isnan(strengths[1:]).all()
+    tr = landmark_track(post, 1.0, lone="snap")
+    assert np.isnan(tr.strengths[1:]).all() and tr.envelope[124] == pytest.approx(0.95)
+    with pytest.raises(ValueError):
+        landmark_onsets(post, 1.0, lone="none")
+
+
+def test_a_paired_start_outlives_a_stronger_lone_peak_beside_it_only_when_lone_peaks_are_dropped():
+    from boundary.infer import landmark_onsets
+
+    post = np.zeros((300, 5))
+    post[[100, 112], 0], post[110, 4] = [0.9, 0.95], 0.6   # a lone articulation sits 20 ms after the pair's start
+    assert landmark_onsets(post, 1.0)[0].tolist() == pytest.approx([1.12])
+    assert landmark_onsets(post, 1.0, lone="drop")[0].tolist() == pytest.approx([1.1])
+
+
 def test_a_landmark_track_hands_the_paired_onsets_to_the_decoder():
     from boundary.infer import landmark_track
 

@@ -53,6 +53,10 @@ song for every fraction. Without the option, nothing here changes.
 those networks' outputs with the first's, per frame and before peak picking
 (``infer.averaged_posteriors``). They must have as many outputs as the first.
 
+``--lone all drop snap`` (handover-plan.md, 30 October) decodes each landmark
+fraction with lone peaks treated each way (``infer.landmark_onsets``), as runs
+named ``...-lm<F>-lone-<how>``; ``all``, the default, keeps the plain name.
+
 Then score with the work directory's own scorer, against B's replay:
 
     python dev/score.py dev sp-f-delta0.6 sp-f-delta0.6=dev/runs/sp/f-delta0.6/midi \
@@ -108,6 +112,8 @@ def main(argv=None) -> None:
                          "articulation to vowel (infer.landmark_track), as runs named ...-lm<F>; split policy all only")
     ap.add_argument("--average-with", type=Path, nargs="+", default=[], metavar="CHECKPOINT",
                     help="further networks whose outputs are averaged with the first's before peak picking")
+    ap.add_argument("--lone", nargs="+", default=["all"], choices=("all", "drop", "snap"),
+                    help="with --landmark-fractions: what happens to a peak with no partner (infer.landmark_onsets)")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args(argv)
     extra = parse_overrides(args.config_overrides)
@@ -156,16 +162,19 @@ def main(argv=None) -> None:
                         name = f"{args.name}-{v}-t{t}{tag}"
                     else:
                         name = f"{args.name}-{v}-t{t}" + ("" if pol == "all" else f"{tag}{st if st is not None else t}")
-                    for lm in (args.landmark_fractions or [None]):
-                        full = name + ("" if lm is None else f"-lm{lm}") + args.suffix
+                    for lm, lone in [(x, y) for x in (args.landmark_fractions or [None])
+                                     for y in (args.lone if x is not None else ["all"])]:
+                        full = (name + ("" if lm is None else f"-lm{lm}") + ("" if lone == "all" else f"-lone-{lone}")
+                                + args.suffix)
                         if full in runs:                # own: one run whatever the threshold
                             continue
-                        runs[full] = (dataclasses.replace(TranscriptionConfig(device="cpu"), **ov), t, pol, st, lm)
+                        runs[full] = (dataclasses.replace(TranscriptionConfig(device="cpu"), **ov), t, pol, st, lm, lone)
                         (W / "dev/runs/sp" / full / "midi").mkdir(parents=True, exist_ok=True)
                         with open(W / "dev/runs/sp" / full / "overrides.json", "w") as f:
                             json.dump(dict(ov, checkpoint=str(args.checkpoint.resolve()), threshold=t,
                                            split_policy=pol, split_threshold=st,
                                            **({} if lm is None else dict(landmark_fraction=lm)),
+                                           **({} if lone == "all" else dict(lone=lone)),
                                            **(dict(average_with=[str(c.resolve()) for c in args.average_with])
                                               if args.average_with else {})), f, indent=1)
     for i, s in enumerate(songs):
@@ -177,9 +186,9 @@ def main(argv=None) -> None:
         ends = pick_peaks(post[:, 1], OFFSET_THRESHOLD) * HOP_S
         ref = W / "refs/notes" / f"{s}.txt"
         ref_resung = resung(np.loadtxt(ref, ndmin=2).tolist()) if ref.exists() else []
-        for name, (cfg, t, pol, st, lm) in runs.items():
+        for name, (cfg, t, pol, st, lm, lone) in runs.items():
             if lm is not None:
-                tr = landmark_track(post, lm, t, sounding=sounding, end_times=ends)
+                tr = landmark_track(post, lm, t, sounding=sounding, end_times=ends, lone=lone)
             elif pol == "own":
                 own = detect_onsets(audio, cfg)
                 tr = OnsetTrack(own.times, own.strengths, own.envelope, own.envelope_times,
