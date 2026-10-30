@@ -65,6 +65,11 @@ def posteriors(model, mel: np.ndarray, aux: np.ndarray, device="cpu") -> np.ndar
         return torch.sigmoid(model(m, a))[0].float().cpu().numpy()
 
 
+def averaged_posteriors(models, mel: np.ndarray, aux: np.ndarray, device="cpu") -> np.ndarray:
+    """The mean of several networks' ``posteriors``, per frame and output, before any peak picking."""
+    return np.mean([posteriors(model, mel, aux, device) for model in models], axis=0)
+
+
 def pitch_level_across(track, frame: int, voicing_threshold: float = 0.3) -> bool:
     """True where the pitch is voiced and level on both sides of ``frame``: no pitch change explains a boundary there."""
     a, b = LEVEL_SIDE_FRAMES

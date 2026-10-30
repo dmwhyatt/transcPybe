@@ -49,6 +49,10 @@ fraction (``infer.landmark_track``), every onset may cut, and the sounding and
 offset outputs are handed over as usual. The posteriors are computed once per
 song for every fraction. Without the option, nothing here changes.
 
+``--average-with CHECKPOINT ...`` (acap-preset-plan.md, 30 October) averages
+those networks' outputs with the first's, per frame and before peak picking
+(``infer.averaged_posteriors``). They must have as many outputs as the first.
+
 Then score with the work directory's own scorer, against B's replay:
 
     python dev/score.py dev sp-f-delta0.6 sp-f-delta0.6=dev/runs/sp/f-delta0.6/midi \
@@ -102,6 +106,8 @@ def main(argv=None) -> None:
     ap.add_argument("--landmark-fractions", type=float, nargs="+", default=None, metavar="F",
                     help="a landmark network (five outputs): decode its paired onsets at each fraction F from "
                          "articulation to vowel (infer.landmark_track), as runs named ...-lm<F>; split policy all only")
+    ap.add_argument("--average-with", type=Path, nargs="+", default=[], metavar="CHECKPOINT",
+                    help="further networks whose outputs are averaged with the first's before peak picking")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args(argv)
     extra = parse_overrides(args.config_overrides)
@@ -114,7 +120,7 @@ def main(argv=None) -> None:
 
     from . import HOP_S
     from .features import frame_features
-    from .infer import landmark_track, onset_track, pick_peaks, posteriors
+    from .infer import averaged_posteriors, landmark_track, onset_track, pick_peaks
     from .model import load
     from .train import resung
 
@@ -124,6 +130,9 @@ def main(argv=None) -> None:
     variants = {"B": b, "B-plain": dict(b, timbre_split_ratio=0.0, split_on_voicing_breaks=False)}
     variants = {v: dict(variants[v], **extra) for v in args.variants}
     model = load(args.checkpoint, args.device)
+    models = [model] + [load(c, args.device) for c in args.average_with]
+    if any(m.cfg.n_out != model.cfg.n_out for m in models):
+        raise SystemExit("--average-with: every network must have as many outputs as the first")
     if "resung" in args.split_policies:
         if model.cfg.n_out < 4:
             raise SystemExit(f"{args.checkpoint} has no re-sung output (n_out={model.cfg.n_out})")
@@ -156,12 +165,14 @@ def main(argv=None) -> None:
                         with open(W / "dev/runs/sp" / full / "overrides.json", "w") as f:
                             json.dump(dict(ov, checkpoint=str(args.checkpoint.resolve()), threshold=t,
                                            split_policy=pol, split_threshold=st,
-                                           **({} if lm is None else dict(landmark_fraction=lm))), f, indent=1)
+                                           **({} if lm is None else dict(landmark_fraction=lm)),
+                                           **(dict(average_with=[str(c.resolve()) for c in args.average_with])
+                                              if args.average_with else {})), f, indent=1)
     for i, s in enumerate(songs):
         audio, _ = load_audio(W / "stems_flat" / f"{s}.wav", FEATURE_SR)
         track = pickle.load(open(W / "dev/f0cache/sp" / f"{s}.pkl", "rb"))
         mel, aux = frame_features(audio, track)
-        post = posteriors(model, mel, aux, args.device)
+        post = averaged_posteriors(models, mel, aux, args.device)
         p, sounding = post[:, 0], post[:, 2]
         ends = pick_peaks(post[:, 1], OFFSET_THRESHOLD) * HOP_S
         ref = W / "refs/notes" / f"{s}.txt"

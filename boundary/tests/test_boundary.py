@@ -782,6 +782,24 @@ def test_a_landmark_track_hands_the_paired_onsets_to_the_decoder():
     assert len(tr.envelope) == len(tr.envelope_times) == 300 and tr.envelope[110] == pytest.approx(0.8)
 
 
+def test_averaged_posteriors_are_the_mean_and_one_network_is_left_as_it_is():
+    pytest.importorskip("torch")
+    import torch
+
+    from boundary.infer import averaged_posteriors, posteriors
+    from boundary.model import BoundaryNet, NetConfig
+
+    torch.manual_seed(0)
+    nets = [BoundaryNet(NetConfig(n_out=5)).eval() for _ in range(3)]
+    mel, aux = np.random.default_rng(0).normal(size=(2, 120, 80)), np.zeros((120, 5))
+    aux = aux.astype(np.float32)
+    one = posteriors(nets[0], mel[0], aux)
+    assert np.array_equal(averaged_posteriors(nets[:1], mel[0], aux), one)
+    three = averaged_posteriors(nets, mel[0], aux)
+    assert three.shape == one.shape == (120, 5) and three.dtype == one.dtype
+    assert three == pytest.approx(np.mean([posteriors(n, mel[0], aux) for n in nets], axis=0))
+
+
 def test_a_five_output_network_reports_its_vowel_output():
     pytest.importorskip("torch")
     from boundary.model import BoundaryNet, NetConfig
