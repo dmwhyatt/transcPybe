@@ -855,6 +855,50 @@ def test_close_gaps_runs_a_note_on_only_while_the_voice_keeps_sounding():
     assert notes[0].offset == 1.5                                                        # the input is left alone
 
 
+def test_wide_onset_targets_say_how_close_a_frame_is_to_the_nearest_start(tmp_path):
+    from boundary.train import load_split
+
+    rows = _landmark_rows(tmp_path)
+    narrow = load_split(rows, "train", "landmarks")[0]["y"]
+    wide = load_split(rows, "train", "landmarks", 10)[0]["y"]
+    assert wide.shape == narrow.shape == (250, 5)
+    assert wide[42, 0] == pytest.approx(1.0) and wide[47, 0] == pytest.approx(1 - 5 / 11)    # 50 ms from the start
+    assert wide[53, 0] == 0 and narrow[47, 0] == 0                                           # past the spread
+    assert wide[58, 4] == pytest.approx(1.0) and wide[53, 4] == pytest.approx(1 - 5 / 11)    # the vowel output too
+    for col in (1, 2, 3):                                                                    # the others keep theirs
+        assert np.array_equal(wide[:, col], narrow[:, col])
+
+
+def test_peak_gap_keeps_one_landmark_peak_from_each_hump():
+    from boundary.infer import landmark_onsets
+
+    post = np.zeros((300, 5))
+    post[[100, 108], 0] = [0.9, 0.7]                          # one articulation hump with a ripple 80 ms along
+    post[[120, 128], 4] = [0.95, 0.6]
+    assert len(landmark_onsets(post, 1.0)[0]) == 2
+    assert landmark_onsets(post, 1.0, peak_gap=10)[0].tolist() == pytest.approx([1.2])
+
+
+def test_training_takes_wide_targets_and_its_own_onset_weight(tmp_path):
+    pytest.importorskip("torch")
+    from boundary.train import main
+
+    rows = _landmark_rows(tmp_path)
+    manifest = tmp_path / "m.jsonl"
+    with open(manifest, "w") as f:
+        for r, split in ((rows[0], "train"), (rows[0], "valid")):
+            f.write(json.dumps(dict(r, split=split, mix_id=split)) + "\n")
+    out = tmp_path / "run"
+    main([str(manifest), "--out", str(out), "--steps", "2", "--eval-every", "2", "--batch", "2", "--device", "cpu",
+          "--onset-labels", "landmarks", "--onset-width", "10", "--onset-pos-weight", "1"])
+    args = json.load(open(out / "args.json"))
+    assert args["onset_width"] == 10 and args["onset_pos_weight"] == 1 and args["pos_weight"] == 8
+    with pytest.raises(SystemExit, match="onset_width"):
+        main([str(manifest), "--out", str(out), "--steps", "2", "--batch", "2", "--device", "cpu", "--onset-labels", "landmarks"])
+    with pytest.raises(SystemExit, match="--onset-width needs"):
+        main([str(manifest), "--out", str(tmp_path / "other"), "--onset-width", "10"])
+
+
 def test_a_five_output_network_reports_its_vowel_output():
     pytest.importorskip("torch")
     from boundary.model import BoundaryNet, NetConfig

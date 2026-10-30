@@ -74,6 +74,15 @@ vowel rule moves, how far, and the gap between the landmarks, then stops. A
 training run refuses to start if the median move is outside 20-120 ms, which
 would mean the rule is not doing what it is meant to.
 
+``--onset-width`` widens the targets of the onset outputs (round 3,
+``ROUND3-PLAN.md``). At the usual 2 frames an output marks a start with a spike.
+At 10 frames it says how close each frame is to the nearest start: the target
+falls steadily from 1 at the start to nearly 0 about 100 ms away, so one start
+should give one hump rather than two spikes. Peaks are then picked at least that
+far apart. It needs ``--onset-labels landmarks``. ``--onset-pos-weight`` sets the
+weight of those outputs' positive frames alone, and at 1 their outputs estimate
+the closeness itself. The offset and re-sung outputs keep ``--pos-weight``.
+
 ``--channels``, ``--hidden`` and ``--dropout`` set the network's size and
 regularisation; the checkpoint records them, so inference needs no flags.
 ``--augment`` varies every training crop afresh (``augment``): the mixes are
@@ -102,8 +111,8 @@ from pathlib import Path
 import numpy as np
 
 from . import HOP_S, items as manifest
-from .features import LEVEL_RANGE, targets
-from .infer import pick_peaks
+from .features import LEVEL_RANGE, TARGET_WIDTH, targets
+from .infer import MIN_GAP_FRAMES, pick_peaks
 from .track import Tracker, context_tags
 
 TOL = 0.05
@@ -111,7 +120,7 @@ TIMING_WINDOW = 0.15      # a reference onset counts for timing if an estimate i
 TIMING_MARGIN = 0.025     # early or late: more than 25 ms out
 EVAL_BATCH = 32
 RESUME_KEYS = ("features", "seed", "steps", "batch", "crop_s", "lr", "weight_decay", "warmup", "pos_weight", "no_aux",
-               "channels", "hidden", "dropout", "augment", "onset_labels")
+               "channels", "hidden", "dropout", "augment", "onset_labels", "onset_width", "onset_pos_weight")
 ONSET_LABELS = ("stored", "vowel-voicing", "landmarks")
 VOICING_COLUMN = 3        # aux: pitch, pitched, periodicity, voicing, level (features.frame_features)
 VOICED_AT = 0.3           # the decoder's own voicing threshold
@@ -191,11 +200,12 @@ def onset_labels(r, voicing: np.ndarray, mode: str):
     return articulation, vowel, moves
 
 
-def load_split(rows, split, mode: str = "stored"):
+def load_split(rows, split, mode: str = "stored", onset_width: int = TARGET_WIDTH):
     """One split's recordings, from per-recording feature files or from shards (boundary.pack).
 
     ``mode`` is ``--onset-labels``: with ``stored`` the onset target is the shard's; otherwise column 0 is rebuilt
-    from ``onset_labels``, and ``landmarks`` adds the vowel target as a fifth column."""
+    from ``onset_labels``, and ``landmarks`` adds the vowel target as a fifth column. Rebuilt onset targets spread
+    ``onset_width`` frames either side (``--onset-width``)."""
     from .pack import read
 
     out, shards = [], {}
@@ -213,10 +223,10 @@ def load_split(rows, split, mode: str = "stored"):
         aux = z["aux"].astype(np.float32)
         col0, vowel, moves = onset_labels(r, aux[:, VOICING_COLUMN], mode)
         if mode != "stored":
-            y[:, 0] = targets(col0, len(y))[:, 0]
+            y[:, 0] = targets(col0, len(y), onset_width)[:, 0]
         y = np.concatenate([y, resung_target(r["notes"], len(y))[:, None]], axis=1)
         if vowel is not None:
-            y = np.concatenate([y, targets(vowel, len(y))[:, :1]], axis=1)
+            y = np.concatenate([y, targets(vowel, len(y), onset_width)[:, :1]], axis=1)
         d = dict(id=r["mix_id"], notes=r["notes"], onset_notes=col0, mel=z["mel"].astype(np.float32), aux=aux, y=y,
                  moves=moves)
         if vowel is not None:
@@ -304,9 +314,9 @@ def timing_summary(offsets) -> dict:
                 late_share=round(float(np.mean(ms > TIMING_MARGIN * 1000)), 4), n_timed=int(len(ms)))
 
 
-def evaluate(model, data, device, threshold=0.5):
+def evaluate(model, data, device, threshold=0.5, min_gap=MIN_GAP_FRAMES):
     """Whole recordings, in length-sorted padded batches; the model is told each length, so
-    every recording's posterior is what it would be on its own."""
+    every recording's posterior is what it would be on its own. ``min_gap`` spaces the onset outputs' peaks."""
     import mir_eval
     import torch
 
@@ -328,7 +338,7 @@ def evaluate(model, data, device, threshold=0.5):
                                     torch.tensor(lens))).float().cpu().numpy()
             for i, d in enumerate(chunk):
                 onset_notes = d.get("onset_notes", d["notes"])   # what the onset output learned (--onset-labels)
-                est = pick_peaks(p[i, :lens[i], 0], threshold) * HOP_S
+                est = pick_peaks(p[i, :lens[i], 0], threshold, min_gap) * HOP_S
                 ref = np.array([n[0] for n in onset_notes])
                 f, pr, rc = mir_eval.onset.f_measure(ref, est, window=TOL) if len(ref) else (1.0, 1.0, 1.0)
                 fs.append(f)
@@ -347,7 +357,7 @@ def evaluate(model, data, device, threshold=0.5):
                     head_hit += sum(int(np.any(np.abs(est_r - o) <= TOL)) for o in re_sung)
                     head_est_hit += sum(int(np.any(np.abs(re_sung - e) <= TOL)) for e in est_r) if len(re_sung) else 0
                 if p.shape[-1] > 4 and "vowel_onsets" in d:
-                    est_v = pick_peaks(p[i, :lens[i], 4], threshold) * HOP_S
+                    est_v = pick_peaks(p[i, :lens[i], 4], threshold, min_gap) * HOP_S
                     ref_v = np.array(d["vowel_onsets"])
                     vowel_fs.append(mir_eval.onset.f_measure(ref_v, est_v, window=TOL)[0] if len(ref_v) else 1.0)
     model.train()
@@ -388,6 +398,10 @@ def main(argv=None) -> None:
     ap.add_argument("--augment", action="store_true", help="vary every training crop afresh (see augment)")
     ap.add_argument("--onset-labels", choices=ONSET_LABELS, default="stored",
                     help="what the onset output learns (see the module docstring); round 2's two arms")
+    ap.add_argument("--onset-width", type=int, default=TARGET_WIDTH,
+                    help="frames an onset target spreads either side (see the module docstring)")
+    ap.add_argument("--onset-pos-weight", type=float, default=None,
+                    help="positive weight of the onset outputs alone (default: --pos-weight)")
     ap.add_argument("--report-labels", action="store_true",
                     help="print how --onset-labels changes the training labels, then stop")
     ap.add_argument("--device", default="auto")
@@ -398,6 +412,8 @@ def main(argv=None) -> None:
     import torch
     from .model import BoundaryNet, NetConfig, save
 
+    if args.onset_width != TARGET_WIDTH and args.onset_labels != "landmarks":
+        raise SystemExit("--onset-width needs --onset-labels landmarks: the other modes keep the stored targets' width")
     device = args.device if args.device != "auto" else (
         "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     features = [str(f.resolve()) for f in args.features]
@@ -405,8 +421,8 @@ def main(argv=None) -> None:
     rows = [r for f in features for r in manifest.read(f)]
     if args.eval_only is None and args.out is None and not args.report_labels:
         raise SystemExit("--out is required unless --eval-only or --report-labels is given")
-    train = [] if args.eval_only else load_split(rows, "train", args.onset_labels)
-    valid = load_split(rows, "valid", args.onset_labels)
+    train = [] if args.eval_only else load_split(rows, "train", args.onset_labels, args.onset_width)
+    valid = load_split(rows, "valid", args.onset_labels, args.onset_width)
     if (not train and not args.eval_only) or not valid:
         raise SystemExit(f"need both splits: {len(train)} train, {len(valid)} valid")
     extra = {}
@@ -414,7 +430,7 @@ def main(argv=None) -> None:
         name, _, path = spec.partition("=")
         if not name or not path:
             raise SystemExit(f"--extra-valid wants NAME=FEATURES.jsonl, not {spec!r}")
-        extra[name] = load_split(manifest.read(Path(path).resolve()), "valid", args.onset_labels)
+        extra[name] = load_split(manifest.read(Path(path).resolve()), "valid", args.onset_labels, args.onset_width)
         if not extra[name]:
             raise SystemExit(f"--extra-valid {name}: no valid split in {path}")
 
@@ -426,11 +442,12 @@ def main(argv=None) -> None:
         raise SystemExit(f"the vowel rule's median move is {labels['move_median_ms']} ms, outside {VOWEL_MOVE_MS}: "
                          "it is not doing what ROUND2-PLAN.md means it to, so this run stops here")
 
+    min_gap = max(MIN_GAP_FRAMES, args.onset_width) if args.onset_width != TARGET_WIDTH else MIN_GAP_FRAMES
     if args.eval_only:
         from .model import load
         model = load(args.eval_only, device)
-        res = dict(checkpoint=str(args.eval_only.resolve()), **evaluate(model, valid, device))
-        res["extra"] = {name: evaluate(model, data, device) for name, data in extra.items()}
+        res = dict(checkpoint=str(args.eval_only.resolve()), **evaluate(model, valid, device, min_gap=min_gap))
+        res["extra"] = {name: evaluate(model, data, device, min_gap=min_gap) for name, data in extra.items()}
         print(json.dumps(res, indent=1))
         return
 
@@ -476,7 +493,8 @@ def main(argv=None) -> None:
     crops = Crops(train, int(round(args.crop_s / HOP_S)), augment=args.augment)
     end = min(args.steps, args.stop_after or args.steps)
     # onset, offset, sounding, re-sung onset, and with landmarks the vowel onset, weighted as the onset
-    pw = torch.tensor([args.pos_weight, args.pos_weight, 1.0, args.pos_weight, args.pos_weight][:n_out], device=device)
+    onset_pw = args.pos_weight if args.onset_pos_weight is None else args.onset_pos_weight
+    pw = torch.tensor([onset_pw, args.pos_weight, 1.0, args.pos_weight, onset_pw][:n_out], device=device)
     head_w = torch.tensor([1.0, 0.5, 0.5, 0.5, 1.0][:n_out], device=device)
     with tracker, open(args.out / "log.jsonl", "a" if start > 1 else "w") as log:
         t0, run_loss, since = time.time(), 0.0, 0
@@ -494,8 +512,8 @@ def main(argv=None) -> None:
             sched.step()
             run_loss, since = run_loss + loss.item(), since + 1
             if step % args.eval_every == 0 or step == end:
-                m = evaluate(model, valid, device)
-                m_extra = {name: evaluate(model, data, device) for name, data in extra.items()}
+                m = evaluate(model, valid, device, min_gap=min_gap)
+                m_extra = {name: evaluate(model, data, device, min_gap=min_gap) for name, data in extra.items()}
                 f, r = m["onset_f"], m["resung_recall"]
                 score = f if math.isnan(r) else (2 * f * r / (f + r) if f + r > 0 else 0.0)
                 el = time.time() - t0

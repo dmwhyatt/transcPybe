@@ -146,7 +146,7 @@ LONE_GAP_S = 0.15         # lone="drop" or "snap": a lone peak this near a paire
 
 
 def landmark_onsets(post: np.ndarray, fraction: float, threshold: float = 0.5, window: float = PAIR_WINDOW_S,
-                    lone: str = "all"):
+                    lone: str = "all", peak_gap: int = MIN_GAP_FRAMES):
     """Note starts from a landmark network's two onset outputs (``train --onset-labels landmarks``): column 0, where
     a syllable starts sounding, and column 4, where its vowel starts. Returns (times in seconds, strengths).
 
@@ -164,14 +164,15 @@ def landmark_onsets(post: np.ndarray, fraction: float, threshold: float = 0.5, w
     ``lone`` sets what happens to a peak with no partner (HANDOVER-PLAN.md). ``"all"`` treats it as a paired start. With
     ``"drop"``, one within ``LONE_GAP_S`` of a paired start is removed, since snapping takes the nearest onset whatever
     its strength, so it could steal that note's start. ``"snap"`` does the same and gives the remaining lone peaks a NaN
-    strength: the decoder still snaps note starts to them, but they never cut a note.
+    strength: the decoder still snaps note starts to them, but they never cut a note. ``peak_gap`` spaces each output's
+    peaks in frames, for networks with wide onset targets (``train --onset-width``).
     """
     if lone not in ("all", "drop", "snap"):
         raise ValueError(f"lone must be 'all', 'drop' or 'snap', not {lone!r}")
     if post.shape[1] < 5:
         raise ValueError("landmark_onsets needs a network with the vowel output (five outputs)")
     grid = np.arange(len(post)) * HOP_S
-    a_fr, v_fr = pick_peaks(post[:, 0], threshold), pick_peaks(post[:, 4], threshold)
+    a_fr, v_fr = pick_peaks(post[:, 0], threshold, peak_gap), pick_peaks(post[:, 4], threshold, peak_gap)
     win = window / HOP_S
     used, out = set(), []                           # (frame, strength, paired)
     for k, vf in enumerate(v_fr):
@@ -201,13 +202,13 @@ def landmark_onsets(post: np.ndarray, fraction: float, threshold: float = 0.5, w
 
 
 def landmark_track(post: np.ndarray, fraction: float, threshold: float = 0.5, sounding=None, end_times=None,
-                   lone: str = "all"):
+                   lone: str = "all", peak_gap: int = MIN_GAP_FRAMES):
     """An OnsetTrack from a landmark network (``landmark_onsets``), for the decoder as ``onset_track`` with
     ``split_policy="all"``: every onset may cut, unless ``lone`` says otherwise. Its envelope is the larger of the
     two onset outputs."""
     from transcpybe.onsets import OnsetTrack
 
-    times, strengths = landmark_onsets(post, fraction, threshold, lone=lone)
+    times, strengths = landmark_onsets(post, fraction, threshold, lone=lone, peak_gap=peak_gap)
     envelope = np.maximum(post[:, 0], post[:, 4]).astype(float)
     return OnsetTrack(times, strengths, envelope, np.arange(len(envelope)) * HOP_S, split_only_times=None,
                       sounding=sounding, end_times=end_times)

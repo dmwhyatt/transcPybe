@@ -61,6 +61,9 @@ named ``...-lm<F>-lone-<how>``; ``all``, the default, keeps the plain name.
 each run with ``infer.close_gaps`` at each GAP:THRESHOLD, as ``...-cg<GAP>-<THRESHOLD>``;
 ``none``, the default, keeps the plain name.
 
+``--peak-gap FRAMES`` (round3-plan.md) spaces each landmark output's peaks, for a
+network trained with wide onset targets (``train --onset-width``).
+
 Then score with the work directory's own scorer, against B's replay:
 
     python dev/score.py dev sp-f-delta0.6 sp-f-delta0.6=dev/runs/sp/f-delta0.6/midi \
@@ -118,6 +121,8 @@ def main(argv=None) -> None:
                     help="further networks whose outputs are averaged with the first's before peak picking")
     ap.add_argument("--lone", nargs="+", default=["all"], choices=("all", "drop", "snap"),
                     help="with --landmark-fractions: what happens to a peak with no partner (infer.landmark_onsets)")
+    ap.add_argument("--peak-gap", type=int, default=None, metavar="FRAMES",
+                    help="with --landmark-fractions: the least distance between one output's peaks")
     ap.add_argument("--close-gaps", nargs="+", default=["none"], metavar="GAP:THRESHOLD",
                     help="run notes on towards the next (infer.close_gaps); 'none' leaves them")
     ap.add_argument("--device", default="cuda")
@@ -132,7 +137,7 @@ def main(argv=None) -> None:
 
     from . import HOP_S
     from .features import frame_features
-    from .infer import averaged_posteriors, close_gaps, landmark_track, onset_track, pick_peaks
+    from .infer import MIN_GAP_FRAMES, averaged_posteriors, close_gaps, landmark_track, onset_track, pick_peaks
     from .model import load
     from .train import resung
 
@@ -195,7 +200,8 @@ def main(argv=None) -> None:
         ref_resung = resung(np.loadtxt(ref, ndmin=2).tolist()) if ref.exists() else []
         for name, (cfg, t, pol, st, lm, lone, cg) in runs.items():
             if lm is not None:
-                tr = landmark_track(post, lm, t, sounding=sounding, end_times=ends, lone=lone)
+                tr = landmark_track(post, lm, t, sounding=sounding, end_times=ends, lone=lone,
+                                    peak_gap=MIN_GAP_FRAMES if args.peak_gap is None else args.peak_gap)
             elif pol == "own":
                 own = detect_onsets(audio, cfg)
                 tr = OnsetTrack(own.times, own.strengths, own.envelope, own.envelope_times,
