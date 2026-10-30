@@ -41,6 +41,7 @@ LEVEL_SIDE_FRAMES = (2, 8)  # pitch is compared over 20-80 ms either side of a p
 LEVEL_SEMITONES = 0.5       # level: the two sides' median pitches within half a semitone
 GAP_FRAMES = 15             # across-gap: look up to 150 ms each way for voiced pitch
 SIDE_VOICED = 6             # ...and compare the nearest 6 voiced frames on each side (at least 3)
+LOW_FRAMES = 3              # close_gaps: the sounding output must stay low this long for the voice to have stopped
 
 
 def pick_peaks(p: np.ndarray, threshold: float = 0.5, min_gap: int = MIN_GAP_FRAMES) -> np.ndarray:
@@ -210,6 +211,28 @@ def landmark_track(post: np.ndarray, fraction: float, threshold: float = 0.5, so
     envelope = np.maximum(post[:, 0], post[:, 4]).astype(float)
     return OnsetTrack(times, strengths, envelope, np.arange(len(envelope)) * HOP_S, split_only_times=None,
                       sounding=sounding, end_times=end_times)
+
+
+def close_gaps(notes, sounding: np.ndarray, gap_s: float, threshold: float) -> list:
+    """Run a note on towards the next where the voice never stopped (ENDS-GAP-PLAN.md).
+
+    A note followed by another within ``gap_s`` is extended until ``sounding`` stays below ``threshold`` for
+    ``LOW_FRAMES`` frames, or to the next note's start if it never does. A note before a longer gap is left alone, and
+    no note gets shorter. ``notes`` are transcPybe ``Note``s in time order, and ``sounding`` is on the network's frames.
+    """
+    import dataclasses
+
+    out = list(notes)
+    for i, (note, following) in enumerate(zip(notes, notes[1:])):
+        if not 0 < following.onset - note.offset <= gap_s + 1e-9:
+            continue
+        first = int(round(note.offset / HOP_S))
+        low = np.asarray(sounding[first:int(round(following.onset / HOP_S))]) < threshold
+        stop = next((j for j in range(len(low) - LOW_FRAMES + 1) if low[j:j + LOW_FRAMES].all()), None)
+        end = following.onset if stop is None else (first + stop) * HOP_S
+        if end > note.offset:
+            out[i] = dataclasses.replace(note, offset=float(end))
+    return out
 
 
 def main(argv=None) -> None:

@@ -57,6 +57,10 @@ those networks' outputs with the first's, per frame and before peak picking
 fraction with lone peaks treated each way (``infer.landmark_onsets``), as runs
 named ``...-lm<F>-lone-<how>``; ``all``, the default, keeps the plain name.
 
+``--close-gaps none 0.1:0.3 ...`` (ends-gap-plan.md, 30 October) also decodes
+each run with ``infer.close_gaps`` at each GAP:THRESHOLD, as ``...-cg<GAP>-<THRESHOLD>``;
+``none``, the default, keeps the plain name.
+
 Then score with the work directory's own scorer, against B's replay:
 
     python dev/score.py dev sp-f-delta0.6 sp-f-delta0.6=dev/runs/sp/f-delta0.6/midi \
@@ -114,6 +118,8 @@ def main(argv=None) -> None:
                     help="further networks whose outputs are averaged with the first's before peak picking")
     ap.add_argument("--lone", nargs="+", default=["all"], choices=("all", "drop", "snap"),
                     help="with --landmark-fractions: what happens to a peak with no partner (infer.landmark_onsets)")
+    ap.add_argument("--close-gaps", nargs="+", default=["none"], metavar="GAP:THRESHOLD",
+                    help="run notes on towards the next (infer.close_gaps); 'none' leaves them")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args(argv)
     extra = parse_overrides(args.config_overrides)
@@ -126,7 +132,7 @@ def main(argv=None) -> None:
 
     from . import HOP_S
     from .features import frame_features
-    from .infer import averaged_posteriors, landmark_track, onset_track, pick_peaks
+    from .infer import averaged_posteriors, close_gaps, landmark_track, onset_track, pick_peaks
     from .model import load
     from .train import resung
 
@@ -162,19 +168,20 @@ def main(argv=None) -> None:
                         name = f"{args.name}-{v}-t{t}{tag}"
                     else:
                         name = f"{args.name}-{v}-t{t}" + ("" if pol == "all" else f"{tag}{st if st is not None else t}")
-                    for lm, lone in [(x, y) for x in (args.landmark_fractions or [None])
-                                     for y in (args.lone if x is not None else ["all"])]:
+                    for lm, lone, cg in [(x, y, z) for x in (args.landmark_fractions or [None])
+                                         for y in (args.lone if x is not None else ["all"]) for z in args.close_gaps]:
                         full = (name + ("" if lm is None else f"-lm{lm}") + ("" if lone == "all" else f"-lone-{lone}")
-                                + args.suffix)
+                                + ("" if cg == "none" else "-cg" + cg.replace(":", "-")) + args.suffix)
                         if full in runs:                # own: one run whatever the threshold
                             continue
-                        runs[full] = (dataclasses.replace(TranscriptionConfig(device="cpu"), **ov), t, pol, st, lm, lone)
+                        runs[full] = (dataclasses.replace(TranscriptionConfig(device="cpu"), **ov), t, pol, st, lm, lone, cg)
                         (W / "dev/runs/sp" / full / "midi").mkdir(parents=True, exist_ok=True)
                         with open(W / "dev/runs/sp" / full / "overrides.json", "w") as f:
                             json.dump(dict(ov, checkpoint=str(args.checkpoint.resolve()), threshold=t,
                                            split_policy=pol, split_threshold=st,
                                            **({} if lm is None else dict(landmark_fraction=lm)),
                                            **({} if lone == "all" else dict(lone=lone)),
+                                           **({} if cg == "none" else dict(close_gaps=cg)),
                                            **(dict(average_with=[str(c.resolve()) for c in args.average_with])
                                               if args.average_with else {})), f, indent=1)
     for i, s in enumerate(songs):
@@ -186,7 +193,7 @@ def main(argv=None) -> None:
         ends = pick_peaks(post[:, 1], OFFSET_THRESHOLD) * HOP_S
         ref = W / "refs/notes" / f"{s}.txt"
         ref_resung = resung(np.loadtxt(ref, ndmin=2).tolist()) if ref.exists() else []
-        for name, (cfg, t, pol, st, lm, lone) in runs.items():
+        for name, (cfg, t, pol, st, lm, lone, cg) in runs.items():
             if lm is not None:
                 tr = landmark_track(post, lm, t, sounding=sounding, end_times=ends, lone=lone)
             elif pol == "own":
@@ -206,6 +213,9 @@ def main(argv=None) -> None:
                 tr = onset_track(p, t, track=track, split_policy=pol, split_threshold=st, sounding=sounding,
                                  end_times=ends)
             notes, _, _, _ = decode_notes(track, cfg, audio=audio, onsets=tr)
+            if cg != "none":
+                gap, level = cg.split(":")
+                notes = close_gaps(notes, sounding, float(gap), float(level))
             write_midi(notes, W / "dev/runs/sp" / name / "midi" / f"{s}.mid", cfg)
         print(f"{i + 1}/{len(songs)} {s}", flush=True)
     print("score with:\n  python dev/score.py dev sp-f-delta0.6 sp-f-delta0.6=dev/runs/sp/f-delta0.6/midi "

@@ -830,6 +830,31 @@ def test_averaged_posteriors_are_the_mean_and_one_network_is_left_as_it_is():
     assert three == pytest.approx(np.mean([posteriors(n, mel[0], aux) for n in nets], axis=0))
 
 
+def test_close_gaps_runs_a_note_on_only_while_the_voice_keeps_sounding():
+    import dataclasses
+
+    from boundary.infer import close_gaps
+
+    @dataclasses.dataclass
+    class Note:
+        onset: float
+        offset: float
+
+    notes = [Note(1.0, 1.5), Note(1.6, 2.0), Note(3.0, 3.5)]
+    sounding = np.ones(500)
+    assert [n.offset for n in close_gaps(notes, sounding, 0.2, 0.3)] == pytest.approx([1.6, 2.0, 3.5])
+    assert [n.offset for n in close_gaps(notes, sounding, 0.05, 0.3)] == pytest.approx([1.5, 2.0, 3.5])   # gap too wide
+    assert [n.onset for n in close_gaps(notes, sounding, 0.2, 0.3)] == pytest.approx([1.0, 1.6, 3.0])
+    sounding[153:] = 0.1                                                                 # the voice stops inside the gap
+    assert close_gaps(notes, sounding, 0.2, 0.3)[0].offset == pytest.approx(1.53)
+    sounding[:] = 1.0
+    sounding[153:155] = 0.1                                                              # two frames low: it never stopped
+    assert close_gaps(notes, sounding, 0.2, 0.3)[0].offset == pytest.approx(1.6)
+    sounding[150:] = 0.1                                                                 # already stopped: nothing moves
+    assert close_gaps(notes, sounding, 0.2, 0.3)[0].offset == pytest.approx(1.5)
+    assert notes[0].offset == 1.5                                                        # the input is left alone
+
+
 def test_a_five_output_network_reports_its_vowel_output():
     pytest.importorskip("torch")
     from boundary.model import BoundaryNet, NetConfig
