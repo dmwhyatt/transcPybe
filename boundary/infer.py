@@ -146,7 +146,7 @@ LONE_GAP_S = 0.15         # lone="drop" or "snap": a lone peak this near a paire
 
 
 def landmark_onsets(post: np.ndarray, fraction: float, threshold: float = 0.5, window: float = PAIR_WINDOW_S,
-                    lone: str = "all", peak_gap: int = MIN_GAP_FRAMES):
+                    lone: str = "all", peak_gap: int = MIN_GAP_FRAMES, lone_articulation: str = "peak"):
     """Note starts from a landmark network's two onset outputs (``train --onset-labels landmarks``): column 0, where
     a syllable starts sounding, and column 4, where its vowel starts. Returns (times in seconds, strengths).
 
@@ -166,15 +166,29 @@ def landmark_onsets(post: np.ndarray, fraction: float, threshold: float = 0.5, w
     its strength, so it could steal that note's start. ``"snap"`` does the same and gives the remaining lone peaks a NaN
     strength: the decoder still snaps note starts to them, but they never cut a note. ``peak_gap`` spaces each output's
     peaks in frames, for networks with wide onset targets (``train --onset-width``).
+
+    ``lone_articulation="shift"`` (ACAP-DECODER-PLAN.md) moves a lone articulation's start ``fraction`` of the
+    recording's median paired gap (vowel minus articulation) after its peak, where a paired start would be: annotators
+    mark a syllable at its vowel, and a start on the consonant itself lands a median 30 ms early. Whether ``lone``
+    drops it is still decided at the peak; the move comes after that and before the 50 ms thinning. With no pair in
+    the recording it stays at the peak.
     """
+    times, strengths, _ = _landmark_starts(post, fraction, threshold, window, lone, peak_gap, lone_articulation)
+    return times, strengths
+
+
+def _landmark_starts(post, fraction, threshold, window, lone, peak_gap, lone_articulation):
+    """``landmark_onsets``' times and strengths, and which of them are paired starts."""
     if lone not in ("all", "drop", "snap"):
         raise ValueError(f"lone must be 'all', 'drop' or 'snap', not {lone!r}")
+    if lone_articulation not in ("peak", "shift"):
+        raise ValueError(f"lone_articulation must be 'peak' or 'shift', not {lone_articulation!r}")
     if post.shape[1] < 5:
         raise ValueError("landmark_onsets needs a network with the vowel output (five outputs)")
     grid = np.arange(len(post)) * HOP_S
     a_fr, v_fr = pick_peaks(post[:, 0], threshold, peak_gap), pick_peaks(post[:, 4], threshold, peak_gap)
     win = window / HOP_S
-    used, out = set(), []                           # (frame, strength, paired)
+    used, out, gaps = set(), [], []                 # out: (frame, strength, paired, lone articulation)
     for k, vf in enumerate(v_fr):
         prev_v = v_fr[k - 1] if k else -1
         cands = [i for i, af in enumerate(a_fr) if i not in used and vf - win - 1e-9 <= af < vf and af > prev_v]
@@ -182,36 +196,49 @@ def landmark_onsets(post: np.ndarray, fraction: float, threshold: float = 0.5, w
             i = max(cands, key=lambda j: a_fr[j])
             used.add(i)
             frame = int(np.floor(a_fr[i] + fraction * (vf - a_fr[i]) + 0.5))
-            out.append((frame, max(post[a_fr[i], 0], post[vf, 4]), True))
+            out.append((frame, max(post[a_fr[i], 0], post[vf, 4]), True, False))
+            gaps.append(vf - a_fr[i])
         else:
-            out.append((int(vf), post[vf, 4], False))
+            out.append((int(vf), post[vf, 4], False, False))
     for i, af in enumerate(a_fr):
         if i not in used and not np.any((v_fr > af) & (v_fr <= af + win + 1e-9)):
-            out.append((int(af), post[af, 0], False))
+            out.append((int(af), post[af, 0], False, True))
     if lone != "all":
-        paired = np.array([f for f, _, p in out if p], dtype=float)
+        paired = np.array([f for f, _, p, _ in out if p], dtype=float)
         reach = LONE_GAP_S / HOP_S + 1e-9
         out = [o for o in out if o[2] or not paired.size or np.abs(paired - o[0]).min() > reach]
+    if lone_articulation == "shift" and gaps:
+        move = fraction * float(np.median(gaps))
+        out = [(min(int(np.floor(f + move + 0.5)), len(post) - 1), s, p, la) if la else (f, s, p, la)
+               for f, s, p, la in out]
     keep = []                                       # 50 ms apart at least, the stronger kept
-    for f, s, p in sorted(out, key=lambda x: (-x[1], x[0])):
+    for f, s, p, _ in sorted(out, key=lambda x: (-x[1], x[0])):
         if all(abs(f - k[0]) >= MIN_GAP_FRAMES for k in keep):
             keep.append((f, s, p))
     keep.sort()
     return (grid[[f for f, _, _ in keep]],
-            np.array([float(s) if p or lone != "snap" else np.nan for _, s, p in keep]))
+            np.array([float(s) if p or lone != "snap" else np.nan for _, s, p in keep]),
+            np.array([p for _, _, p in keep], dtype=bool))
 
 
 def landmark_track(post: np.ndarray, fraction: float, threshold: float = 0.5, sounding=None, end_times=None,
-                   lone: str = "all", peak_gap: int = MIN_GAP_FRAMES):
+                   lone: str = "all", peak_gap: int = MIN_GAP_FRAMES, lone_articulation: str = "peak",
+                   protect: bool = False):
     """An OnsetTrack from a landmark network (``landmark_onsets``), for the decoder as ``onset_track`` with
     ``split_policy="all"``: every onset may cut, unless ``lone`` says otherwise. Its envelope is the larger of the
-    two onset outputs."""
+    two onset outputs.
+
+    With ``protect``, the paired starts are also the track's ``protected_times``: with transcPybe's
+    ``landmark_min_note_s`` a note starting at one escapes the short-note rules (ACAP-DECODER-PLAN.md). Without it the
+    track is built exactly as before, so a transcPybe tree older than that option still takes it."""
     from transcpybe.onsets import OnsetTrack
 
-    times, strengths = landmark_onsets(post, fraction, threshold, lone=lone, peak_gap=peak_gap)
+    times, strengths, paired = _landmark_starts(post, fraction, threshold, PAIR_WINDOW_S, lone, peak_gap,
+                                                lone_articulation)
     envelope = np.maximum(post[:, 0], post[:, 4]).astype(float)
+    extra = {"protected_times": times[paired]} if protect else {}
     return OnsetTrack(times, strengths, envelope, np.arange(len(envelope)) * HOP_S, split_only_times=None,
-                      sounding=sounding, end_times=end_times)
+                      sounding=sounding, end_times=end_times, **extra)
 
 
 def close_gaps(notes, sounding: np.ndarray, gap_s: float, threshold: float) -> list:

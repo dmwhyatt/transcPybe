@@ -812,6 +812,48 @@ def test_a_landmark_track_hands_the_paired_onsets_to_the_decoder():
     assert len(tr.envelope) == len(tr.envelope_times) == 300 and tr.envelope[110] == pytest.approx(0.8)
 
 
+def test_a_lone_articulation_moves_by_f_times_the_median_paired_gap_only_when_asked():
+    from boundary.infer import landmark_onsets
+
+    post = np.zeros((600, 5))
+    post[[100, 200, 300], 0], post[[124, 224, 310], 4] = 0.9, 0.9   # pairs 24, 24 and 10 frames apart: median 24
+    post[450, 0] = 0.7                                              # a lone articulation
+    assert landmark_onsets(post, 0.875)[0].tolist() == pytest.approx([1.21, 2.21, 3.09, 4.5])
+    shifted = landmark_onsets(post, 0.875, lone_articulation="shift")[0].tolist()
+    assert shifted == pytest.approx([1.21, 2.21, 3.09, 4.71])     # 450 + 0.875 x 24 = 471
+    alone = np.zeros((600, 5))
+    alone[450, 0] = 0.7                                             # no pair in the recording: it stays
+    assert landmark_onsets(alone, 0.875, lone_articulation="shift")[0].tolist() == pytest.approx([4.5])
+    with pytest.raises(ValueError):
+        landmark_onsets(post, 0.875, lone_articulation="vowel")
+
+
+def test_whether_a_lone_articulation_is_dropped_is_decided_at_its_peak_not_where_it_moves():
+    from boundary.infer import landmark_onsets
+
+    post = np.zeros((600, 5))
+    post[[100, 200, 280], 0], post[[124, 224, 291], 4] = 0.9, 0.9   # the third pair starts at 290
+    post[300, 0] = 0.7                                              # lone, 10 frames after it; moved, 31
+    kept = landmark_onsets(post, 0.875, lone="all", lone_articulation="shift")[0]
+    assert kept.tolist() == pytest.approx([1.21, 2.21, 2.90, 3.21])   # 300 + 0.875 x 24, when nothing drops it
+    for how in ("peak", "shift"):
+        times = landmark_onsets(post, 0.875, lone="drop", lone_articulation=how)[0]
+        assert times.tolist() == pytest.approx([1.21, 2.21, 2.90])
+
+
+def test_a_landmark_track_protects_its_paired_starts_only_when_asked():
+    from boundary.infer import landmark_track
+
+    post = np.zeros((600, 5))
+    post[100, 0], post[110, 4] = 0.9, 0.8                          # a pair
+    post[300, 0], post[400, 4] = 0.7, 0.6                          # lone peaks
+    plain = landmark_track(post, 0.875, lone="drop")
+    assert plain.protected_times.size == 0
+    tr = landmark_track(post, 0.875, lone="drop", protect=True)
+    assert tr.times.tolist() == plain.times.tolist()
+    assert tr.protected_times.tolist() == pytest.approx([1.09])
+
+
 def test_averaged_posteriors_are_the_mean_and_one_network_is_left_as_it_is():
     pytest.importorskip("torch")
     import torch
