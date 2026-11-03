@@ -434,9 +434,23 @@ def trim_note_releases(
     return trimmed
 
 
-def drop_short_notes(notes: List[Note], config: TranscriptionConfig) -> List[Note]:
-    """Discard notes too short to be a deliberate sung pitch."""
-    return [n for n in notes if n.duration >= config.min_note_duration_s]
+def drop_short_notes(notes: List[Note], config: TranscriptionConfig,
+                     onsets: Optional[OnsetTrack] = None) -> List[Note]:
+    """Discard notes too short to be a deliberate sung pitch.
+
+    A note starting within one frame of one of the onset track's
+    ``protected_times`` -- a syllable a model is sure of -- need only be
+    ``landmark_min_note_s`` long, when that is above zero.
+    """
+    protected = (onsets.protected_times if onsets is not None and config.landmark_min_note_s > 0
+                 else np.zeros(0))
+    reach = config.hop_length / config.sample_rate + 1e-6
+
+    def a_syllable(note: Note) -> bool:
+        return bool(protected.size and note.duration >= config.landmark_min_note_s
+                    and np.abs(protected - note.onset).min() <= reach)
+
+    return [n for n in notes if n.duration >= config.min_note_duration_s or a_syllable(n)]
 
 
 def drop_quiet_notes(notes: List[Note], config: TranscriptionConfig) -> List[Note]:
@@ -524,6 +538,6 @@ def postprocess_notes(
     """
     notes = merge_same_pitch(notes, track, config, onsets, tuning_offset)
     notes = trim_note_releases(notes, track, config)
-    notes = drop_short_notes(notes, config)
+    notes = drop_short_notes(notes, config, onsets)
     notes = drop_quiet_notes(notes, config)
     return sorted(notes, key=lambda n: (n.onset, n.pitch))

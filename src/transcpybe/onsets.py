@@ -31,7 +31,8 @@ class OnsetTrack:
 
     def __init__(self, times: np.ndarray, strengths: np.ndarray, envelope: np.ndarray,
                  envelope_times: np.ndarray, split_only_times: np.ndarray | None = None,
-                 sounding: np.ndarray | None = None, end_times: np.ndarray | None = None) -> None:
+                 sounding: np.ndarray | None = None, end_times: np.ndarray | None = None,
+                 protected_times: np.ndarray | None = None) -> None:
         self.times = times
         self.strengths = strengths
         self.envelope = envelope
@@ -47,6 +48,11 @@ class OnsetTrack:
         # Note ends found elsewhere, such as a model's offset peaks: with
         # ``end_snap_window_s`` a note's end moves to the nearest.
         self.end_times = np.zeros(0) if end_times is None else np.sort(np.asarray(end_times, float))
+        # Starts a model is sure of, such as a boundary network's paired landmarks:
+        # with ``landmark_min_note_s`` a note beginning at one escapes the
+        # short-note rules. Each is also one of ``times``.
+        self.protected_times = (np.zeros(0) if protected_times is None
+                                else np.sort(np.asarray(protected_times, float)))
 
     def __len__(self) -> int:
         return int(self.times.shape[0])
@@ -106,6 +112,21 @@ def detect_onsets(audio: np.ndarray, config: TranscriptionConfig) -> OnsetTrack:
     strengths = envelope[frames] if frames.size else np.zeros(0, dtype=np.float64)
 
     return OnsetTrack(times, strengths, envelope, envelope_times)
+
+
+def protected_frames(onsets: OnsetTrack | None, frame_times: np.ndarray,
+                     config: TranscriptionConfig) -> np.ndarray:
+    """Frames of the onset track's ``protected_times``; none while ``landmark_min_note_s`` is off."""
+    if config.landmark_min_note_s <= 0 or onsets is None or onsets.protected_times.size == 0:
+        return np.zeros(0, dtype=int)
+    return np.clip(np.searchsorted(frame_times, onsets.protected_times), 0, frame_times.shape[0] - 1)
+
+
+def _protected(times: np.ndarray, protected: np.ndarray, tolerance: float) -> np.ndarray:
+    """Which of ``times`` lie within ``tolerance`` seconds of a protected start."""
+    if protected.size == 0:
+        return np.zeros(times.shape[0], dtype=bool)
+    return np.array([np.abs(protected - t).min() <= tolerance for t in times], dtype=bool)
 
 
 def _dip_depth(values: np.ndarray, frame: int) -> float:
@@ -227,6 +248,8 @@ def split_segments_on_onsets(
     percentiles sit above most real onsets and nothing splits.
 
     The gap guard remains, because an over-eager split shreds a sustained note.
+    A cut at one of the track's ``protected_times`` needs only
+    ``landmark_min_note_s`` on each side, when that is above zero.
 
     With ``onset_split_min_dip_db`` above zero and ``loudness_db`` given, an
     onset must also show that phonation was interrupted: a dip in level of at
@@ -253,10 +276,14 @@ def split_segments_on_onsets(
 
     min_gap_frames = max(1, int(round(config.onset_split_min_gap_s
                                       * config.sample_rate / config.hop_length)))
+    protected = onsets.protected_times if config.landmark_min_note_s > 0 else np.zeros(0)
+    landmark_gap_frames = (max(1, int(round(config.landmark_min_note_s * config.sample_rate / config.hop_length)))
+                           if protected.size else min_gap_frames)
+    shortest = min(min_gap_frames, landmark_gap_frames)
 
     out: List[Segment] = []
     for seg in segments:
-        if seg.n_frames < 2 * min_gap_frames:
+        if seg.n_frames < 2 * shortest:
             out.append(seg)
             continue
 
@@ -269,17 +296,17 @@ def split_segments_on_onsets(
             continue
 
         cut_frames = np.searchsorted(frame_times, inside)
-        cut_frames = cut_frames[
-            (cut_frames - seg.start_frame >= min_gap_frames)
-            & (seg.end_frame - cut_frames >= min_gap_frames)
-        ]
+        # each cut's own gap: a protected start needs only landmark_min_note_s either side
+        gaps = np.where(_protected(inside, protected, 1e-6), landmark_gap_frames, min_gap_frames)
+        keep = (cut_frames - seg.start_frame >= gaps) & (seg.end_frame - cut_frames >= gaps)
+        cut_frames, gaps = cut_frames[keep], gaps[keep]
         if config.onset_voicing_guard and voicing is not None:
             # cut where the pitched sound starts, not on the consonant before it
             limit = int(round(0.15 * config.sample_rate / config.hop_length))
             cut_frames = np.array([_voicing_return(voicing, int(c), config.voicing_threshold, limit)
                                    for c in cut_frames], dtype=int)
-            cut_frames = cut_frames[(cut_frames - seg.start_frame >= min_gap_frames)
-                                    & (seg.end_frame - cut_frames >= min_gap_frames)]
+            keep = (cut_frames - seg.start_frame >= gaps) & (seg.end_frame - cut_frames >= gaps)
+            cut_frames, gaps = cut_frames[keep], gaps[keep]
         if config.onset_split_min_dip_db > 0 and loudness_db is not None:
             use_periodicity = (config.onset_split_min_periodicity_dip > 0
                                and periodicity is not None)
@@ -583,7 +610,7 @@ def refine_segments(
             order = np.argsort(all_times, kind="stable")
             onsets = OnsetTrack(all_times[order], all_strengths[order], onsets.envelope,
                                 onsets.envelope_times, onsets.split_only_times, onsets.sounding,
-                                onsets.end_times)
+                                onsets.end_times, onsets.protected_times)
     if (config.timbre_split_ratio > 0 and audio is not None
             and onsets.split_only_times.size == 0):
         # A strong change of timbre inside a note on one pitch is a new syllable:
@@ -592,7 +619,8 @@ def refine_segments(
         # pass reuses the track.
         onsets = OnsetTrack(onsets.times, onsets.strengths, onsets.envelope,
                             onsets.envelope_times, split_only_times=timbre_change_times(audio, config),
-                            sounding=onsets.sounding, end_times=onsets.end_times)
+                            sounding=onsets.sounding, end_times=onsets.end_times,
+                            protected_times=onsets.protected_times)
     segments = split_segments_on_onsets(segments, onsets, frame_times, config,
                                         loudness_db, periodicity, voicing)
     segments = snap_segment_starts(segments, onsets, frame_times, config, voicing)

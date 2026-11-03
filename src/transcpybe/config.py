@@ -470,6 +470,19 @@ class TranscriptionConfig:
     ``min_note_duration_s`` of its own; with no end time in reach it stays.
     Zero turns it off."""
 
+    landmark_min_note_s: float = 0.0
+    """How long a note that starts at one of the onset track's ``protected_times``
+    must be. Those are starts a model is sure of, such as a boundary network's
+    paired landmarks: a consonant and the vowel after it, so a new syllable.
+    Above zero, such a note escapes the three short-note rules down to this
+    length: an onset cut there needs only this much segment on each side rather
+    than ``onset_split_min_gap_s``, a pitch piece with one within
+    ``onset_snap_window_s`` of its start is not folded as a fragment, and a note
+    starting within one frame of one is not dropped for being shorter than
+    ``min_note_duration_s``. An ornament inside a syllable has no such start, so
+    it is held to the ordinary rules. Zero turns it off; a track without
+    protected times protects nothing."""
+
     reject_quiet_notes: bool = True
     """Drop notes far below the level of the rest of the performance. This is
     what removes phantom notes hallucinated from source-separation residue."""
@@ -731,6 +744,8 @@ class TranscriptionConfig:
             raise ValueError("sustain_merge_above must be in [0, 1]")
         if self.end_snap_window_s < 0:
             raise ValueError("end_snap_window_s must be non-negative")
+        if self.landmark_min_note_s < 0:
+            raise ValueError("landmark_min_note_s must be non-negative")
         if not 0.0 <= self.onset_split_min_periodicity_dip <= 1.0:
             raise ValueError("onset_split_min_periodicity_dip must be in [0, 1]")
         if self.onset_snap_direction not in ("both", "earlier", "later"):

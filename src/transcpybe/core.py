@@ -18,7 +18,8 @@ from .fragments import absorb_short_fragments
 from .glide import handle_glides
 from .notes import (Note, estimate_tuning_offset, postprocess_notes,
                     segments_to_notes, snap_note_ends)
-from .onsets import OnsetTrack, attach_late_arrivals, merge_sustained_boundaries, refine_segments
+from .onsets import (OnsetTrack, attach_late_arrivals, merge_sustained_boundaries, protected_frames,
+                     refine_segments)
 from .progress import ProgressReporter, format_duration, format_realtime_factor, null_reporter
 from .segment import segment_notes
 
@@ -142,7 +143,7 @@ def _decode_pass(
     """
     segments = segment_notes(track, config, tuning_offset)
     n_segments = len(segments)
-    segments = absorb_short_fragments(segments, config)
+    segments = absorb_short_fragments(segments, config, protected_frames(onsets, track.times, config))
     segments = handle_glides(segments, track, config)
     segments, onsets = refine_segments(segments, audio, track.times, config,
                                        onsets=onsets, loudness_db=track.loudness_db,
