@@ -90,6 +90,15 @@ fixed on disk, so without it the network sees the same audio on every pass.
 ``--stop-after`` ends a run early while the learning-rate schedule still runs
 over ``--steps``, so a short run follows the first part of a long one.
 
+Fine-tuning (``FINETUNE-PLAN.md``). ``--init CHECKPOINT`` starts from that network's weights and settings, with a
+fresh optimiser and schedule; ``--channels``, ``--hidden`` and ``--dropout`` then come from the checkpoint.
+``--onset-labels reference-starts`` is for sets that have only notes (``acap_set``): the vowel output learns the
+reference note starts, where annotators of these sets mark them, and column 0 the same unless
+``--distill-articulation`` gives it the starting network's own output on the same frames instead, so the consonant
+peak stays where it was and the landmark decoder's pairing keeps working. ``--snapshots STEP ...`` saves
+``snapshot-<step>.pt`` at each listed step, so a fixed schedule can be judged at steps chosen in advance rather than
+at the best validation score.
+
 Resumable: ``last.pt`` holds the optimiser, schedule and random states as well
 as the weights, and a rerun with the same arguments carries on from it with
 the best score so far. A rerun with different arguments into the same
@@ -120,8 +129,9 @@ TIMING_WINDOW = 0.15      # a reference onset counts for timing if an estimate i
 TIMING_MARGIN = 0.025     # early or late: more than 25 ms out
 EVAL_BATCH = 32
 RESUME_KEYS = ("features", "seed", "steps", "batch", "crop_s", "lr", "weight_decay", "warmup", "pos_weight", "no_aux",
-               "channels", "hidden", "dropout", "augment", "onset_labels", "onset_width", "onset_pos_weight")
-ONSET_LABELS = ("stored", "vowel-voicing", "landmarks")
+               "channels", "hidden", "dropout", "augment", "onset_labels", "onset_width", "onset_pos_weight", "init",
+               "distill_articulation")
+ONSET_LABELS = ("stored", "vowel-voicing", "landmarks", "reference-starts")
 VOICING_COLUMN = 3        # aux: pitch, pitched, periodicity, voicing, level (features.frame_features)
 VOICED_AT = 0.3           # the decoder's own voicing threshold
 VOWEL_REACH_S = 0.15      # how far after its label a vowel-initial note's voicing onset is looked for
@@ -179,6 +189,8 @@ def onset_labels(r, voicing: np.ndarray, mode: str):
     notes = r["notes"]
     if mode == "stored":
         return notes, None, []
+    if mode == "reference-starts":   # a set with only notes: both onset outputs learn its starts (FINETUNE-PLAN.md)
+        return notes, notes, []
     lm = r.get("landmarks")
     if lm is None or len(lm) != len(notes):
         raise SystemExit(f"{r.get('mix_id', r.get('id'))}: --onset-labels {mode} needs the manifest's per-note "
@@ -236,10 +248,18 @@ def load_split(rows, split, mode: str = "stored", onset_width: int = TARGET_WIDT
     return out
 
 
+def distill_articulation(data, model, device) -> None:
+    """Column 0's target becomes ``model``'s own column-0 output on each whole recording (``--distill-articulation``)."""
+    from .infer import posteriors
+
+    for d in data:
+        d["y"][:, 0] = posteriors(model, d["mel"], d["aux"], device)[:, 0]
+
+
 def label_report(data, mode: str) -> dict:
     """How the onset labels differ from the stored ones: notes opening on a vowel, how many the rule moves and how
     far, and (landmarks) the gap from articulation to vowel."""
-    if mode == "stored":
+    if mode in ("stored", "reference-starts"):
         return {}
     ms = lambda xs, q: round(float(np.percentile(np.asarray(xs) * 1000, q)), 1) if len(xs) else float("nan")
     moves = [m for d in data for m in d["moves"]]
@@ -404,6 +424,12 @@ def main(argv=None) -> None:
                     help="positive weight of the onset outputs alone (default: --pos-weight)")
     ap.add_argument("--report-labels", action="store_true",
                     help="print how --onset-labels changes the training labels, then stop")
+    ap.add_argument("--init", type=Path, metavar="CHECKPOINT",
+                    help="fine-tune: start from this network's weights and settings, with a fresh optimiser")
+    ap.add_argument("--distill-articulation", action="store_true",
+                    help="column 0 learns the --init network's own output rather than the labels")
+    ap.add_argument("--snapshots", type=int, nargs="+", default=[], metavar="STEP",
+                    help="also save snapshot-<step>.pt at each of these steps")
     ap.add_argument("--device", default="auto")
     ap.add_argument("--extra-valid", action="append", default=[], metavar="NAME=FEATURES.jsonl",
                     help="another set to evaluate (its valid split) and log, never used to choose a checkpoint")
@@ -416,8 +442,13 @@ def main(argv=None) -> None:
         raise SystemExit("--onset-width needs --onset-labels landmarks: the other modes keep the stored targets' width")
     device = args.device if args.device != "auto" else (
         "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    if args.distill_articulation and args.init is None:
+        raise SystemExit("--distill-articulation needs --init: it is the starting network's output that is learned")
+    if any(not 0 < s <= args.steps for s in args.snapshots):
+        raise SystemExit(f"--snapshots must lie in 1..{args.steps}")
     features = [str(f.resolve()) for f in args.features]
-    run_args = dict(vars(args), features=features, out=str(args.out.resolve()) if args.out else None)
+    run_args = dict(vars(args), features=features, out=str(args.out.resolve()) if args.out else None,
+                    init=str(args.init.resolve()) if args.init else None)
     rows = [r for f in features for r in manifest.read(f)]
     if args.eval_only is None and args.out is None and not args.report_labels:
         raise SystemExit("--out is required unless --eval-only or --report-labels is given")
@@ -453,10 +484,19 @@ def main(argv=None) -> None:
 
     torch.manual_seed(args.seed)
     rng = np.random.default_rng(args.seed)
-    n_out = train[0]["y"].shape[1]            # 4, or 5 with --onset-labels landmarks
-    model = BoundaryNet(NetConfig(n_mels=train[0]["mel"].shape[1], n_aux=train[0]["aux"].shape[1],
-                                  channels=args.channels, hidden=args.hidden, dropout=args.dropout,
-                                  use_aux=not args.no_aux, n_out=n_out)).to(device)
+    n_out = train[0]["y"].shape[1]            # 4, or 5 with --onset-labels landmarks or reference-starts
+    if args.init is not None:
+        from .model import load
+        model = load(args.init, device)
+        if model.cfg.n_out != n_out:
+            raise SystemExit(f"{args.init} has {model.cfg.n_out} outputs and these labels {n_out}")
+        if args.distill_articulation:         # from the starting network, so a resumed run learns the same targets
+            distill_articulation(train + valid, model, device)
+        model.train()
+    else:
+        model = BoundaryNet(NetConfig(n_mels=train[0]["mel"].shape[1], n_aux=train[0]["aux"].shape[1],
+                                      channels=args.channels, hidden=args.hidden, dropout=args.dropout,
+                                      use_aux=not args.no_aux, n_out=n_out)).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / args.warmup)
                                               * 0.5 * (1 + math.cos(math.pi * min(1.0, s / args.steps))))
@@ -511,6 +551,8 @@ def main(argv=None) -> None:
             opt.step()
             sched.step()
             run_loss, since = run_loss + loss.item(), since + 1
+            if step in args.snapshots:
+                save(args.out / f"snapshot-{step:05d}.pt", model, step=step)
             if step % args.eval_every == 0 or step == end:
                 m = evaluate(model, valid, device, min_gap=min_gap)
                 m_extra = {name: evaluate(model, data, device, min_gap=min_gap) for name, data in extra.items()}

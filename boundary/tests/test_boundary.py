@@ -941,6 +941,74 @@ def test_training_takes_wide_targets_and_its_own_onset_weight(tmp_path):
         main([str(manifest), "--out", str(tmp_path / "other"), "--onset-width", "10"])
 
 
+def _note_only_set(tmp_path, n=3):
+    """``acap_set.build`` on ``n`` synthetic sung recordings with only notes."""
+    import pickle
+
+    import soundfile as sf
+    from transcpybe.f0 import F0Track
+
+    from boundary.acap_set import build
+
+    rows = []
+    for k in range(n):
+        t = np.arange(16000 * 3) / 16000
+        audio = (0.3 * np.sin(2 * np.pi * (220 + 20 * k) * t)).astype(np.float32)
+        sf.write(tmp_path / f"r{k}.wav", audio, 16000)
+        frames = np.arange(300) * HOP_S
+        track = F0Track(times=frames, f0_hz=np.full(300, 220.0 + 20 * k), periodicity=np.full(300, 0.9),
+                        loudness_db=np.full(300, -20.0), loudness_gate=np.ones(300), voicing=np.full(300, 0.9))
+        with open(tmp_path / f"r{k}.pkl", "wb") as f:
+            pickle.dump(track, f)
+        rows.append(dict(id=f"r{k}", wav=tmp_path / f"r{k}.wav", f0=tmp_path / f"r{k}.pkl",
+                         notes=[[1.2, 2.0, 62], [0.5, 1.0, 60]]))
+    return build(rows, tmp_path / "set", hold_back=1, seed=0)
+
+
+def test_a_note_only_set_trains_both_onset_outputs_on_its_note_starts(tmp_path):
+    from boundary.train import label_report, load_split
+
+    manifest = _note_only_set(tmp_path)
+    rows = items.read(manifest)
+    assert sorted(r["split"] for r in rows) == ["train", "train", "valid"]
+    assert rows[0]["notes"] == [[0.5, 1.0, 60.0], [1.2, 2.0, 62.0]]       # sorted by start
+    stored = np.load(rows[0]["features"])["y"]
+    assert np.array_equal(stored, targets(rows[0]["notes"], len(stored)))
+    d = load_split(rows, "train", "reference-starts")[0]
+    assert d["y"].shape[1] == 5
+    assert np.array_equal(d["y"][:, 0], d["y"][:, 4]) and d["y"][50, 4] == 1 and d["y"][120, 4] == 1
+    assert d["vowel_onsets"] == [0.5, 1.2] and label_report([d], "reference-starts") == {}
+
+
+def test_fine_tuning_starts_from_the_checkpoint_distills_column_0_and_saves_snapshots(tmp_path):
+    pytest.importorskip("torch")
+    from boundary.model import BoundaryNet, NetConfig, load, save
+    from boundary.train import distill_articulation, load_split, main
+
+    manifest = _note_only_set(tmp_path)
+    start = BoundaryNet(NetConfig(n_out=5, hidden=16, channels=(8, 8, 8)))
+    save(tmp_path / "start.pt", start)
+    base = load(tmp_path / "start.pt")
+    data = load_split(items.read(manifest), "train", "reference-starts")
+    distill_articulation(data, base, "cpu")
+    from boundary.infer import posteriors
+    assert np.array_equal(data[0]["y"][:, 0], posteriors(base, data[0]["mel"], data[0]["aux"])[:, 0])
+    assert data[0]["y"][50, 4] == 1                                     # the vowel target is left alone
+
+    out = tmp_path / "run"
+    main([str(manifest), "--out", str(out), "--init", str(tmp_path / "start.pt"), "--distill-articulation",
+          "--onset-labels", "reference-starts", "--steps", "3", "--snapshots", "1", "3", "--eval-every", "3",
+          "--batch", "2", "--crop-s", "1", "--lr", "1e-4", "--warmup", "1", "--device", "cpu"])
+    assert sorted(p.name for p in out.glob("snapshot-*.pt")) == ["snapshot-00001.pt", "snapshot-00003.pt"]
+    tuned = load(out / "snapshot-00003.pt")
+    assert tuned.cfg.hidden == 16 and tuned.cfg.channels == (8, 8, 8)  # the starting network's settings, not the defaults
+    assert json.load(open(out / "args.json"))["init"] == str((tmp_path / "start.pt").resolve())
+    with pytest.raises(SystemExit, match="needs --init"):
+        main([str(manifest), "--out", str(tmp_path / "x"), "--distill-articulation", "--onset-labels", "reference-starts"])
+    with pytest.raises(SystemExit, match="--snapshots must lie"):
+        main([str(manifest), "--out", str(tmp_path / "y"), "--steps", "3", "--snapshots", "4"])
+
+
 def test_a_five_output_network_reports_its_vowel_output():
     pytest.importorskip("torch")
     from boundary.model import BoundaryNet, NetConfig
