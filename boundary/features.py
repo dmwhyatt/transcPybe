@@ -34,6 +34,7 @@ import dataclasses
 import json
 import multiprocessing as mp
 import os
+import warnings
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -66,9 +67,30 @@ def targets(notes: Sequence[Sequence[float]], n_frames: int, width: int = TARGET
     return y
 
 
+TRAINED_ON_TRACKER = "crepe-full"
+"""The pitch tracker every network here was trained on, as ``F0Track.backend`` names it."""
+
+
+def check_tracker(track) -> None:
+    """Warn when ``track`` comes from a pitch tracker the networks never saw.
+
+    Three of the five aux features (pitch, periodicity, voicing) are that
+    tracker's output, and periodicity in particular means a different thing for
+    each one, so a network fed another tracker's track is outside what it was
+    trained and checked on. A track that names no tracker (built by hand, or
+    pickled before tracks recorded one) is taken to be CREPE's.
+    """
+    backend = getattr(track, "backend", "") or TRAINED_ON_TRACKER
+    if backend != TRAINED_ON_TRACKER:
+        warnings.warn(f"the boundary networks were trained, and their presets confirmed, on {TRAINED_ON_TRACKER} "
+                      f"pitch tracks; this one is from {backend}, so its results are unconfirmed", stacklevel=3)
+
+
 def frame_features(audio: np.ndarray, track) -> tuple:
     """(mel, aux) for 16 kHz mono ``audio`` and its transcPybe ``F0Track``, trimmed to the same frames."""
     import librosa
+
+    check_tracker(track)
 
     hop = int(round(HOP_S * FEATURE_SR))
     mel = librosa.feature.melspectrogram(y=audio, sr=FEATURE_SR, n_fft=1024, hop_length=hop,

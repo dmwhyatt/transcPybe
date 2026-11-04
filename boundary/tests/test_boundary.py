@@ -261,6 +261,28 @@ def test_silence_features_stay_in_range():
     assert mel.min() > -10                       # the -80 dB floor, not log(1e-6)
 
 
+def test_features_from_another_pitch_tracker_come_with_a_warning():
+    import types
+    import warnings
+
+    from boundary.features import frame_features
+
+    n = 101
+    audio = 0.1 * np.sin(2 * np.pi * 220 * np.arange(16000) / 16000).astype(np.float32)
+
+    def track(**backend):
+        return types.SimpleNamespace(f0_hz=np.full(n, 220.0), periodicity=np.ones(n), voicing=np.ones(n),
+                                     loudness_db=np.full(n, -20.0), **backend)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        frame_features(audio, track(backend="crepe-full"))
+        frame_features(audio, track(backend=""))           # built by hand
+        frame_features(audio, track())                     # pickled before tracks named their tracker
+    with pytest.warns(UserWarning, match="this one is from pesto, so its results are unconfirmed"):
+        frame_features(audio, track(backend="pesto"))
+
+
 def _synthetic_vocals(tmp_path: Path) -> list:
     """Three short phrases from transcPybe's own synthesiser, one of them held out, one with a re-sung note."""
     import soundfile as sf
