@@ -38,6 +38,8 @@ dependencies = [
 
 [project.optional-dependencies]
 crepe = ["torch>=2.0", "torchcrepe>=0.0.20"]
+# LGPL-3.0, which is why it is an extra and never a dependency.
+pesto = ["torch>=2.0", "pesto-pitch>=2.0"]
 # Scoring lives in its own package, and so does anything that needs it. Tuning
 # borrows its metrics and dataset loading; this package ships no benchmark.
 tune = [

@@ -31,7 +31,9 @@ class TranscriptionConfig:
 
     # ---------------- f0 estimation ----------------
     f0_backend: str = "crepe"
-    """'crepe' (torchcrepe, neural, most accurate) or 'pyin' (librosa, no torch)."""
+    """'crepe' (torchcrepe, neural, most accurate), 'pyin' (librosa, no torch)
+    or 'pesto' (pesto-pitch, neural, small and fast), or any name added with
+    ``f0.register_f0_backend``. Thresholds in this file were set on CREPE."""
 
     crepe_model: str = "full"
     """torchcrepe capacity: 'full' (best) or 'tiny' (fast)."""
@@ -675,6 +677,17 @@ class TranscriptionConfig:
     """Tempo written into the MIDI header. Note times are absolute seconds and
     are unaffected by this value; it only sets how a DAW displays the grid."""
 
+    twelve_tet: bool = False
+    """Coerce each note to a whole equal-tempered semitone in the MIDI file.
+
+    Off by default: each note keeps its integer ``pitch`` -- the nearest
+    semitone, as ``pitch_reference`` defines it -- and carries what was
+    actually measured, ``pitch_midi_float``, as a pitch bend at its start. A
+    player hears the sung pitch and a notation program that ignores bends
+    still shows the nearest note. On, the file holds whole semitones only,
+    as every transcription before this option did. The JSON and CSV outputs
+    carry both pitches either way."""
+
     velocity_from_loudness: bool = True
     """Derive MIDI velocity from note loudness rather than using a constant."""
 
@@ -695,8 +708,13 @@ class TranscriptionConfig:
         return cls(**data)
 
     def validate(self) -> None:
-        if self.f0_backend not in ("crepe", "pyin"):
-            raise ValueError(f"f0_backend must be 'crepe' or 'pyin', got {self.f0_backend!r}")
+        # Imported here: f0 imports this module, and backends can be added at
+        # run time, so the list is only known when a config is checked.
+        from .f0 import f0_backends
+
+        if self.f0_backend not in f0_backends():
+            raise ValueError(f"f0_backend must be one of {', '.join(f0_backends())}, "
+                             f"got {self.f0_backend!r}")
         if self.crepe_model not in ("full", "tiny"):
             raise ValueError(f"crepe_model must be 'full' or 'tiny', got {self.crepe_model!r}")
         if self.fmin_hz <= 0 or self.fmax_hz <= self.fmin_hz:

@@ -51,14 +51,19 @@ Not published. Install it from a checkout:
 ```shell
 pip install -e .              # pYIN backend, no torch
 pip install -e ".[crepe]"     # adds the CREPE backend, which is better
+pip install -e ".[pesto]"     # adds PESTO: small, fast, LGPL-3.0
 ```
 
 The `pip install transcpybe` form in this section is what it will look like if
 this is ever released; `pyproject.toml` carries a classifier that makes PyPI
 reject an upload until someone removes it on purpose.
 
-CREPE is the default and the more accurate of the two, but it wants torch. The
-plain install works without it; pass `--f0-backend pyin`.
+CREPE is the default and the most accurate, but it wants torch. The plain
+install works without it; pass `--f0-backend pyin`. PESTO (Riou et al., ISMIR
+2023) is a far smaller network than CREPE; pass `--f0-backend pesto`. Every
+threshold here was set on CREPE's output, so the other trackers run on
+settings chosen for a different one. Any other tracker plugs in with
+`transcpybe.f0.register_f0_backend`.
 
 ## Use
 
@@ -78,9 +83,23 @@ transcpybe lead-vocal.wav --crepe-model tiny
 # No torch installed
 transcpybe lead-vocal.wav --f0-backend pyin
 
+# A much smaller pitch network
+transcpybe lead-vocal.wav --f0-backend pesto
+
+# Whole equal-tempered semitones only (see below)
+transcpybe lead-vocal.wav --12tet
+
 # Check the install against the built-in synthetic benchmark
 transcpybe --self-test
 ```
+
+Each note's MIDI number is the semitone nearest what was sung, and by default
+the MIDI file also carries what was measured as a pitch bend at the note's
+start (General MIDI's two-semitone range), so it plays back at the sung pitch
+and a notation program that ignores bends still shows the nearest note.
+`--12tet` writes whole semitones only. The JSON and CSV files carry both
+(`pitch`, `pitch_midi_float`) either way, and `transcpybe.midi_io.read_midi_notes`
+reads a file back with its bends applied.
 
 ## Monitoring a run
 
