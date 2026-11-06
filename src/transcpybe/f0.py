@@ -365,6 +365,31 @@ def _pesto_margin(model, sample_rate: int, hop: int) -> int:
     return max(widths) // 2 + hop
 
 
+@contextmanager
+def _full_float32(device) -> Iterator[None]:
+    """Turn off TF32 while PESTO runs on a GPU, then restore the setting.
+
+    PyTorch lets cuDNN use TF32 for float32 convolutions by default on Ampere
+    and later GPUs. Its 10-bit mantissa is too coarse for PESTO's 4096-tap
+    constant-Q convolution: some frames' pitch moved by up to 31 semitones
+    from the CPU's on vocadito (RTX 3080), and the presets' notes changed on
+    8 of vocadito's 40 recordings and 16 of Molina's 38. In full float32 the
+    GPU gives the CPU's frames, and is faster here too. The switch is
+    process-wide while it lasts.
+    """
+    if not str(device).startswith("cuda"):
+        yield
+        return
+    import torch
+
+    saved = torch.backends.cudnn.allow_tf32, torch.backends.cuda.matmul.allow_tf32
+    torch.backends.cudnn.allow_tf32 = torch.backends.cuda.matmul.allow_tf32 = False
+    try:
+        yield
+    finally:
+        torch.backends.cudnn.allow_tf32, torch.backends.cuda.matmul.allow_tf32 = saved
+
+
 def _estimate_pesto(
     audio: np.ndarray,
     config: TranscriptionConfig,
@@ -382,7 +407,8 @@ def _estimate_pesto(
     A file is given to PESTO ``PESTO_CHUNK_S`` at a time, each chunk with
     enough audio either side (``_pesto_margin``) that its frames are the ones a
     single pass would give, so memory stays bounded however long the file.
-    Progress is reported by chunk.
+    Progress is reported by chunk. On a GPU it runs without TF32
+    (``_full_float32``).
 
     PESTO has no voicing decision. Its confidence stands in for periodicity,
     which is the nearest thing it offers, not the same thing: thresholds set on
@@ -415,7 +441,8 @@ def _estimate_pesto(
 
     audio_t = torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32)).to(config.device)
     pitch_parts, confidence_parts = [], []
-    with progress.stage(f"PESTO on {config.device}", total=len(starts)) as stage, torch.inference_mode():
+    with progress.stage(f"PESTO on {config.device}", total=len(starts)) as stage, torch.inference_mode(), \
+            _full_float32(config.device):
         for first in starts:
             last = min(first + per_chunk, n_frames)                # keep frames [first, last)
             lo = max(0, first - margin) * hop                      # their audio, with the margin either side

@@ -165,3 +165,22 @@ def test_a_transcription_reads_back_at_its_measured_pitches(tmp_path):
     assert len(back) == len(result.notes)
     for (_, _, pitch), note in zip(back, result.notes):
         assert abs(pitch - note.pitch_midi_float) < 0.001
+
+
+def test_pesto_runs_without_tf32_on_a_gpu_and_restores_the_setting():
+    # TF32 moved PESTO's pitch by octaves on an RTX 3080; full float32 gives the CPU's frames.
+    import torch
+
+    from transcpybe.f0 import _full_float32
+
+    before = torch.backends.cudnn.allow_tf32, torch.backends.cuda.matmul.allow_tf32
+    torch.backends.cudnn.allow_tf32 = True
+    try:
+        with _full_float32("cuda:0"):
+            assert torch.backends.cudnn.allow_tf32 is False
+            assert torch.backends.cuda.matmul.allow_tf32 is False
+        assert torch.backends.cudnn.allow_tf32 is True
+        with _full_float32("cpu"):
+            assert torch.backends.cudnn.allow_tf32 is True        # nothing to change off a GPU
+    finally:
+        torch.backends.cudnn.allow_tf32, torch.backends.cuda.matmul.allow_tf32 = before
