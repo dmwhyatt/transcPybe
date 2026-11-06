@@ -342,6 +342,28 @@ PESTO_CHECKPOINT = "mir-1k_g7"
 _pesto_models: Dict[Tuple[float, int, str], Any] = {}
 """Loaded PESTO models by (step, rate, device), so a batch loads one once."""
 
+PESTO_CHUNK_S = 30.0
+"""How much audio PESTO's frames are computed from at a time. In one pass its
+memory grows with the file: a 17-minute song asked for over 10 GB of GPU
+memory, more than a 10 GB card has, so long files go in chunks."""
+
+
+def _pesto_margin(model, sample_rate: int, hop: int) -> int:
+    """Samples of audio needed beside a chunk's frames for them to come out as a
+    single pass over the file gives them.
+
+    PESTO's network judges each frame on its own; only its harmonic constant-Q
+    transform reaches into the audio around a frame, one kernel wide and
+    centred on it. So the margin is half the widest kernel plus a frame: in
+    pesto-pitch 2.0.1 at 16 kHz the kernel is 4096 samples, so 0.14 s. Three
+    seconds if the kernels cannot be found, as in a later pesto-pitch that
+    keeps them elsewhere."""
+    kernels = getattr(getattr(model.preprocessor, "hcqt_kernels", None), "cqt_kernels", None) or []
+    widths = [int(getattr(k, "kernel_width", 0)) for k in kernels]
+    if not widths or min(widths) <= 0:
+        return int(3.0 * sample_rate)
+    return max(widths) // 2 + hop
+
 
 def _estimate_pesto(
     audio: np.ndarray,
@@ -353,8 +375,14 @@ def _estimate_pesto(
     PESTO centres its constant-Q frames on multiples of its step, as CREPE does
     with padding, so at 16 kHz and a 10 ms step its frames are already these.
     It rounds the step to whole samples, though, so at other rates its frames
-    drift; the contour is interpolated onto ``k * hop`` either way, in log
-    frequency, and cut or extended to the frame count the other backends give.
+    drift; the contour is interpolated from where its frames are onto
+    ``k * hop``, in log frequency, and cut or extended to the frame count the
+    other backends give.
+
+    A file is given to PESTO ``PESTO_CHUNK_S`` at a time, each chunk with
+    enough audio either side (``_pesto_margin``) that its frames are the ones a
+    single pass would give, so memory stays bounded however long the file.
+    Progress is reported by chunk.
 
     PESTO has no voicing decision. Its confidence stands in for periodicity,
     which is the nearest thing it offers, not the same thing: thresholds set on
@@ -378,17 +406,33 @@ def _estimate_pesto(
                                  sampling_rate=config.sample_rate).to(config.device)
         _pesto_models[key] = model
 
-    audio_t = torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32)).to(config.device)
-    with progress.stage(f"PESTO on {config.device}"), torch.inference_mode():
-        pitch, confidence, _volume, _activations = model(
-            audio_t, sr=config.sample_rate, convert_to_freq=True, return_activations=True
-        )
+    sr, n = int(config.sample_rate), int(audio.shape[0])
+    hop = int(model.hop_size * sr / 1000 + 0.5)        # PESTO's step in samples, rounded as its preprocessor does
+    n_frames = n // hop + 1                             # centred on 0, hop, 2 hop, ...
+    per_chunk = max(1, int(PESTO_CHUNK_S * sr) // hop)
+    margin = -(-_pesto_margin(model, sr, hop) // hop)   # in whole frames, so every chunk starts on PESTO's grid
+    starts = range(0, n_frames, per_chunk)
 
-    pitch_hz = pitch.cpu().numpy().astype(np.float64)
-    confidence = confidence.cpu().numpy().astype(np.float64)
+    audio_t = torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32)).to(config.device)
+    pitch_parts, confidence_parts = [], []
+    with progress.stage(f"PESTO on {config.device}", total=len(starts)) as stage, torch.inference_mode():
+        for first in starts:
+            last = min(first + per_chunk, n_frames)                # keep frames [first, last)
+            lo = max(0, first - margin) * hop                      # their audio, with the margin either side
+            hi = min(n, (last - 1 + margin) * hop + 1)
+            pitch, confidence, _volume, _activations = model(
+                audio_t[lo:hi], sr=sr, convert_to_freq=True, return_activations=True
+            )
+            keep = slice(first - lo // hop, last - lo // hop)
+            pitch_parts.append(pitch[keep].cpu().numpy())
+            confidence_parts.append(confidence[keep].cpu().numpy())
+            stage.advance(1, detail=f"{last * hop / sr:.0f}s / {n / sr:.0f}s audio")
+
+    pitch_hz = np.concatenate(pitch_parts).astype(np.float64)
+    confidence = np.concatenate(confidence_parts).astype(np.float64)
 
     hop_s = config.hop_length / config.sample_rate
-    their_times = np.arange(pitch_hz.shape[0]) * (model.hop_size / 1000.0)
+    their_times = np.arange(pitch_hz.shape[0]) * (hop / sr)
     our_times = np.arange(1 + audio.shape[0] // config.hop_length) * hop_s
     log_f0 = np.interp(our_times, their_times, np.log2(np.maximum(pitch_hz, 1e-6)))
     f0_hz = 2.0 ** log_f0

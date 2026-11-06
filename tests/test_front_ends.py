@@ -90,6 +90,27 @@ def test_pesto_lands_on_this_package_s_frame_grid_and_hears_the_pitch(sr):
     assert np.median(track.periodicity) > 0.5
 
 
+@pytest.mark.skipif(not HAS_PESTO, reason="pesto-pitch is not installed")
+@pytest.mark.parametrize("sr", [16000, 22050])
+def test_pesto_in_chunks_gives_the_frames_of_one_pass(monkeypatch, sr):
+    # Long files go to PESTO in chunks so its memory stays bounded; with a
+    # margin of half its widest kernel either side, each chunk's frames are
+    # the ones one pass over the file gives. Chunks of 0.37 s make many seams.
+    import transcpybe.f0 as f0_module
+
+    config = TranscriptionConfig(f0_backend="pesto", device="cpu", sample_rate=sr)
+    t = np.arange(int(4.0 * sr)) / sr
+    glide = 2 * np.pi * np.cumsum(150.0 * 2 ** (t / 2.0)) / sr        # 150 Hz up two octaves
+    audio = (0.3 * np.sin(glide) * (np.sin(2 * np.pi * 1.3 * t) > -0.5)
+             + 0.01 * np.random.default_rng(0).standard_normal(t.size)).astype(np.float32)
+    whole_f0, whole_conf = f0_module._estimate_pesto(audio, config)   # 4 s: one chunk
+    monkeypatch.setattr(f0_module, "PESTO_CHUNK_S", 0.37)
+    f0_hz, conf = f0_module._estimate_pesto(audio, config)
+    assert f0_hz.shape == whole_f0.shape
+    np.testing.assert_allclose(f0_hz, whole_f0, rtol=1e-4, equal_nan=True)
+    np.testing.assert_allclose(conf, whole_conf, atol=1e-4)
+
+
 def test_twelve_tet_is_off_by_default_and_the_cli_can_turn_it_on():
     assert TranscriptionConfig().twelve_tet is False
     assert config_from_args(build_parser().parse_args(["x.wav"])).twelve_tet is False
