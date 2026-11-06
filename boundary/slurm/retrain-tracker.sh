@@ -5,7 +5,9 @@
 # It checks the setup, then submits, each waiting for the one before to succeed:
 #   1. part 0 of the training data, a trial (round 1 did the same on 22 Oct);
 #   2. the other parts;
-#   3. training (train-tracker.sbatch).
+#   3. training (train-tracker.sbatch), on an A100.
+# The data parts go to Ice Lake CPU nodes (prepare-cpu.sbatch): neither tracker needs the GPU, and the CPU queue is often
+# shorter. PREP=prepare sends them to A100 nodes instead, as round 1 ran (PESTO then runs on the GPU).
 # The mixes are round 1's: its vocals, accompaniment and number of parts come from its .done records, and mixing is
 # seeded per recording, so only the pitch features differ. Outputs: $DATA/m4gts-musdb-TRACKER/shards and
 # $DATA/runs/r2-lm-TRACKER. A rerun skips finished parts. MAIL=you@cam.ac.uk adds Slurm's end and failure emails.
@@ -16,8 +18,15 @@ TRANSCPYBE_SRC=${TRANSCPYBE_SRC:-$HOME/transcPybe-fe/src}   # claude/pitch-front
 ROUND1=${ROUND1:-$DATA/m4gts-musdb}
 OUT=${OUT:-$DATA/m4gts-musdb-$TRACKER}; RUN=${RUN:-$DATA/runs/r2-lm-$TRACKER}
 LABELLED=${LABELLED:-$ROUND1/all-lm.jsonl}; M4=${M4:-$ROUND1/m4-lm.jsonl}   # round 2's (csd3-runs/r2-lm/seed0/args.json)
-# Feature processes per part: 8 share the GPU for PESTO, as for CREPE; pYIN runs on the CPU, so 24 of the 32 cores.
-case $TRACKER in pesto) WORKERS=${WORKERS:-8} ;; pyin) WORKERS=${WORKERS:-24} ;; *) echo "pesto or pyin, not $TRACKER" >&2; exit 2 ;; esac
+PREP=${PREP:-prepare-cpu}
+# Feature processes per part, of 32 cores: pYIN, one core each, 24; PESTO on the CPU, 16 of two threads each; PESTO on
+# an A100 (PREP=prepare), 8 sharing the GPU, as CREPE did.
+case $TRACKER in
+    pesto) [ "$PREP" = prepare ] && WORKERS=${WORKERS:-8} || WORKERS=${WORKERS:-16} ;;
+    pyin) WORKERS=${WORKERS:-24} ;;
+    *) echo "pesto or pyin, not $TRACKER" >&2; exit 2 ;;
+esac
+case $PREP in prepare|prepare-cpu) ;; *) echo "PREP is prepare-cpu or prepare, not $PREP" >&2; exit 2 ;; esac
 
 for f in "$LABELLED" "$M4"; do [ -s "$f" ] || { echo "missing $f" >&2; exit 1; }; done
 # transcPybe with the tracker (and, for PESTO, its chunking and TF32 fix of 4e23d5b), and pesto-pitch in the venv
@@ -58,10 +67,12 @@ cd "$REPO"
 job() { sed -n 's/^submitted [a-z-]* as job \([0-9][0-9]*\);.*/\1/p' | tail -1; }
 common=(VOCALS="$VOCALS" ACCOMP="$ACCOMP" DEPTH="$DEPTH" OUT="$OUT" NPARTS="$NPARTS" F0_BACKEND="$TRACKER"
         WORKERS="$WORKERS" TRANSCPYBE_SRC="$TRANSCPYBE_SRC")
-p0=$(bash boundary/slurm/submit.sh prepare "${common[@]}" --array=0 | tee /dev/stderr | job)
-p1=$(bash boundary/slurm/submit.sh prepare "${common[@]}" --array=1-$((NPARTS - 1)) --dependency=afterok:$p0 \
+p0=$(bash boundary/slurm/submit.sh "$PREP" "${common[@]}" --array=0 | tee /dev/stderr | job)
+p1=$(bash boundary/slurm/submit.sh "$PREP" "${common[@]}" --array=1-$((NPARTS - 1)) --dependency=afterok:$p0 \
      | tee /dev/stderr | job)
 t=$(bash boundary/slurm/submit.sh train-tracker TRACKER="$TRACKER" SHARDS="$OUT/shards" RUN="$RUN" LABELLED="$LABELLED" \
     M4="$M4" TRANSCPYBE_SRC="$TRANSCPYBE_SRC" --dependency=afterok:$p0:$p1 | tee /dev/stderr | job)
 [ -n "$p0" ] && [ -n "$p1" ] && [ -n "$t" ] || { echo "a submission failed; see above" >&2; exit 1; }
-echo "$TRACKER: trial part $p0, parts $p1, training $t (each after the one before succeeds)"
+echo "$TRACKER: trial part $p0, parts $p1 ($PREP), training $t (each after the one before succeeds)"
+echo "once the trial is done: sacct -X -j $p0 -o Elapsed,State; then trim the waiting parts to about twice that with"
+echo "  scontrol update JobId=$p1 TimeLimit=HH:MM:SS"

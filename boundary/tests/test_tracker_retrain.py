@@ -134,3 +134,40 @@ def test_the_voicing_map_puts_a_lower_confidence_on_crepes_scale(tmp_path):
     report = json.loads((tmp_path / "map.json").read_text())
     assert report["frames"] == 250 and report["voiced_share"]["other"] < report["voiced_share"]["crepe"]
     assert report["voiced_share"]["other_mapped"] == pytest.approx(report["voiced_share"]["crepe"], abs=0.02)
+
+
+def test_a_second_trackers_run_swaps_into_the_labelled_rows_and_trains_against_its_twins(tmp_path):
+    # The whole path on synthetic data, on the CPU: round 1's parts with one tracker, labelled; the same parts with
+    # another; swap_features; then training with --label-voicing, which checks every row against its twin.
+    pytest.importorskip("torch")
+    pytest.importorskip("pesto")
+    from boundary import items, prepare, train
+    from boundary.swap_features import main as swap
+    from boundary.tests.test_boundary import _synthetic_vocals
+    from transcpybe.f0 import f0_backends
+
+    if "pesto" not in f0_backends():
+        pytest.skip("this transcPybe has no PESTO tracker (put claude/pitch-front-ends in front)")
+    items.write(tmp_path / "vocals.jsonl", _synthetic_vocals(tmp_path))
+    for tracker in ("pyin", "pesto"):
+        for part in ("0/2", "1/2"):
+            prepare.main([str(tmp_path / "vocals.jsonl"), str(tmp_path / tracker), "--part", part, "--workers", "1",
+                          "--accomp", "synthetic", "--var-db", "20", "35", "--scratch", str(tmp_path / "scratch"),
+                          "--device", "cpu", "--f0-backend", tracker, "--mix-workers", "1"])
+    labelled = []
+    for s in sorted((tmp_path / "pyin" / "shards").glob("*.jsonl")):       # round 2's step: landmarks on each note
+        for r in items.read(s):
+            labelled.append(dict(r, landmarks=[[a - 0.05, a, i == 1] for i, (a, _, _) in enumerate(r["notes"])]))
+    items.write(tmp_path / "all-lm.jsonl", labelled)
+    with pytest.raises(SystemExit, match="were not made with pesto"):                  # parts made with pyin
+        swap([str(tmp_path / "all-lm.jsonl"), str(tmp_path / "x.jsonl"), "--shards", str(tmp_path / "pyin" / "shards"),
+              "--expect-f0-backend", "pesto"])
+    swap([str(tmp_path / "all-lm.jsonl"), str(tmp_path / "swapped.jsonl"), "--shards",
+          str(tmp_path / "pesto" / "shards"), "--expect-f0-backend", "pesto"])
+    swapped = items.read(tmp_path / "swapped.jsonl")
+    assert [r["mix_id"] for r in swapped] == [r["mix_id"] for r in labelled]
+    assert all("/pesto/" in r["shard"] for r in swapped)
+    train.main([str(tmp_path / "swapped.jsonl"), "--out", str(tmp_path / "run"), "--steps", "6", "--eval-every", "3",
+                "--batch", "2", "--device", "cpu", "--onset-labels", "landmarks",
+                "--label-voicing", str(tmp_path / "all-lm.jsonl")])
+    assert len((tmp_path / "run" / "log.jsonl").read_text().splitlines()) == 2
