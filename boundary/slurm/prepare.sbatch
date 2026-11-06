@@ -10,7 +10,8 @@
 # took 8.5 min on one A100, mixing and features together at about 2 clips/s; margin x2. Override with --time= for
 # bigger parts. Slurm gives each Ampere GPU 32 cores and 250 GB, which 8 feature workers and one part's audio fit
 # comfortably.
-# A rerun skips finished parts.
+# A rerun skips finished parts. F0_BACKEND=pesto or pyin makes the pitch features with that tracker instead of CREPE
+# full (TRACKER-RETRAIN-PLAN.md).
 #SBATCH -J boundary-prepare
 #SBATCH -A HARRISON-SL3-GPU
 #SBATCH -p ampere
@@ -26,4 +27,5 @@ LOCAL=/local
 echo "scratch on $LOCAL: $(df -h "$LOCAL" | tail -1)"
 python -m boundary.prepare "$VOCALS" "$OUT" --accomp "$ACCOMP" --accomp-depth "${DEPTH:-2}" \
     --variants "${VARIANTS:-1}" --seed "${SEED:-0}" --var-db ${VAR_DB:-20 35} --part "$PART/${NPARTS:-1}" \
-    --scratch "$LOCAL/$USER-${SLURM_JOB_ID:-local}-$PART" --workers "${WORKERS:-8}" --device cuda
+    --scratch "$LOCAL/$USER-${SLURM_JOB_ID:-local}-$PART" --workers "${WORKERS:-8}" --device cuda \
+    ${F0_BACKEND:+--f0-backend "$F0_BACKEND"}

@@ -74,6 +74,13 @@ vowel rule moves, how far, and the gap between the landmarks, then stops. A
 training run refuses to start if the median move is outside 20-120 ms, which
 would mean the rule is not doing what it is meant to.
 
+``--label-voicing REF.jsonl`` takes the voicing that places those vowel starts
+from another manifest of the same mixes, matched by ``mix_id``: a network
+trained on another pitch tracker's features then learns the targets the CREPE
+network learned (TRACKER-RETRAIN-PLAN.md), and only its inputs differ. Each row
+must be the same mix as its twin, with the same notes, landmarks, targets and
+spectrogram, or the run stops.
+
 ``--onset-width`` widens the targets of the onset outputs (round 3,
 ``ROUND3-PLAN.md``). At the usual 2 frames an output marks a start with a spike.
 At 10 frames it says how close each frame is to the nearest start: the target
@@ -212,12 +219,42 @@ def onset_labels(r, voicing: np.ndarray, mode: str):
     return articulation, vowel, moves
 
 
-def load_split(rows, split, mode: str = "stored", onset_width: int = TARGET_WIDTH):
+MEL_TWIN_TOL = 0.01      # --label-voicing: the most two shards' spectrograms of one mix may differ (float16 steps)
+
+
+def _twin_voicing(r: dict, z: dict, twins: dict, shards: dict) -> np.ndarray:
+    """``--label-voicing``: the voicing column of ``r``'s twin in the other manifest, once the two are shown to be one
+    mix (same notes and landmarks, same targets, same spectrogram)."""
+    from .pack import read
+
+    twin = twins.get(r["mix_id"])
+    if twin is None:
+        raise SystemExit(f"{r['mix_id']}: not in the --label-voicing manifest")
+    if twin["notes"] != r["notes"] or twin.get("landmarks") != r.get("landmarks"):
+        raise SystemExit(f"{r['mix_id']}: its notes or landmarks differ from its --label-voicing twin's")
+    if "shard" in twin:
+        t = read(twin["shard"], twin["index"], shards)
+    else:
+        with np.load(twin["features"]) as f:
+            t = {k: f[k] for k in ("mel", "aux", "y")}
+    if t["y"].shape != z["y"].shape or not np.array_equal(t["y"], z["y"]):
+        raise SystemExit(f"{r['mix_id']}: its stored targets differ from its --label-voicing twin's: not the same mix")
+    if t["mel"].shape != z["mel"].shape:
+        raise SystemExit(f"{r['mix_id']}: its spectrogram has {len(z['mel'])} frames, its twin's {len(t['mel'])}")
+    gap = float(np.max(np.abs(t["mel"].astype(np.float32) - z["mel"].astype(np.float32)))) if len(z["mel"]) else 0.0
+    if gap > MEL_TWIN_TOL:
+        raise SystemExit(f"{r['mix_id']}: its spectrogram differs from its --label-voicing twin's by up to {gap:.3g}: "
+                         "not the same mix")
+    return t["aux"][:, VOICING_COLUMN].astype(np.float32)
+
+
+def load_split(rows, split, mode: str = "stored", onset_width: int = TARGET_WIDTH, twins: dict | None = None):
     """One split's recordings, from per-recording feature files or from shards (boundary.pack).
 
     ``mode`` is ``--onset-labels``: with ``stored`` the onset target is the shard's; otherwise column 0 is rebuilt
     from ``onset_labels``, and ``landmarks`` adds the vowel target as a fifth column. Rebuilt onset targets spread
-    ``onset_width`` frames either side (``--onset-width``)."""
+    ``onset_width`` frames either side (``--onset-width``). With ``twins`` (``--label-voicing``: rows of the same
+    mixes by ``mix_id``), the voicing that places vowel-initial notes' vowel starts is the twin's."""
     from .pack import read
 
     out, shards = [], {}
@@ -233,7 +270,8 @@ def load_split(rows, split, mode: str = "stored", onset_width: int = TARGET_WIDT
             raise SystemExit(f"{r['mix_id']}: the stored onset targets don't match its notes, so the re-sung target "
                              "worked out from them would be misplaced")
         aux = z["aux"].astype(np.float32)
-        col0, vowel, moves = onset_labels(r, aux[:, VOICING_COLUMN], mode)
+        voicing = aux[:, VOICING_COLUMN] if twins is None else _twin_voicing(r, z, twins, shards)
+        col0, vowel, moves = onset_labels(r, voicing, mode)
         if mode != "stored":
             y[:, 0] = targets(col0, len(y), onset_width)[:, 0]
         y = np.concatenate([y, resung_target(r["notes"], len(y))[:, None]], axis=1)
@@ -431,6 +469,9 @@ def main(argv=None) -> None:
     ap.add_argument("--snapshots", type=int, nargs="+", default=[], metavar="STEP",
                     help="also save snapshot-<step>.pt at each of these steps")
     ap.add_argument("--device", default="auto")
+    ap.add_argument("--label-voicing", action="append", type=Path, default=[], metavar="REF.jsonl",
+                    help="place vowel-initial notes' vowel targets with the voicing of these rows of the same mixes, "
+                         "by mix_id (another pitch tracker's run: TRACKER-RETRAIN-PLAN.md); repeatable")
     ap.add_argument("--extra-valid", action="append", default=[], metavar="NAME=FEATURES.jsonl",
                     help="another set to evaluate (its valid split) and log, never used to choose a checkpoint")
     args = ap.parse_args(argv)
@@ -448,12 +489,16 @@ def main(argv=None) -> None:
         raise SystemExit(f"--snapshots must lie in 1..{args.steps}")
     features = [str(f.resolve()) for f in args.features]
     run_args = dict(vars(args), features=features, out=str(args.out.resolve()) if args.out else None,
-                    init=str(args.init.resolve()) if args.init else None)
+                    init=str(args.init.resolve()) if args.init else None,
+                    label_voicing=[str(f.resolve()) for f in args.label_voicing])
+    if args.label_voicing and args.onset_labels not in ("vowel-voicing", "landmarks"):
+        raise SystemExit("--label-voicing needs --onset-labels vowel-voicing or landmarks: only they use voicing")
+    twins = {r["mix_id"]: r for f in args.label_voicing for r in manifest.read(f.resolve())} or None
     rows = [r for f in features for r in manifest.read(f)]
     if args.eval_only is None and args.out is None and not args.report_labels:
         raise SystemExit("--out is required unless --eval-only or --report-labels is given")
-    train = [] if args.eval_only else load_split(rows, "train", args.onset_labels, args.onset_width)
-    valid = load_split(rows, "valid", args.onset_labels, args.onset_width)
+    train = [] if args.eval_only else load_split(rows, "train", args.onset_labels, args.onset_width, twins)
+    valid = load_split(rows, "valid", args.onset_labels, args.onset_width, twins)
     if (not train and not args.eval_only) or not valid:
         raise SystemExit(f"need both splits: {len(train)} train, {len(valid)} valid")
     extra = {}
@@ -461,7 +506,8 @@ def main(argv=None) -> None:
         name, _, path = spec.partition("=")
         if not name or not path:
             raise SystemExit(f"--extra-valid wants NAME=FEATURES.jsonl, not {spec!r}")
-        extra[name] = load_split(manifest.read(Path(path).resolve()), "valid", args.onset_labels, args.onset_width)
+        extra[name] = load_split(manifest.read(Path(path).resolve()), "valid", args.onset_labels, args.onset_width,
+                                 twins)
         if not extra[name]:
             raise SystemExit(f"--extra-valid {name}: no valid split in {path}")
 

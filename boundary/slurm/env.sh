@@ -18,7 +18,9 @@ case "${SLURM_JOB_PARTITION:-}" in
 esac
 source "$VENV/bin/activate"
 [ "$_boundary_nounset" = 1 ] && set -u
-export PYTHONPATH="$REPO:$REPO/src${PYTHONPATH:+:$PYTHONPATH}" PYTHONUNBUFFERED=1
+# TRANSCPYBE_SRC puts another transcPybe in front of this repository's own, e.g. a checkout of
+# claude/pitch-front-ends for its PESTO tracker (TRACKER-RETRAIN-PLAN.md); unset, nothing changes.
+export PYTHONPATH="$REPO:${TRANSCPYBE_SRC:-$REPO/src}${PYTHONPATH:+:$PYTHONPATH}" PYTHONUNBUFFERED=1
 # One thread per allocated core, as CSD3's PyTorch guide sets. CSD3's login environment sets OMP_NUM_THREADS=1 and
 # sbatch carries it into the job, and nproc obeys OMP_NUM_THREADS, so count the job's cores without it: on 21 Oct
 # every job ran single-threaded because of this (nproc said 1; the real count on a login node was 76).
@@ -40,4 +42,5 @@ _boundary_ledger start "repo=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null
 trap '_boundary_rc=$?; _boundary_ledger end "exit=$_boundary_rc elapsed_s=$(( $(date +%s) - _boundary_t0 ))"' EXIT
 trap 'exit 143' TERM
 echo "$(date -u +%FT%TZ) $(hostname) job=${SLURM_JOB_ID:-none} repo=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null) cwd=$PWD gpus=$_boundary_gpus cores=$OMP_NUM_THREADS setup=$(( $(date +%s) - _boundary_t0 ))s"
+[ -n "${TRANSCPYBE_SRC:-}" ] && echo "transcpybe from $TRANSCPYBE_SRC at $(git -C "$TRANSCPYBE_SRC" rev-parse --short HEAD 2>/dev/null)"
 [ "$_boundary_gpus" != 0 ] && command -v nvidia-smi >/dev/null && nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
