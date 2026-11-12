@@ -169,7 +169,7 @@ def test_a_transcription_reads_back_at_its_measured_pitches(tmp_path):
 
 def test_pesto_runs_without_tf32_on_a_gpu_and_restores_the_setting():
     # TF32 moved PESTO's pitch by octaves on an RTX 3080; full float32 gives the CPU's frames.
-    import torch
+    torch = pytest.importorskip("torch")   # the base install, as CI runs it, has no torch
 
     from transcpybe.f0 import _full_float32
 
