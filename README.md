@@ -8,9 +8,9 @@ No GPU required and no checkpoint downloads: both pitch models ship their
 weights inside their PyPI wheels.
 
 ```
-audio ──▶ f0 + voicing ──▶ note HMM ──▶ glide handling ──▶ onset refinement ──▶ notes ──▶ .mid
-          CREPE / pYIN      Viterbi      portamento         spectral flux        pitch     .json
-                                                            (note starts)        measure   .csv
+audio ──▶ f0 + voicing ──▶ note HMM ──▶ glide handling ──▶ onset refinement ──▶ notes ──▶ note ends ──▶ .mid
+          CREPE / pYIN      Viterbi,     portamento         spectral flux        pitch     release      .json
+                            ⅓-semitone                      (note starts)        measure   trim         .csv
 ```
 
 ## How good is it?
@@ -28,6 +28,13 @@ hand — scored with `mir_eval` at the usual 50 ms / 50 cent tolerances:
 Read those against the last row rather than against 1.0: two people annotating
 the same recordings agree at 0.740 on onset and pitch, so most of the remaining
 gap is a disagreement about what counts as a note.
+
+That row was measured before the changes in
+[What the realistic corpus says](#what-the-realistic-corpus-says) -- note ends
+trimmed at 15 dB, a third-of-a-semitone decoder, sung-pitch rounding and
+repaired glide handling. On synthetic recordings built to resemble vocadito
+they are worth +0.118 COnPOff on recordings nothing was tuned on, but no
+vocadito figure exists for them yet.
 
 Both systems were run on the same audio and scored against the same references
 with the same tolerances, which is the only way that comparison means anything.
@@ -213,13 +220,20 @@ percentile level. Without that gate, the residue separation leaves in silent
 passages is transcribed as notes — it genuinely is periodic, so the pitch model
 reports it with high confidence.
 
-**2. Note decoding.** A Viterbi decode over one state per semitone plus a single
-unvoiced state. Emissions score each semitone by how close it is to the measured
-pitch, weighted by voicing; transitions make staying in a note cheap, changing
-note expensive, and large leaps slightly more expensive than small ones. This
-follows the note-tracking design of the Tony transcription system, simplified to
-one state per semitone: vibrato is absorbed by the emission width and the
-self-transition bias rather than by Tony's sub-semitone grid.
+**2. Note decoding.** A Viterbi decode over pitch states three to the semitone,
+plus a single unvoiced state. Emissions score each state by how close it is to
+the measured pitch, weighted by voicing; transitions make staying in a note
+cheap, changing note expensive, and large leaps slightly more expensive than
+small ones, and a note may not change by less than half a semitone. This
+follows the note-tracking design of the Tony transcription system, whose
+sub-semitone grid it shares; vibrato is absorbed by the emission width and the
+self-transition bias rather than by Tony's attack and sustain sub-states.
+
+The sub-semitone grid is there for notes sung between two semitones. With one
+state per semitone a note at 61.48 is equally well explained by 61 and 62, and
+its vibrato hands it to each in turn several times a second: a held note comes
+out as a stream of alternating fragments. A singer with no reference pitch, or
+with a quarter tone of intonation scatter, puts notes there all the time.
 
 **3. Edge fragments.** Wide vibrato sheds a few frames a semitone below at the
 end of a decaying note, which the decoder emits as a separate note. Fragments
@@ -233,20 +247,33 @@ attributing it to the note being approached. The backtrack that does this
 requires the frames it crosses to be audible, periodic, at the level of the note
 they lead into, and moving steadily — because pitch trackers keep emitting a
 smoothly drifting pitch through unvoiced noise while reporting near-zero
-confidence, and following that drift puts onsets far too early.
+confidence, and following that drift puts onsets far too early. The walk stops
+when it reaches the previous note's *sung* pitch, or when the pitch stops
+moving: it used to compare against the decoder's integer state, which a note
+sung 40 cents off never reaches, and marched 300 ms back through it.
 
 **5. Onsets.** A SuperFlux onset envelope splits repeated notes at one pitch —
 which have an attack but no pitch change, so the pitch HMM cannot see them — and
 pulls note starts onto the audible attack. SuperFlux's max filter across
-frequency is what stops vibrato registering as a stream of onsets.
+frequency is what stops vibrato registering as a stream of onsets. At a legato
+transition the boundary is shared, and pulling the new note's start back onto
+its attack shortens the note before it.
 
 **6. Pitch and cleanup.** Each note's pitch is the confidence-weighted median of
 its f0, skipping the head of the note so scoops and consonants do not drag the
-estimate, then rounded to the nearest integer. Finally, fragments of one note
-are rejoined, notes below the duration floor are dropped, and notes far quieter
+estimate, then rounded to the nearest integer -- the integer nearest what was
+sung, by default; see `--pitch-reference`. Finally, fragments of one note are
+rejoined, notes below the duration floor are dropped, and notes far quieter
 than the rest of the performance are discarded.
 
-**7. Tuning reference.** Steps 2 and 6 both assume a note's centre sits on an
+**7. Note ends.** A note ends where its level has fallen 15 dB below its own
+sustain, not where the pitch tracker stops hearing pitch. In a room those are
+far apart: the reverberant tail of a vowel is still periodic, CREPE reports it
+at a periodicity near 0.9 down to 30 dB below the note, and the decoder runs
+the note on through its release, through the room after it, and across the
+closure of an unvoiced consonant into the next note.
+
+**8. Tuning reference.** Steps 2 and 6 both assume a note's centre sits on an
 integer MIDI number, which is an assumption about the recording rather than
 about music: a take sung with no reference pitch, or against an instrument tuned
 by ear, sits wherever it sits. Offset the whole performance by more than a
@@ -278,6 +305,15 @@ separates them is a prior — tuning references cluster near A440, while that
 artefact lands near 50 cents by construction — so offsets past 40 cents are
 refused rather than applied. `--no-tuning-estimate` forces the A440 grid.
 
+The estimate moves the decoder's states; what it does to the reported integer
+is a separate choice. `--pitch-reference sung`, the default, reports the
+semitone nearest what was sung, which is what references annotated in sung
+pitch -- vocadito's among them -- score against, and which rounding to the
+recording's own grid can only lose against. `--pitch-reference tuned` reports
+the note the singer meant. With the third-of-a-semitone grid in step 2 the
+states rarely need moving at all, and taking the estimate out changes the
+realistic corpus by +0.003, inside the noise.
+
 ---
 
 ## Accuracy
@@ -288,8 +324,8 @@ pitch tolerance.
 
 | Backend | Cases perfect | Onset F | Note F (onset+pitch) | Note F (+offset) | Speed (4 CPU cores) |
 |---|---|---|---|---|---|
-| `crepe` (`full`, default) | **17 / 22** | 1.000 | **0.968** | 0.862 | ~1.6x realtime |
-| `pyin` | 16 / 22 | 0.938 | 0.944 | 0.853 | ~0.34x realtime |
+| `crepe` (`full`, default) | **18 / 22** | 1.000 | **0.968** | **0.908** | ~1.6x realtime |
+| `pyin` | 19 / 22 | 0.938 | 0.944 | 0.899 | ~0.34x realtime |
 | `crepe` (`tiny`) | — | — | — | — | ~0.11x realtime |
 
 Four of those cases exist to keep the suite honest rather than to be passed,
@@ -304,8 +340,9 @@ what a spectral-flux detector finds hardest.
 
 Read the first row against the suite it is measured on. Over these 22 cases
 CREPE scored 0.943 / 0.936 / 0.814 before the onset envelope was fixed and
-1.000 / 0.968 / 0.862 after; over the 18 cases that existed before, it scored
-1.000 / 0.978 / 0.978 either way. That is the reason the four were added rather
+1.000 / 0.968 / 0.862 after (0.908 on the last, since note ends have been
+trimmed); over the 18 cases that existed before, it scored 1.000 / 0.978 /
+0.978 either way. That is the reason the four were added rather
 than a point against them: a suite at its ceiling cannot rank two
 configurations, and this one was.
 
@@ -313,11 +350,13 @@ configurations, and this one was.
 The onset work above is worth 0.057 onset F here and, on forty real
 recordings, +0.005 with a 95% interval of [-0.006, +0.018] -- better on 19,
 worse on 19, which is the shape of a change that rearranges rather than
-improves. `release_tails` and `breath_ends` still score 0.000, because the
-trim that fixed them is now off by default: it scored 1.000 on both and cost
-0.161 COnPOff on every one of those forty recordings. Synthetic signals with
-exact ground truth are the right place to find a defect and a poor place to
-confirm a cure.
+improves. `release_tails` still scores 0.000 on the offset column. It
+annotates each end at the top of a 180 ms decay, and the release trim that
+reached it there, at 1 dB, cost 0.161 COnPOff on every one of those forty
+recordings; the trim that ships, at 15 dB, ends notes further down the decay,
+which fixes `breath_ends` (0.000 to 1.000) and leaves `release_tails` short of
+the top. Synthetic signals with exact ground truth are the right place to find
+a defect and a poor place to confirm a cure.
 
 The backends fail differently, which is why both are kept:
 
@@ -385,6 +424,84 @@ hears a performance in its own tuning, so an estimate that does the same ought
 to agree with them more often. That is an argument rather than a measurement,
 and it wants a benchmark run before it is believed.
 
+That table predates two changes, and is reproduced with
+`--pitch-states-per-semitone 1 --pitch-reference tuned`, scored against the
+pitches intended. A grid finer than a semitone now gives off-grid notes a state
+of their own whether or not the estimate fires, and the default reports the
+pitch sung rather than the pitch meant: against vocadito-style references, which
+give the sung pitch, rounding on the recording's own grid could only lose notes.
+
+### What the realistic corpus says
+
+The suite above scores 1.000 on most of its cases, which is its job and also
+its limit: it cannot rank two pipelines that both pass it, and it contains none
+of what decides where a real note ends -- every case stops a note's audio at
+the instant the reference ends it, in an anechoic room. `corpus.py` is the
+other half: 80 randomised recordings of unaccompanied, amateur-ish singing in
+a room -- reverberation, releases and falls, consonants that open voicing gaps
+or dip the level, diphthongs, inhales, singers anywhere within 50 cents of
+A440 with drift and scatter -- annotated by stated rules. Forty were used to
+find and tune the changes below; the other forty were scored once, after.
+
+Because where a note ends is a convention, every recording is scored under
+several: release ends annotated a quarter, half or all the way down the decay;
+consonant gaps closed up to the next onset; and pitch as sung (fractional, as
+vocadito annotates) or as intended. On the 40 held-out recordings, against the
+previous release:
+
+| Annotation convention | COn | COnP | COnPOff | better / worse |
+|---|---|---|---|---|
+| release ends half way down | 0.807 → **0.853** | 0.768 → **0.826** | 0.586 → **0.704** | 35 / 3 |
+| release ends a quarter down | | | 0.569 → **0.703** | 36 / 2 |
+| release ends at the bottom | | | 0.598 → **0.700** | 35 / 4 |
+| consonant gaps closed | | | 0.623 → **0.704** | 32 / 6 |
+| intended pitch | | 0.725 → **0.751** | 0.547 → **0.631** | 31 / 6 |
+
+COnPOff +0.118 [+0.084, +0.154] in the first row, with every interval in the
+table excluding zero. In order of what they are worth, taking each out of the
+shipped pipeline in turn:
+
+- **Note ends trimmed at 15 dB** (`trim_note_releases`, `release_drop_db`):
+  COnPOff -0.051 without, worse on 25 recordings and better on none. Under the
+  closed-gap convention it is worth +0.009, not significantly -- the one
+  convention under which ending a note at its consonant can cost anything.
+- **Glide backtracking against the sung pitch, stopping at a plateau**: the
+  largest gain in onsets. Added on its own, COn +0.044 [+0.027, +0.062],
+  better on 28 and worse on 4: a note sung 40 cents off its semitone no longer
+  has the next note's start walked 300 ms back through it.
+- **Rounding to the sung pitch** (`pitch_reference`): COnP -0.023 [-0.051,
+  -0.002] without, against sung-pitch references; +0.011 (not significant)
+  against intended ones. That is the trade, and the default follows the
+  benchmarks.
+- **Shared-boundary snapping**: +0.012 COnPOff, better on 8, worse on none.
+- **Third-of-a-semitone decoding** (`pitch_states_per_semitone`): -0.007
+  without, inside the noise, because the tuning estimate covers most of the
+  same ground; without either, -0.020 [-0.033, -0.008], worse on 14 and
+  better on 1. It is kept because it handles what the estimate cannot --
+  per-note scatter, drift, a performance 45 cents off -- and makes the
+  estimate's second decoding pass nearly redundant.
+- **Passing tones must touch their neighbours**: one recording in eighty
+  moves; the change stops a real short note between two rests being deleted
+  as a glide crossing.
+
+The corpus also reproduces the one real-data result there is to check it
+against. The release trim at its old 1 dB setting cost vocadito -0.161 [-0.191,
+-0.134], worse on all forty recordings; on the held-out corpus with consonant
+gaps closed it costs -0.173 [-0.212, -0.133], worse on 36. With gaps left open
+it costs -0.018, not significantly. So vocadito most likely annotates notes up
+to the next onset, and the closed-gap row is the one to read.
+
+To reproduce, or to measure a change of your own:
+
+```shell
+python scripts/corpus_score.py --out branch.json
+PYTHONPATH=../other-checkout/src python scripts/corpus_score.py --out other.json
+python scripts/corpus_score.py --compare other.json branch.json
+```
+
+The first run spends a few CPU-minutes per minute of audio on CREPE; the cache
+makes every later run, of any checkout, take seconds.
+
 ### What these numbers do and do not mean
 
 The benchmark is **synthesised**, not real singing. The synthesiser models
@@ -435,14 +552,16 @@ transcription-benchmark vocadito/audio \
 | Too many short spurious notes | `--min-note` | raise (e.g. 0.08) |
 | Sustained notes split into several | `--p-self` | raise (e.g. 0.995) |
 | Heavy vibrato still fragmenting | `--pitch-sigma` | raise (e.g. 0.7) |
+| A held note alternating between two adjacent semitones | `--pitch-states-per-semitone` | raise (3 is the default; 1 was the old decoder) |
 | Genuine fast runs merged together | `--p-self` | lower (e.g. 0.97) |
 | Notes appearing in silent passages | `--note-level-floor` | lower (e.g. 22) |
 | Quiet real notes being dropped | `--note-level-floor` | raise, or `reject_quiet_notes=False` |
 | Repeated same-pitch notes merged | keep onsets on; `--onset-split-strength` | lower |
 | Sustained notes shredded into many | `--onset-max-size`, then `--onset-split-strength` | raise |
 | Noisy input over-segmented | `--onset-delta` | raise |
-| Note ends late, running into the rest | `--release-trim`, then tune `--release-drop` | enable; lower |
-| Note ends early, with `--release-trim` on | `--release-drop` | raise |
+| Note ends late, running into the rest or the room | `--release-drop` | lower (e.g. 10) |
+| Note ends early | `--release-drop` | raise, or `--no-release-trim` |
+| Integer pitches a semitone off a performance sung off A440 | `--pitch-reference` | `tuned`, if you want the note meant rather than the note sung |
 | Onsets landing early on breathy audio | `glide_min_periodicity` | raise |
 | Voice outside the tracked range | `--fmin` / `--fmax` | widen |
 
@@ -547,14 +666,13 @@ remain bit-identical.
 
 - **Monophonic only.** One pitch at a time. Harmonies or overlapping vocal
   layers in the same stem will be transcribed as one wandering line.
-- **Offsets are softer than onsets, and nothing here refines them.** Every
-  stage in the pipeline works on note starts; a note ends wherever the pitch
-  decoder stopped hearing pitch. `--release-trim` ends it at the top of the
-  decay instead, which is right on signals whose notes are annotated where the
-  pitch stops and wrong on vocadito, where it cost 0.161 COnPOff across all
-  forty recordings. It is off by default for that reason. Where a note ends is
-  a convention, so fit `--release-drop` against your own corpus with
-  `transcpybe-tune --objective offset` before trusting either answer.
+- **Where a note ends is a convention, and this one is fitted to synthetic
+  signals.** Notes end 15 dB below their own sustain, which removes the room
+  and the release on every convention the realistic corpus tries, and is
+  neutral at worst on the one vocadito most likely uses. It has not been run
+  on vocadito. The old 1 dB trim cost 0.161 COnPOff there, so measure before
+  trusting this one, and fit `--release-drop` against your own corpus with
+  `transcpybe-tune --objective offset`.
 - **Loud separation residue** is transcribed as notes at the default level
   floor — see the dial above.
 - **A tuning reference can only be found when there is one.** The grid a
@@ -564,8 +682,11 @@ remain bit-identical.
   tone away than by the grid it meant, because shifting it there really does
   tighten the spread — so the estimate is refused past 40 cents rather than
   believed. A recording genuinely sung more than 40 cents from A440 is
-  therefore left on the wrong grid, which is the deliberate cost of not
-  re-gridding a singer who is merely imprecise.
+  therefore left on the A440 grid, which is the deliberate cost of not
+  re-gridding a singer who is merely imprecise. The decoder's
+  third-of-a-semitone states give its notes somewhere to sit regardless, so
+  this now costs only the integer labels, and only under `--pitch-reference
+  tuned`.
 - **Validated on synthetic audio.** See the caveat above.
 - **Unquantised.** Output is in seconds, with no beat tracking or rhythmic
   quantisation. That is deliberate: quantising is lossy and belongs downstream.

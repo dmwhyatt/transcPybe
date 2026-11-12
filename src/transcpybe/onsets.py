@@ -18,7 +18,7 @@ great deal for voice.
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 
@@ -167,40 +167,93 @@ def snap_segment_starts(
     frame_times: np.ndarray,
     config: TranscriptionConfig,
 ) -> List[Segment]:
-    """Pull each segment start to a nearby detected onset.
+    """Pull each segment start to a detected onset within ``onset_snap_window_s``.
 
-    A start is only moved if the shift does not collide with the previous
-    segment and does not shrink this segment below one frame.
+    ``onset_snap_direction`` decides which side of the start an onset is
+    looked for on, and only that side is searched: 'earlier' takes the nearest
+    onset at or before the start, 'later' the nearest at or after it, and
+    'both' the nearest on either side. Under 'earlier', when there is no onset
+    in the window before the start that it can move to, but there is one
+    after it, the start stays and that onset is recorded as the segment's
+    ``measure_from`` instead.
+
+    A start may move later, or earlier into silence, as long as the segment
+    keeps at least one frame. Where the segment begins exactly where the one
+    before it ends -- a legato transition -- the boundary is shared, and a
+    start that moves earlier takes the previous segment's end with it, as long
+    as that segment keeps ``min_note_duration_s``.
+
+    That last case is the one that matters. The decoder places a legato
+    boundary where the pitch has crossed over, which lags the attack that
+    starts the new syllable: a pitch tracker holds the old pitch for a few
+    frames, and a reverberant room holds it for longer. Snapping exists to pull
+    such a start back onto the attack, and it used to be forbidden from doing
+    so, because a start could never move before the previous segment's end --
+    which, for contiguous segments, is the start itself.
     """
     if len(onsets) == 0 or not segments:
         return segments
 
-    window_frames = int(round(config.onset_snap_window_s
-                              * config.sample_rate / config.hop_length))
+    hop_s = config.hop_length / config.sample_rate
+    window_frames = int(round(config.onset_snap_window_s / hop_s))
     if window_frames < 1:
         return segments
+    min_frames = max(1, int(round(config.min_note_duration_s / hop_s)))
 
     onset_frames = np.searchsorted(frame_times, onsets.times)
     onset_frames = np.clip(onset_frames, 0, frame_times.shape[0] - 1)
     if onset_frames.size == 0:
         return segments
 
+    direction = config.onset_snap_direction
     out: List[Segment] = []
-    previous_end = 0
     for seg in segments:
-        distances = np.abs(onset_frames - seg.start_frame)
-        nearest = int(np.argmin(distances))
-        candidate = int(onset_frames[nearest])
+        offsets = onset_frames - seg.start_frame
+        in_window = np.abs(offsets) <= window_frames
+        # Each direction looks only on its own side of the start. Choosing the
+        # nearest onset first and checking its side afterwards let a nearer
+        # onset on the wrong side -- the vowel just after a consonant's attack
+        # -- hide the attack the start should have snapped to.
+        before = onset_frames[in_window & (offsets <= 0)]
+        after = onset_frames[in_window & (offsets >= 0) & (onset_frames < seg.end_frame)]
 
-        if (
-            distances[nearest] <= window_frames
-            and candidate >= previous_end
-            and candidate < seg.end_frame
-        ):
-            seg = Segment(start_frame=candidate, end_frame=seg.end_frame, pitch=seg.pitch)
+        candidate: Optional[int] = None
+        if direction == "earlier":
+            if before.size:
+                candidate = int(before.max())
+        elif direction == "later":
+            if after.size:
+                candidate = int(after.min())
+        else:
+            nearest = int(np.argmin(np.abs(offsets)))
+            if in_window[nearest] and onset_frames[nearest] < seg.end_frame:
+                candidate = int(onset_frames[nearest])
 
-        out.append(seg)
-        previous_end = seg.end_frame
+        previous = out[-1] if out else None
+        if candidate is not None and previous is not None and candidate < previous.end_frame:
+            shared = previous.end_frame == seg.start_frame
+            if shared and candidate - previous.start_frame >= min_frames:
+                # Only the end moves: the attack snapping recorded for the
+                # previous segment is still where its pitch settles. One the
+                # shorter segment no longer contains is ignored when it is
+                # measured.
+                out[-1] = Segment(start_frame=previous.start_frame, end_frame=candidate,
+                                  pitch=previous.pitch, measure_from=previous.measure_from)
+            else:
+                # The onset belongs to the previous note; this start cannot
+                # move onto it.
+                candidate = None
+
+        if candidate is not None:
+            out.append(Segment(start_frame=candidate, end_frame=seg.end_frame, pitch=seg.pitch))
+        elif direction == "earlier" and after.size:
+            # The start stays, but the attack is still where the pitch
+            # settles: measure from there, as a start snapped to it would have
+            # been.
+            out.append(Segment(seg.start_frame, seg.end_frame, seg.pitch,
+                               measure_from=int(after.min())))
+        else:
+            out.append(seg)
 
     return out
 

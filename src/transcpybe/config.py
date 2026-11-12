@@ -100,6 +100,44 @@ class TranscriptionConfig:
     """Additive log-domain bias on the unvoiced state. Positive values produce
     more silence, negative values produce more notes."""
 
+    pitch_states_per_semitone: int = 3
+    """How finely the decoder's pitch states divide a semitone.
+
+    With one state per semitone, a note sung near the midpoint between two
+    semitones -- 61.45, say, which is ordinary for a singer without a reference
+    pitch, or for one whose intonation scatters by a quarter tone -- is equally
+    well explained by either neighbour, and its vibrato flips the decoder
+    between them several times a second. A held note comes out as a stream of
+    alternating fragments, and its boundaries land wherever the flipping
+    happens to stop. A grid of a third of a semitone always has a state within
+    a sixth of a semitone of the note, so the note sits on one state and stays
+    there. This is the resolution Tony's note tracker uses.
+
+    The tuning estimate already re-centres the states for a whole recording,
+    which is why the corpus averages barely see this: taking it out of the
+    shipped pipeline costs 0.007 to 0.012 COnPOff, inside the noise. What the
+    estimate cannot do is per note -- intonation scatter, drift across a
+    phrase, a performance more than 40 cents off, which it refuses -- and the
+    two do overlap: with both removed, held-out COnPOff falls 0.020 [0.008,
+    0.033], worse on 14 of 40 recordings and better on 1. On the built-in
+    suite, which is sung on the A440 grid throughout, nothing changes. 1
+    restores the old decoder exactly."""
+
+    min_note_interval_semitones: float = 0.5
+    """Smallest change of decoder state the transition model allows.
+
+    Only matters with more than one state per semitone. Notes are cut where
+    the semitone a state lies nearest changes, not where the state does, so a
+    move between two states of one semitone -- 60.67 to 61.33 is two thirds
+    of a semitone, and both are 61 -- never splits a note, whatever this is.
+    What it guards is the smaller step that does cross between semitones:
+    61.33 to 61.67 is a third of a semitone, from a 61 to a 62. A note sung
+    near the midpoint of two semitones, wandering a quarter tone either side
+    of it, can take that step and come out as two notes a semitone apart. At
+    0.5 a grid of three to the semitone cannot step by a third, so the note
+    stays on one state, while a real change of note -- two thirds of a
+    semitone or more -- is still open to it."""
+
     # ---------------- Portamento / glides ----------------
     absorb_glides: bool = True
     """Recognise glides between notes: remove passing tones and pull legato
@@ -108,6 +146,16 @@ class TranscriptionConfig:
     max_passing_note_s: float = 0.12
     """Segments shorter than this, lying between their neighbours' pitches in a
     contiguous run, are treated as a glide crossing rather than a note."""
+
+    passing_max_gap_s: float = 0.05
+    """Longest silence a passing tone may have on either side.
+
+    A passing tone is the trace a glide leaves as it crosses a semitone, so it
+    touches the notes either side of it; a fast slide may drop a frame or two
+    of voicing, and no more. This used to borrow ``glide_max_gap_s``, which is
+    200 ms, so a short real note with a rest before it and a rest after it --
+    60, breath, 62, breath, 64 -- was deleted as a glide crossing that nothing
+    was gliding across."""
 
     glide_max_backtrack_s: float = 0.30
     """Ceiling on how far a legato note start may be moved back."""
@@ -130,6 +178,57 @@ class TranscriptionConfig:
     """How far the contour may back-track the wrong way during a glide walk
     before the walk stops. Distinguishes a sung slide, which retreats steadily,
     from noise between notes, which wanders."""
+
+    glide_plateau_frames: int = 10
+    """A glide walk stops when this many consecutive frames make less than
+    ``glide_plateau_semitones`` of progress towards the previous note.
+
+    A glide moves; a held note does not. The walk already stops on arriving
+    back at the previous note's pitch, but a note that is sung a little off
+    the pitch it is measured at can be held inside the corridor between the
+    two notes without ever arriving, and the walk would then march back
+    through it to its full ``glide_max_backtrack_s``. A plateau says the walk
+    has left the glide, wherever the plateau sits. Frames within
+    ``glide_edge_tolerance_semitones`` of the note being approached do not
+    count towards one: they are that note, held, before a late boundary.
+
+    Over ten frames, 0.25 of a semitone is a glide of about 2.8 semitones a
+    second, a semitone in 360 ms: anything slower reads as held once the walk
+    has followed it that far. Few walks are that long -- from a boundary
+    halfway up a one-semitone glide there is 0.15 of a semitone to cover --
+    so most slower glides are still followed to where they began. This was
+    five frames and a span test, which drew the line at 6 semitones a second
+    over a window that most walks fill: a semitone sung over 350 ms or more
+    read as held, the walk stopped on its first five frames, and the onset
+    stayed halfway up the glide. A longer window still would follow slower
+    glides, but the walk goes that far into a held note before it knows, and
+    whatever else stops it in there -- a vibrato trough dipping within
+    tolerance of the note's pitch -- leaves the onset that far early."""
+
+    glide_plateau_semitones: float = 0.25
+    """Least progress towards the previous note, across ``glide_plateau_frames``
+    frames, for the walk to count as still gliding.
+
+    Net progress from the first frame of the window to the last, not the
+    span of the window: a note held with vibrato spans as much as a glide
+    does, but goes nowhere."""
+
+    glide_onset_position: float = 0.25
+    """Where in a detected glide the next note's onset is placed.
+
+    0 puts it where the walk stopped: where the pitch left the previous note.
+    1 leaves it where the decoder put it, where the pitch arrived. Between the
+    two is a fraction of the way from departure to arrival. Where a glided note
+    starts is an annotation convention, not a fact about the audio --
+    annotators differ, and the corpus scores all three readings -- so this
+    sets which reading the transcription follows. 0 was the behaviour before
+    this option existed.
+
+    0.25 is chosen to lose least under the worst of the three readings, not
+    to match any one annotator. On the corpus's development recordings it
+    raises COn, COnP and COnPOff by about 0.01 under the arrival reading, and
+    changes nothing significantly under the departure reading; 0.5 and above
+    start to cost COnP and COnPOff under the others."""
 
     glide_max_level_drop_db: float = 20.0
     """A glide may not be more than this far below the level of the note it
@@ -248,6 +347,26 @@ class TranscriptionConfig:
     onset_snap_window_s: float = 0.05
     """Note starts are pulled to a detected onset within this window."""
 
+    onset_snap_direction: str = "earlier"
+    """Which way a note start may be snapped: 'both', 'earlier' or 'later'.
+
+    'earlier' only ever pulls a start back onto an attack the decoder lagged,
+    which is what snapping exists for; an attack later than the start does
+    not move it, but the note's pitch is still measured from that attack, as
+    it was when snapping moved the start there. 'later' only ever pushes a
+    start forward. 'both' was the behaviour before this option existed, and
+    takes the nearest onset on either side. 'earlier' and 'later' look only on
+    their own side of the start, so an attack 40 ms back is still found when
+    the vowel after it puts a nearer onset just past the start.
+
+    Pushing starts later is where snapping went wrong. On the realistic
+    corpus's development recordings, snapping both ways put onsets after a rest
+    a median 25 ms late, one in ten of them more than 50 ms; switching snapping
+    off altogether took that to 4 ms, and raised COn and COnPOff under every
+    annotation convention. Keeping only the earlier half keeps what moving a
+    legato boundary onto its attack was measured to be worth: COnPOff 0.667 to
+    0.685 against both ways, with recall of re-sung notes unchanged."""
+
     # ---------------- Note post-processing ----------------
     min_note_duration_s: float = 0.055
     """Notes shorter than this are discarded as decoder noise."""
@@ -272,51 +391,64 @@ class TranscriptionConfig:
 
     merge_same_pitch_gap_s: float = 0.035
     """Adjacent notes of equal pitch closer than this are merged, unless an
-    onset separates them."""
+    onset separates them or the second has an attack of its own just after
+    its start, which snapping found but did not move the start to."""
 
     # ---------------- Note ends ----------------
-    trim_note_releases: bool = False
-    """End a note where its own level collapses, rather than where the decoder
-    stops hearing pitch. Off by default, and the reason is worth the space.
+    trim_note_releases: bool = True
+    """End a note where its own level has fallen well away from its sustain,
+    rather than where the decoder stops hearing pitch.
 
     Everything else in the pipeline refines note *starts*; the end is left
     wherever the Viterbi path happened to leave the pitch state, which the
     adaptive gate holds open until the frame is ``loudness_dynamic_range_db``
-    below the whole track. On synthetic signals whose notes keep sounding past
-    their annotated end, that reports every note long, and trimming fixes it
-    completely -- COnPOff 0.000 to 1.000 on those cases.
+    below the whole track. In a room, that is long after the singer stopped.
+    The reverberant tail of a sung vowel is still periodic, and CREPE reports
+    it with a periodicity near 0.9 down to 30 dB below the note, so a note runs
+    on through its release, through the room's decay after it, and -- at an
+    unvoiced consonant -- straight across the closure into the next note.
 
-    On vocadito it made things worse on all forty recordings: COnPOff 0.410 to
-    0.248, a paired difference of -0.161 with a 95% interval of [-0.191,
-    -0.134], while COn and COnP did not move. So the defect the trim addresses
-    is real and the trim's answer to it is wrong, at least for these
-    annotators. It ends a note where the level departs from sustain -- the top
-    of the decay -- and vocadito marks note ends later than that.
+    This was once on with ``release_drop_db`` at 1 dB, and on vocadito that
+    made things worse on all forty recordings: COnPOff 0.410 to 0.248, paired
+    difference -0.161 [-0.191, -0.134]. That finding stands, and it is about
+    the constant rather than the stage: 1 dB ends a note at the first frame
+    that is no longer at full sustain, which in real singing -- a phrase that
+    sags by a few decibels, vibrato rippling the level -- is often half way
+    through the note. The realistic synthetic corpus (``corpus.py``)
+    reproduces the regression, and says something about why. Annotated with
+    consonant gaps closed up to the next note's onset, its 40 held-out
+    recordings lose -0.173 [-0.212, -0.133] to the 1 dB trim, worse on 36 --
+    vocadito's figure almost exactly. Annotated with the gaps left open, they
+    lose -0.018, not significantly. So vocadito's note ends most likely run up
+    to the next note, and that is the convention a trim has to survive.
 
-    Turning it off is therefore not a retraction of the finding, only of the
-    constant. Where a note ends is a convention, and a convention has to be
-    fitted rather than guessed: enable this and fit ``release_drop_db`` with
-    ``transcpybe-tune --objective offset``, which is the machinery that had to
-    exist before the question could be asked at all."""
+    At 15 dB it measures differently, and the sign does not depend on the
+    annotation convention. On the realistic corpus's 40 held-out recordings
+    (``corpus.py``), with the other changes in place, COnPOff rises 0.069 /
+    0.051 / 0.033 when release ends are annotated a quarter, half or all the
+    way down the decay -- better on 28, 25 and 17 recordings, worse on 0, 0
+    and 2 -- and 0.009 (not significant; 13 better, 7 worse) when consonant
+    gaps are closed up to the next onset, the convention that cost 1 dB its
+    0.173. COn and COnP do not move. It is still unmeasured on vocadito, and
+    should be measured there before it is believed: ``--no-release-trim``
+    restores the old behaviour, and ``transcpybe-tune --objective offset``
+    fits ``release_drop_db`` to a corpus."""
 
-    release_drop_db: float = 1.0
-    """How far a frame must sit below the note's own sustained level to count
-    as release rather than note.
-
-    Small on purpose. This is not "how quiet is inaudible" -- it is "how far
-    from sustain is no longer sustaining", so what it locates is the top of the
-    decay, not a point part-way down it. That distinction decides whether the
-    trim works at all: a threshold set well down the ramp lands at a fixed
-    *fraction* of the release, so its error grows with the release and a long
-    one overshoots however the threshold is set. Measured across releases from
-    50 ms to 450 ms, every value from 3 dB up failed the longest of them and
-    1 dB passed all five.
+    release_drop_db: float = 15.0
+    """How far below the note's own sustained level a frame must sit to count
+    as past the note's end.
 
     Measured against the note, not the track, because a quiet note's release is
-    quiet too. The floor under it is vibrato: singers ripple their level by a
-    decibel or so, and at 0.5 dB the walk goes back through those dips and ends
-    notes early -- it cost two cases in the suite. Raise it if note ends come
-    out early, lower it if notes run on."""
+    quiet too. The floor is set by everything a held note does to its level
+    that is not ending: singers sag across a phrase and ripple with their
+    vibrato, and reverberation beating against a moving pitch swings the level
+    of a held note by 5 dB or more. At 1 dB the walk went back through those
+    and ended notes early -- the vocadito regression. On the corpus's
+    development set every value from 6 to 25 dB gains; the gain peaks around
+    10-12 dB when consonant gaps are annotated as gaps, and is steadiest around
+    15-18 dB when they are not, which is the convention this cannot know in
+    advance. 15 dB is the compromise. Raise it if note ends come out early,
+    lower it if notes run on."""
 
     release_min_fraction: float = 0.5
     """A release trim may never take more than this fraction of a note.
@@ -342,6 +474,32 @@ class TranscriptionConfig:
     this and nothing else. Correcting for it is not a preference about
     temperament: it is reading the recording in the tuning it was actually sung
     in. Turn it off to force the A440 grid."""
+
+    pitch_reference: str = "sung"
+    """What a note's integer pitch is the nearest semitone *to*.
+
+    'sung' rounds the measured pitch to the nearest semitone of A440: the
+    integer closest to what was actually sung. 'tuned' rounds it on the grid
+    the tuning estimate found, so a performance sung a consistent third of a
+    semitone flat reports the notes it meant rather than the ones it was
+    nearest to.
+
+    The two answer different questions, and the default follows the one the
+    benchmarks ask. vocadito's references, like most sung-melody annotations,
+    give each note the pitch that was sung, as a fractional MIDI number, and
+    score an integer within 50 cents of it as correct. Against such a reference
+    the nearest integer to the sung pitch is always within 50 cents of it, so
+    'sung' cannot lose a note to rounding, while 'tuned' loses every note whose
+    two roundings disagree -- each such note is reported at least 50 cents from
+    what was sung. The tuning estimate still moves the decoder's states either
+    way; this only decides the label.
+
+    On the realistic corpus's held-out recordings, 'tuned' costs COnP 0.023
+    [0.002, 0.051] against sung-pitch references, worse on 10 recordings and
+    better on 3, and gains 0.011 (not significant) against intended-pitch
+    ones. Use 'tuned' when the integer is meant as the intended scale degree --
+    the built-in suite's ``mistuned`` case is scored that way -- rather than as
+    a description of the performance."""
 
     tuning_min_concentration: float = 0.20
     """How concentrated the pitch deviations must be before the estimate is used.
@@ -461,6 +619,18 @@ class TranscriptionConfig:
             raise ValueError("p_unvoiced_self must be in (0, 1)")
         if self.pitch_sigma_semitones <= 0:
             raise ValueError("pitch_sigma_semitones must be positive")
+        if self.pitch_states_per_semitone < 1:
+            raise ValueError("pitch_states_per_semitone must be at least 1")
+        if self.min_note_interval_semitones < 0:
+            raise ValueError("min_note_interval_semitones must be non-negative")
+        if not 0.0 <= self.glide_onset_position <= 1.0:
+            raise ValueError("glide_onset_position must be in [0, 1]")
+        if self.onset_snap_direction not in ("both", "earlier", "later"):
+            raise ValueError("onset_snap_direction must be 'both', 'earlier' or 'later', "
+                             f"got {self.onset_snap_direction!r}")
+        if self.pitch_reference not in ("sung", "tuned"):
+            raise ValueError("pitch_reference must be 'sung' or 'tuned', "
+                             f"got {self.pitch_reference!r}")
 
     @property
     def hop_length(self) -> int:

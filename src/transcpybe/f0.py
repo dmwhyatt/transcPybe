@@ -77,6 +77,31 @@ def midi_to_hz(midi: np.ndarray | float) -> np.ndarray | float:
     return 440.0 * 2.0 ** ((np.asarray(midi, dtype=np.float64) - 69.0) / 12.0)
 
 
+def median_filter_contour(values: np.ndarray, width: int) -> np.ndarray:
+    """Running median of a pitch contour, leaving its unvoiced gaps as gaps.
+
+    NaN marks an unvoiced frame. The contour is interpolated across each gap
+    before filtering, so the frames beside a gap are smoothed against the
+    contour carried across it rather than dragged towards NaN, and the gaps
+    are restored afterwards.
+
+    The f0 track runs this on log2 Hz and the glide backtrack on MIDI. The two
+    scales differ by a linear rescale, which a median commutes with, so it is
+    the same filter on either.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    valid = np.isfinite(values)
+    if width <= 1 or not valid.any():
+        return values
+
+    from scipy.ndimage import median_filter
+
+    idx = np.arange(values.shape[0])
+    filled = np.interp(idx, idx[valid], values[valid])
+    smoothed = median_filter(filled, size=width, mode="nearest")
+    return np.where(valid, smoothed, np.nan)
+
+
 def _median_filter_f0(f0_hz: np.ndarray, width: int) -> np.ndarray:
     """Median filter in the log-frequency domain, ignoring unvoiced frames.
 
@@ -86,24 +111,13 @@ def _median_filter_f0(f0_hz: np.ndarray, width: int) -> np.ndarray:
     if width <= 1:
         return f0_hz
 
-    from scipy.ndimage import median_filter
-
     valid = np.isfinite(f0_hz) & (f0_hz > 0)
     if not valid.any():
         return f0_hz
 
     log_f0 = np.full(f0_hz.shape, np.nan)
     log_f0[valid] = np.log2(f0_hz[valid])
-
-    # Interpolate across gaps so the filter is not dragged toward NaN, then
-    # restore the original unvoiced mask afterwards.
-    idx = np.arange(f0_hz.shape[0])
-    filled = np.interp(idx, idx[valid], log_f0[valid])
-    smoothed = median_filter(filled, size=width, mode="nearest")
-
-    out = np.full(f0_hz.shape, np.nan)
-    out[valid] = 2.0 ** smoothed[valid]
-    return out
+    return 2.0 ** median_filter_contour(log_f0, width)
 
 
 def _loudness_gate(loudness_db: np.ndarray, config: TranscriptionConfig) -> np.ndarray:
@@ -147,6 +161,10 @@ def _seeded_numpy(seed: Optional[int]) -> Iterator[None]:
         yield
     finally:
         np.random.set_state(state)
+
+
+_CREPE_LOWEST_HZ = 32.0
+"""Just above CREPE's lowest pitch bin, 31.7 Hz (1997.38 cents above 10 Hz)."""
 
 
 def _crepe_batch_count(n_samples: int, config: TranscriptionConfig) -> int:
@@ -198,9 +216,16 @@ def _estimate_crepe(
 
     from .device import memory_summary, synchronize
 
-    # torchcrepe is trained at 16 kHz and clamps fmax; respect both.
+    # torchcrepe is trained at 16 kHz and clamps fmax; respect both. It does
+    # not clamp fmin: below its lowest pitch bin (31.7 Hz) the bin index it
+    # computes is negative, and probabilities[:, :minidx] then masks all but
+    # the top few bins -- every frame comes back unvoiced, and an --fmin of 30
+    # for a bass guitar transcribed nothing at all. Frames below the
+    # configured fmin are still marked unvoiced below. A constant rather than
+    # torchcrepe.convert.bins_to_frequency(0), which dithers its answer below
+    # the bin and draws that dither from the caller's numpy RNG.
     fmax = min(config.fmax_hz, float(torchcrepe.MAX_FMAX))
-    fmin = max(config.fmin_hz, 10.0)
+    fmin = max(config.fmin_hz, _CREPE_LOWEST_HZ)
 
     audio_t = torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32))[None, :]
     n_batches = _crepe_batch_count(audio_t.size(1), config)
