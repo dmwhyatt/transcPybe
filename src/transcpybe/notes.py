@@ -312,7 +312,8 @@ def merge_same_pitch(
     if len(notes) < 2:
         return notes
 
-    onset_times = onsets.times if onsets is not None else np.zeros(0)
+    onset_times = (np.concatenate([onsets.times, onsets.split_only_times])
+                   if onsets is not None else np.zeros(0))
 
     merged: List[Note] = [notes[0]]
     for note in notes[1:]:
@@ -433,9 +434,23 @@ def trim_note_releases(
     return trimmed
 
 
-def drop_short_notes(notes: List[Note], config: TranscriptionConfig) -> List[Note]:
-    """Discard notes too short to be a deliberate sung pitch."""
-    return [n for n in notes if n.duration >= config.min_note_duration_s]
+def drop_short_notes(notes: List[Note], config: TranscriptionConfig,
+                     onsets: Optional[OnsetTrack] = None) -> List[Note]:
+    """Discard notes too short to be a deliberate sung pitch.
+
+    A note starting within one frame of one of the onset track's
+    ``protected_times`` -- a syllable a model is sure of -- need only be
+    ``landmark_min_note_s`` long, when that is above zero.
+    """
+    protected = (onsets.protected_times if onsets is not None and config.landmark_min_note_s > 0
+                 else np.zeros(0))
+    reach = config.hop_length / config.sample_rate + 1e-6
+
+    def a_syllable(note: Note) -> bool:
+        return bool(protected.size and note.duration >= config.landmark_min_note_s
+                    and np.abs(protected - note.onset).min() <= reach)
+
+    return [n for n in notes if n.duration >= config.min_note_duration_s or a_syllable(n)]
 
 
 def drop_quiet_notes(notes: List[Note], config: TranscriptionConfig) -> List[Note]:
@@ -470,6 +485,40 @@ def drop_quiet_notes(notes: List[Note], config: TranscriptionConfig) -> List[Not
     return [n for n in notes if not np.isfinite(n.loudness_db) or n.loudness_db >= threshold]
 
 
+def snap_note_ends(
+    notes: List[Note], onsets: Optional[OnsetTrack], config: TranscriptionConfig
+) -> List[Note]:
+    """Move each note's end to the nearest end time found elsewhere, such as a boundary network's offset peaks.
+
+    The decoder ends a note wherever it left the pitch state, and the release
+    trim only ever shortens it, so two things go wrong in about equal measure:
+    a legato note runs on into the next where the singer had already let go,
+    and a note fading into a rest is cut short. A model trained to mark note
+    ends can place both. Each note's end moves to the nearest of the onset
+    track's ``end_times`` within ``end_snap_window_s`` either side; it never
+    passes the next note's onset nor comes within ``min_note_duration_s`` of
+    its own. Pitch is not re-measured: only the reported end moves.
+    """
+    if (config.end_snap_window_s <= 0 or onsets is None or onsets.end_times.size == 0
+            or not notes):
+        return notes
+
+    hop_s = config.hop_length / config.sample_rate
+    window = config.end_snap_window_s
+    snapped: List[Note] = []
+    for i, note in enumerate(notes):
+        following = notes[i + 1].onset if i + 1 < len(notes) else np.inf
+        lo = max(note.offset - window, note.onset + config.min_note_duration_s)
+        hi = min(note.offset + window, following)
+        near = onsets.end_times[(onsets.end_times >= lo) & (onsets.end_times <= hi)]
+        if near.size == 0:
+            snapped.append(note)
+            continue
+        end = int(round(float(near[np.argmin(np.abs(near - note.offset))]) / hop_s))
+        snapped.append(dataclasses.replace(note, offset=end * hop_s, end_frame=end))
+    return snapped
+
+
 def postprocess_notes(
     notes: List[Note],
     track: F0Track,
@@ -489,6 +538,6 @@ def postprocess_notes(
     """
     notes = merge_same_pitch(notes, track, config, onsets, tuning_offset)
     notes = trim_note_releases(notes, track, config)
-    notes = drop_short_notes(notes, config)
+    notes = drop_short_notes(notes, config, onsets)
     notes = drop_quiet_notes(notes, config)
     return sorted(notes, key=lambda n: (n.onset, n.pitch))

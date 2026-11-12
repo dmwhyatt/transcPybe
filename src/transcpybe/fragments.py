@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
+import numpy as np
+
 from .config import TranscriptionConfig
 from .segment import Segment
 
@@ -43,14 +45,28 @@ def _neighbour_score(fragment: Segment, neighbour: Optional[Segment],
 
 
 def absorb_short_fragments(
-    segments: List[Segment], config: TranscriptionConfig
+    segments: List[Segment], config: TranscriptionConfig,
+    protected: Optional[np.ndarray] = None,
 ) -> List[Segment]:
-    """Fold short edge fragments into the dominant neighbour beside them."""
+    """Fold short edge fragments into the dominant neighbour beside them.
+
+    A piece with one of the ``protected`` frames (``onsets.protected_frames``)
+    within ``onset_snap_window_s`` of its start, and at least
+    ``landmark_min_note_s`` long, is a syllable a model is sure of, not a
+    fragment: snapping would put its start on that frame. It is left alone.
+    """
     if not config.absorb_fragments or len(segments) < 2:
         return segments
 
     hop_s = config.hop_length / config.sample_rate
     max_frames = int(round(config.fragment_max_duration_s / hop_s))
+    protected = np.zeros(0, dtype=int) if protected is None or config.landmark_min_note_s <= 0 else protected
+    reach = int(round(config.onset_snap_window_s / hop_s))
+    kept_from = int(round(config.landmark_min_note_s / hop_s))
+
+    def a_syllable(segment: Segment) -> bool:
+        return bool(protected.size and segment.n_frames >= kept_from
+                    and np.abs(protected - segment.start_frame).min() <= reach)
 
     working = list(segments)
     # Repeat to a fixed point: absorbing one fragment can expose another that is
@@ -60,7 +76,7 @@ def absorb_short_fragments(
         best_length = -1
 
         for i, fragment in enumerate(working):
-            if fragment.n_frames > max_frames:
+            if fragment.n_frames > max_frames or a_syllable(fragment):
                 continue
             previous = working[i - 1] if i > 0 else None
             following = working[i + 1] if i + 1 < len(working) else None

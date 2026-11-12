@@ -344,6 +344,70 @@ class TranscriptionConfig:
     0.10 a syllable shorter than 100 ms could not be separated at all, which
     put fast re-articulation out of reach however clear its onset."""
 
+    onset_split_min_dip_db: float = 0.0
+    """Level dip an onset must sit in before it may split a note, in dB.
+
+    Singing a note again on the same pitch takes a consonant or a glottal
+    onset, and either briefly interrupts the sound. A spectral-flux peak with
+    no dip under it -- a vowel changing inside a held note, vibrato moving
+    harmonics through a formant -- is not a new note. 0 turns the test off,
+    which is the behaviour from before this option existed."""
+
+    onset_split_min_periodicity_dip: float = 0.0
+    """Alternative evidence for a split: a dip in periodicity of this much.
+
+    Only consulted while ``onset_split_min_dip_db`` is on. A consonant sung
+    through without a break -- noise over continuing voicing -- barely moves
+    the level but drops periodicity, so with this above zero an onset may
+    split a note on either dip. 0 consults level alone."""
+
+    syllable_lead_s: float = 0.0
+    """Longest a syllable's onset may lead its pitch change and still start its note.
+
+    Singers often begin a syllable on the old pitch and arrive at the new one
+    a little later. Above zero, a pitch change with no onset of its own, but a
+    strong onset up to this long before it, starts its note at that onset:
+    see ``attach_late_arrivals``. 0 turns this off, which is the behaviour
+    from before this option existed."""
+
+    syllable_dip_db: float = 0.0
+    """A dip in level this deep also counts as a syllable's onset for
+    ``syllable_lead_s`` (and only for that). Spectral flux misses most
+    syllables that start on a vowel or a voiced consonant; a dip finds many of
+    them. 0 consults onsets alone."""
+
+    onset_voicing_guard: bool = False
+    """Never put a note start inside an unvoiced stretch.
+
+    An onset detector fires on a consonant's burst or hiss, before the pitched
+    sound starts. With this on, a split or a snapped start lands where voicing
+    returns after the consonant instead. Off is the behaviour from before this
+    option existed."""
+
+    split_on_voicing_breaks: bool = False
+    """Treat a short break in voicing inside sung sound as a re-articulation.
+
+    A break of ``voicing_break_min_s`` to 150 ms, with voiced sound either side,
+    is an unvoiced consonant between syllables. With this on it may split a note
+    on one pitch -- a repeated note sung on a new syllable -- and stops the
+    same-pitch merge rejoining the halves. Off is the behaviour from before this
+    option existed."""
+
+    voicing_break_min_s: float = 0.02
+    """Shortest break in voicing ``split_on_voicing_breaks`` acts on."""
+
+    timbre_split_ratio: float = 0.0
+    """Split a note on one pitch at a change of timbre this strong.
+
+    A repeated note sung on a new syllable changes the vowel, and often nothing
+    else that spectral flux or level would catch: a voiced consonant or a vowel
+    onset barely moves either. The change is measured as spectral-envelope
+    novelty relative to the recording's median (``timbre_change_times``); peaks
+    at least this many times the median may split a same-pitch note and stop
+    the same-pitch merge rejoining it. Needs the audio, so a decode replayed
+    from cached tracks does without it. 0 turns it off, which is the behaviour
+    from before this option existed."""
+
     onset_snap_window_s: float = 0.05
     """Note starts are pulled to a detected onset within this window."""
 
@@ -377,6 +441,47 @@ class TranscriptionConfig:
 
     attack_trim_max_s: float = 0.06
     """Absolute cap on the attack trim."""
+
+    measure_after_snap: bool = False
+    """When onset snapping pulls a note's start earlier, measure its pitch from
+    where the decoder had placed the start rather than from the snapped one.
+    The decoder puts a legato boundary where the pitch has crossed over, and
+    snapping pulls the start back onto the attack before it, so frames
+    between the two can still be on the previous note's pitch."""
+
+    cut_settle_s: float = 0.0
+    """When an onset cuts a note in two, skip this long after the cut, on top
+    of the attack trim, before measuring the second part's pitch: it can
+    begin with the slide into its pitch. Zero keeps the attack trim alone."""
+
+    sustain_merge_above: float = 0.0
+    """Rejoin two touching notes when the onset track's ``sounding`` (a model's
+    probability that a note is sounding, such as a boundary network's) stays
+    above this over every frame within 30 ms of the second note's start. The
+    voice carried straight through, so the boundary is a scoop or slide
+    inside one note. Zero turns it off; a track without ``sounding`` merges
+    nothing."""
+
+    end_snap_window_s: float = 0.0
+    """Move each note's end to the nearest of the onset track's ``end_times``
+    (note ends found elsewhere, such as a boundary network's offset peaks)
+    within this many seconds either side, once everything else is done. An end
+    never passes the next note's onset nor comes within
+    ``min_note_duration_s`` of its own; with no end time in reach it stays.
+    Zero turns it off."""
+
+    landmark_min_note_s: float = 0.0
+    """How long a note that starts at one of the onset track's ``protected_times``
+    must be. Those are starts a model is sure of, such as a boundary network's
+    paired landmarks: a consonant and the vowel after it, so a new syllable.
+    Above zero, such a note escapes the three short-note rules down to this
+    length: an onset cut there needs only this much segment on each side rather
+    than ``onset_split_min_gap_s``, a pitch piece with one within
+    ``onset_snap_window_s`` of its start is not folded as a fragment, and a note
+    starting within one frame of one is not dropped for being shorter than
+    ``min_note_duration_s``. An ornament inside a syllable has no such start, so
+    it is held to the ordinary rules. Zero turns it off; a track without
+    protected times protects nothing."""
 
     reject_quiet_notes: bool = True
     """Drop notes far below the level of the rest of the performance. This is
@@ -625,6 +730,24 @@ class TranscriptionConfig:
             raise ValueError("min_note_interval_semitones must be non-negative")
         if not 0.0 <= self.glide_onset_position <= 1.0:
             raise ValueError("glide_onset_position must be in [0, 1]")
+        if self.timbre_split_ratio < 0:
+            raise ValueError("timbre_split_ratio must be non-negative")
+        if self.syllable_dip_db < 0:
+            raise ValueError("syllable_dip_db must be non-negative")
+        if self.syllable_lead_s < 0:
+            raise ValueError("syllable_lead_s must be non-negative")
+        if self.onset_split_min_dip_db < 0:
+            raise ValueError("onset_split_min_dip_db must be non-negative")
+        if self.cut_settle_s < 0:
+            raise ValueError("cut_settle_s must be non-negative")
+        if not 0.0 <= self.sustain_merge_above <= 1.0:
+            raise ValueError("sustain_merge_above must be in [0, 1]")
+        if self.end_snap_window_s < 0:
+            raise ValueError("end_snap_window_s must be non-negative")
+        if self.landmark_min_note_s < 0:
+            raise ValueError("landmark_min_note_s must be non-negative")
+        if not 0.0 <= self.onset_split_min_periodicity_dip <= 1.0:
+            raise ValueError("onset_split_min_periodicity_dip must be in [0, 1]")
         if self.onset_snap_direction not in ("both", "earlier", "later"):
             raise ValueError("onset_snap_direction must be 'both', 'earlier' or 'later', "
                              f"got {self.onset_snap_direction!r}")
