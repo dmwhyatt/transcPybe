@@ -1,21 +1,26 @@
 """Frame-wise f0 estimation and voicing detection.
 
-Two interchangeable backends:
+Interchangeable backends, chosen by ``config.f0_backend``:
 
 * ``crepe`` - CREPE (Kim, Salamon, Li & Bello, ICASSP 2018) via ``torchcrepe``.
   A deep convolutional pitch tracker; the most accurate option for voice, and
   the default. Model weights ship inside the ``torchcrepe`` wheel.
 * ``pyin`` - probabilistic YIN (Mauch & Dixon, ICASSP 2014) via ``librosa``.
   Pure signal processing, no torch dependency, a solid fallback.
+* ``pesto`` - PESTO (Riou, Lattner, Hadjeres & Peeters, ISMIR 2023) via
+  ``pesto-pitch``. A small self-supervised network trained on MIR-1K's
+  singing, many times faster than CREPE on a CPU. Its code is LGPL-3.0, so it
+  is an optional install rather than a dependency.
 
-Both produce the same ``F0Track`` so the rest of the pipeline is agnostic.
+All of them produce the same ``F0Track`` so the rest of the pipeline is
+agnostic, and ``register_f0_backend`` plugs in any other tracker the same way.
 """
 
 from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Iterator, Optional
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
 import numpy as np
 
@@ -45,6 +50,11 @@ class F0Track:
     voicing : (T,) float
         Combined probability in [0, 1] that the frame is sung pitch. This is
         ``periodicity`` attenuated by an adaptive loudness gate.
+    backend : str
+        Which tracker produced it, e.g. 'crepe-full', 'crepe-tiny', 'pyin' or
+        'pesto'. Empty for a track built by hand, and for one pickled before
+        this was recorded. Anything trained on one tracker's output can check
+        it, because ``periodicity`` means a different thing for each.
     """
 
     times: np.ndarray
@@ -53,6 +63,7 @@ class F0Track:
     loudness_db: np.ndarray
     loudness_gate: np.ndarray
     voicing: np.ndarray
+    backend: str = ""
 
     @property
     def n_frames(self) -> int:
@@ -325,6 +336,198 @@ def _estimate_pyin(
     return f0_hz, np.clip(voiced_prob, 0.0, 1.0)
 
 
+PESTO_CHECKPOINT = "mir-1k_g7"
+"""The checkpoint ``pesto-pitch`` ships and recommends, trained on MIR-1K."""
+
+_pesto_models: Dict[Tuple[float, int, str], Any] = {}
+"""Loaded PESTO models by (step, rate, device), so a batch loads one once."""
+
+PESTO_CHUNK_S = 30.0
+"""How much audio PESTO's frames are computed from at a time. In one pass its
+memory grows with the file: a 17-minute song asked for over 10 GB of GPU
+memory, more than a 10 GB card has, so long files go in chunks."""
+
+
+def _pesto_margin(model, sample_rate: int, hop: int) -> int:
+    """Samples of audio needed beside a chunk's frames for them to come out as a
+    single pass over the file gives them.
+
+    PESTO's network judges each frame on its own; only its harmonic constant-Q
+    transform reaches into the audio around a frame, one kernel wide and
+    centred on it. So the margin is half the widest kernel plus a frame: in
+    pesto-pitch 2.0.1 at 16 kHz the kernel is 4096 samples, so 0.14 s. Three
+    seconds if the kernels cannot be found, as in a later pesto-pitch that
+    keeps them elsewhere."""
+    kernels = getattr(getattr(model.preprocessor, "hcqt_kernels", None), "cqt_kernels", None) or []
+    widths = [int(getattr(k, "kernel_width", 0)) for k in kernels]
+    if not widths or min(widths) <= 0:
+        return int(3.0 * sample_rate)
+    return max(widths) // 2 + hop
+
+
+@contextmanager
+def _full_float32(device) -> Iterator[None]:
+    """Turn off TF32 while PESTO runs on a GPU, then restore the setting.
+
+    PyTorch lets cuDNN use TF32 for float32 convolutions by default on Ampere
+    and later GPUs. Its 10-bit mantissa is too coarse for PESTO's 4096-tap
+    constant-Q convolution: some frames' pitch moved by up to 31 semitones
+    from the CPU's on vocadito (RTX 3080), and the presets' notes changed on
+    8 of vocadito's 40 recordings and 16 of Molina's 38. In full float32 the
+    GPU gives the CPU's frames, and is faster here too. The switch is
+    process-wide while it lasts.
+    """
+    if not str(device).startswith("cuda"):
+        yield
+        return
+    import torch
+
+    saved = torch.backends.cudnn.allow_tf32, torch.backends.cuda.matmul.allow_tf32
+    torch.backends.cudnn.allow_tf32 = torch.backends.cuda.matmul.allow_tf32 = False
+    try:
+        yield
+    finally:
+        torch.backends.cudnn.allow_tf32, torch.backends.cuda.matmul.allow_tf32 = saved
+
+
+def _estimate_pesto(
+    audio: np.ndarray,
+    config: TranscriptionConfig,
+    progress: Optional[ProgressReporter] = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Run PESTO, returning (f0_hz, confidence) on this package's frame grid.
+
+    PESTO centres its constant-Q frames on multiples of its step, as CREPE does
+    with padding, so at 16 kHz and a 10 ms step its frames are already these.
+    It rounds the step to whole samples, though, so at other rates its frames
+    drift; the contour is interpolated from where its frames are onto
+    ``k * hop``, in log frequency, and cut or extended to the frame count the
+    other backends give.
+
+    A file is given to PESTO ``PESTO_CHUNK_S`` at a time, each chunk with
+    enough audio either side (``_pesto_margin``) that its frames are the ones a
+    single pass would give, so memory stays bounded however long the file.
+    Progress is reported by chunk. On a GPU it runs without TF32
+    (``_full_float32``).
+
+    PESTO has no voicing decision. Its confidence stands in for periodicity,
+    which is the nearest thing it offers, not the same thing: thresholds set on
+    CREPE's periodicity are not known to suit it.
+    """
+    progress = progress or null_reporter()
+    try:
+        import torch
+        import pesto
+    except ImportError as exc:  # pragma: no cover - depends on environment
+        raise ImportError(
+            "The 'pesto' backend needs torch and pesto-pitch:\n"
+            "    pip install torch pesto-pitch\n"
+            "Or use the torch-free fallback: --f0-backend pyin"
+        ) from exc
+
+    key = (float(config.hop_ms), int(config.sample_rate), str(config.device))
+    model = _pesto_models.get(key)
+    if model is None:
+        model = pesto.load_model(PESTO_CHECKPOINT, step_size=config.hop_ms,
+                                 sampling_rate=config.sample_rate).to(config.device)
+        _pesto_models[key] = model
+
+    sr, n = int(config.sample_rate), int(audio.shape[0])
+    hop = int(model.hop_size * sr / 1000 + 0.5)        # PESTO's step in samples, rounded as its preprocessor does
+    n_frames = n // hop + 1                             # centred on 0, hop, 2 hop, ...
+    per_chunk = max(1, int(PESTO_CHUNK_S * sr) // hop)
+    margin = -(-_pesto_margin(model, sr, hop) // hop)   # in whole frames, so every chunk starts on PESTO's grid
+    starts = range(0, n_frames, per_chunk)
+
+    audio_t = torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32)).to(config.device)
+    pitch_parts, confidence_parts = [], []
+    with progress.stage(f"PESTO on {config.device}", total=len(starts)) as stage, torch.inference_mode(), \
+            _full_float32(config.device):
+        for first in starts:
+            last = min(first + per_chunk, n_frames)                # keep frames [first, last)
+            lo = max(0, first - margin) * hop                      # their audio, with the margin either side
+            hi = min(n, (last - 1 + margin) * hop + 1)
+            pitch, confidence, _volume, _activations = model(
+                audio_t[lo:hi], sr=sr, convert_to_freq=True, return_activations=True
+            )
+            keep = slice(first - lo // hop, last - lo // hop)
+            pitch_parts.append(pitch[keep].cpu().numpy())
+            confidence_parts.append(confidence[keep].cpu().numpy())
+            stage.advance(1, detail=f"{last * hop / sr:.0f}s / {n / sr:.0f}s audio")
+
+    pitch_hz = np.concatenate(pitch_parts).astype(np.float64)
+    confidence = np.concatenate(confidence_parts).astype(np.float64)
+
+    hop_s = config.hop_length / config.sample_rate
+    their_times = np.arange(pitch_hz.shape[0]) * (hop / sr)
+    our_times = np.arange(1 + audio.shape[0] // config.hop_length) * hop_s
+    log_f0 = np.interp(our_times, their_times, np.log2(np.maximum(pitch_hz, 1e-6)))
+    f0_hz = 2.0 ** log_f0
+    periodicity = np.interp(our_times, their_times, confidence)
+
+    # PESTO always names a pitch; mark out-of-range guesses as unvoiced.
+    out_of_range = (f0_hz < config.fmin_hz) | (f0_hz > config.fmax_hz)
+    f0_hz = np.where(out_of_range, np.nan, f0_hz)
+    periodicity = np.where(out_of_range, 0.0, periodicity)
+
+    return f0_hz, np.clip(periodicity, 0.0, 1.0)
+
+
+F0Estimator = Callable[
+    [np.ndarray, TranscriptionConfig, Optional[ProgressReporter]],
+    Tuple[np.ndarray, np.ndarray],
+]
+"""``(audio, config, progress) -> (f0_hz, periodicity)``, one value per frame.
+
+Frame ``k`` is centred on sample ``k * config.hop_length`` of the mono audio
+at ``config.sample_rate``. ``f0_hz`` is NaN where the tracker found no pitch;
+``periodicity`` is its confidence in [0, 1] that the frame is pitched."""
+
+
+@dataclass(frozen=True)
+class _Backend:
+    estimate: F0Estimator
+    uses_device: bool
+
+
+_BACKENDS: Dict[str, _Backend] = {
+    "crepe": _Backend(_estimate_crepe, uses_device=True),
+    "pyin": _Backend(_estimate_pyin, uses_device=False),
+    "pesto": _Backend(_estimate_pesto, uses_device=True),
+}
+
+
+def register_f0_backend(name: str, estimate: F0Estimator, *, uses_device: bool = False) -> None:
+    """Make another pitch tracker available as ``config.f0_backend = name``.
+
+    ``estimate`` follows ``F0Estimator``. Set ``uses_device`` for a torch
+    tracker, so that ``config.device`` is resolved before it runs. Registering
+    a name that exists replaces it, which is how a test or a caller swaps in
+    a different build of a built-in tracker.
+    """
+    if not name or not name.strip():
+        raise ValueError("an f0 backend needs a name")
+    _BACKENDS[name] = _Backend(estimate, uses_device=uses_device)
+
+
+def f0_backends() -> Tuple[str, ...]:
+    """The names ``config.f0_backend`` accepts, built-in ones first."""
+    return tuple(_BACKENDS)
+
+
+def backend_uses_device(name: str) -> bool:
+    """Whether ``config.device`` matters to the named backend."""
+    backend = _BACKENDS.get(name)
+    return bool(backend and backend.uses_device)
+
+
+def backend_label(config: TranscriptionConfig) -> str:
+    """The tracker a config selects, as ``F0Track.backend`` records it."""
+    if config.f0_backend == "crepe":
+        return f"crepe-{config.crepe_model}"
+    return config.f0_backend
+
+
 def estimate_f0(
     audio: np.ndarray,
     config: TranscriptionConfig,
@@ -334,20 +537,19 @@ def estimate_f0(
 
     ``audio`` must already be mono at ``config.sample_rate``.
     """
-    if config.f0_backend == "crepe":
+    backend = _BACKENDS.get(config.f0_backend)
+    if backend is None:
+        raise ValueError(f"Unknown f0_backend: {config.f0_backend!r}; "
+                         f"available: {', '.join(f0_backends())}")
+    if backend.uses_device and config.device == "auto":
         # estimate_f0 is public API, so 'auto' has to resolve here too rather
         # than only on the transcribe_audio path.
-        if config.device == "auto":
-            import dataclasses
+        import dataclasses
 
-            from .device import resolve_device
+        from .device import resolve_device
 
-            config = dataclasses.replace(config, device=resolve_device("auto").device)
-        f0_hz, periodicity = _estimate_crepe(audio, config, progress)
-    elif config.f0_backend == "pyin":
-        f0_hz, periodicity = _estimate_pyin(audio, config, progress)
-    else:
-        raise ValueError(f"Unknown f0_backend: {config.f0_backend!r}")
+        config = dataclasses.replace(config, device=resolve_device("auto").device)
+    f0_hz, periodicity = backend.estimate(audio, config, progress)
 
     f0_hz = _median_filter_f0(f0_hz, config.f0_median_filter_frames)
 
@@ -366,4 +568,5 @@ def estimate_f0(
         loudness_db=loudness_db,
         loudness_gate=gate,
         voicing=np.clip(voicing, 0.0, 1.0),
+        backend=backend_label(config),
     )

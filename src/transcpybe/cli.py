@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 from .config import TranscriptionConfig
+from .f0 import f0_backends
 from .progress import ProgressReporter, setup_logging
 
 
@@ -58,8 +59,9 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Suppress the closing summary")
 
     model = parser.add_argument_group("pitch model")
-    model.add_argument("--f0-backend", choices=("crepe", "pyin"), default="crepe",
-                       help="crepe: neural, most accurate. pyin: no torch needed")
+    model.add_argument("--f0-backend", choices=f0_backends(), default="crepe",
+                       help="crepe: neural, most accurate. pyin: no torch needed. "
+                            "pesto: neural, small and fast (pip install pesto-pitch)")
     model.add_argument("--crepe-model", choices=("full", "tiny"), default="full",
                        help="tiny is roughly 14x faster on CPU and less accurate")
     model.add_argument("--device", default="auto",
@@ -160,6 +162,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="General MIDI program number for the output track")
     output.add_argument("--tempo", type=float, default=120.0, dest="midi_tempo",
                         help="Tempo written to the MIDI header; does not move note times")
+    output.add_argument("--12tet", action="store_true", dest="twelve_tet",
+                        help="Write whole equal-tempered semitones only. By default "
+                             "each note carries its measured pitch as a pitch bend")
 
     parser.add_argument("--self-test", action="store_true",
                         help="Run the synthetic validation suite and exit")
@@ -195,6 +200,7 @@ def config_from_args(args: argparse.Namespace) -> TranscriptionConfig:
         pitch_reference=args.pitch_reference,
         midi_program=args.midi_program,
         midi_tempo=args.midi_tempo,
+        twelve_tet=args.twelve_tet,
     )
     config.validate()
     return config

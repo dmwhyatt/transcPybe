@@ -62,11 +62,24 @@ def score(
     *,
     onset_tolerance: float = 0.05,
     pitch_tolerance_cents: float = 50.0,
+    measured_pitch: bool = False,
 ) -> Scores:
-    """Score estimated notes against ground truth."""
+    """Score estimated notes against ground truth.
+
+    Each note is scored at its integer ``pitch``, as a whole-semitone MIDI file
+    would give it, unless ``measured_pitch`` is set: then at
+    ``pitch_midi_float``, as a file carrying measured pitch gives it (see
+    ``TranscriptionConfig.twelve_tet``). A note with no measured pitch keeps
+    its integer one either way.
+    """
     import mir_eval
 
-    estimated = [(n.onset, n.offset, n.pitch) for n in notes]
+    def pitch_of(note: Note) -> float:
+        if measured_pitch and np.isfinite(note.pitch_midi_float):
+            return float(note.pitch_midi_float)
+        return note.pitch
+
+    estimated = [(n.onset, n.offset, pitch_of(n)) for n in notes]
     ref_intervals, ref_hz = _to_intervals(list(ground_truth))
     est_intervals, est_hz = _to_intervals(estimated)
 

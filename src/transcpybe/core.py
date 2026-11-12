@@ -13,7 +13,7 @@ import numpy as np
 
 from .audio import load_audio
 from .config import TranscriptionConfig
-from .f0 import F0Track, estimate_f0
+from .f0 import F0Track, backend_uses_device, estimate_f0
 from .fragments import absorb_short_fragments
 from .glide import handle_glides
 from .notes import (Note, estimate_tuning_offset, postprocess_notes,
@@ -84,7 +84,7 @@ def resolve_config_device(config: TranscriptionConfig) -> tuple[TranscriptionCon
     A copy rather than a mutation, so that the caller's config is untouched and
     the config recorded in the output JSON names the device that actually ran.
     """
-    if config.f0_backend != "crepe":
+    if not backend_uses_device(config.f0_backend):
         return config, None
 
     from .device import resolve_device
@@ -213,7 +213,7 @@ def transcribe_audio(
         config=config,
         duration=duration,
         elapsed=elapsed,
-        device=config.device if config.f0_backend == "crepe" else None,
+        device=config.device if backend_uses_device(config.f0_backend) else None,
         tuning_offset=tuning_offset,
     )
 
