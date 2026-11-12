@@ -15,34 +15,44 @@ audio ──▶ f0 + voicing ──▶ note HMM ──▶ glide handling ──�
 
 ## How good is it?
 
-On [vocadito](https://zenodo.org/records/5578807) — 40 excerpts of solo singing
-in seven languages, by singers of varying training, recorded on whatever was to
-hand — scored with `mir_eval` at the usual 50 ms / 50 cent tolerances:
+<!-- results:begin (the benchmark repository's table, generated from the scored results; do not edit by hand) -->
+Fifteen published singing transcription systems and transcPybe, on five annotated datasets, each system in its own
+pinned container on the same audio, scored the same way: COnPOff@50 at whole semitones (onset within 50 ms, pitch within
+50 cents, offset within 20% of the note's length or 50 ms), with 95% paired-bootstrap intervals, and seconds of
+computation per minute of audio on an RTX 3080 GPU and on 8 CPU cores. The method, every mark, and references for each
+system are in [the benchmark repository](https://github.com/dmwhyatt/transcription-benchmarking#singing-transcription-the-benchmark-dmrn21-december-2026).
 
-| | COn | COnP | COnPOff |
-|---|---|---|---|
-| transcPybe | **0.707** | **0.589** | **0.407** |
-| ROSVOT, convention-corrected | 0.472 | 0.355 | 0.261 |
-| two human annotators | 0.817 | 0.740 | 0.642 |
+| System | vocadito A1 | vocadito A2 | Molina | RWC-P dev | SSVD test | MIR-ST500 test | A cappella | Pop | Five-set mean [95% CI] | GPU s/min | CPU s/min |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Phoneme-informed\* | 0.450 | 0.593 | 0.712 | 0.317 | 0.688 | 0.372 | 0.641 | 0.345 | **0.522** [0.507, 0.537] | 13.4 | 12.4 |
+| transcPybe v2, CREPE | 0.473 | 0.573 | 0.670 | 0.347 | 0.568 | 0.354 | 0.587 | 0.350 | **0.492** [0.479, 0.505] | 3.0 | 65.5 |
+| transcPybe v2, PESTO | 0.467 | 0.574 | 0.693 | 0.348 | 0.601 | 0.348 | 0.605 | 0.348 | **0.502** [0.488, 0.516] | 2.1 | 4.4 |
+| transcPybe v2, pYIN | 0.481 | 0.580 | 0.675 | 0.339 | 0.609 | 0.391 | 0.605 | 0.365 | **0.509** [0.495, 0.523] | 10.6 | 10.9 |
+| MIR-ST500 model\* | 0.320 | 0.443 | 0.534 | 0.371 | 0.453 | 0.474 | 0.456 | 0.422 | **0.443** [0.427, 0.458] | 5.9 | 3.3 |
+| Tony † | 0.686 | 0.654 | 0.466 | 0.266 | 0.582 | 0.276 | 0.524 | 0.271 | **0.397**† [0.383, 0.412] | – | 1.1 |
+| YourMT3+\* | 0.275 | 0.350 | 0.464 | 0.328 | 0.410 | 0.426 | 0.395 | 0.377 | **0.388** [0.373, 0.403] | 3.0 | 21.8 |
+| GAME | 0.264 | 0.364 | 0.506 | 0.348 | 0.332 | 0.406 | 0.384 | 0.377 | **0.381** [0.366, 0.396] | – | 83.6 |
+| Omnizart | 0.440 | 0.494 | 0.512 | 0.180 | 0.533 | 0.178 | 0.504 | 0.179 | **0.374** [0.361, 0.387] | – | 134.6 |
+| transcPybe v1 | 0.496 | 0.480 | 0.419 | 0.231 | 0.449 | 0.237 | 0.452 | 0.234 | **0.365** [0.353, 0.376] | 3.0 | 60.7 |
+| SOME | 0.278 | 0.349 | 0.441 | 0.242 | 0.272 | 0.311 | 0.342 | 0.276 | **0.316** [0.304, 0.327] | 3.9 | 5.7 |
+| Kum et al. | 0.219 | 0.247 | 0.251 | 0.224 | 0.229 | 0.248 | 0.238 | 0.236 | **0.237** [0.227, 0.248] | – | 6.8 |
+| Basic Pitch | 0.307 | 0.325 | 0.345 | 0.133 | 0.254 | 0.137 | 0.305 | 0.135 | **0.237** [0.224, 0.250] | – | 4.6 |
+| Essentia | 0.318 | 0.263 | 0.289 | 0.120 | 0.360 | 0.117 | 0.313 | 0.118 | **0.235** [0.224, 0.247] | – | 1.8 |
+| CREPE Notes | 0.310 | 0.283 | 0.275 | 0.167 | 0.256 | 0.158 | 0.276 | 0.162 | **0.230** [0.219, 0.242] | – | 29.9 |
+| ROSVOT | 0.184 | 0.204 | 0.189 | 0.154 | 0.082 | 0.109 | 0.155 | 0.132 | **0.146** [0.137, 0.155] | 1.6 | – |
+| aubio | 0.061 | 0.060 | 0.086 | 0.019 | 0.106 | 0.026 | 0.084 | 0.022 | **0.059** [0.055, 0.064] | – | 0.4 |
+| STARS ‡ | 0.064 | 0.076 | 0.068 | 0.038 | 0.084 | 0.088 | 0.074 | 0.063 | **0.070** [0.062, 0.078] | – | – |
+| CTC-CE | … | … | … | … | … | … | … | … | … | 6.8 | 3.6 |
 
-Read those against the last row rather than against 1.0: two people annotating
-the same recordings agree at 0.740 on onset and pitch, so most of the remaining
-gap is a disagreement about what counts as a note.
+\* Trained on other recordings from one of the test datasets. † vocadito's references were made by correcting Tony's
+output, so its mean leaves vocadito out. ‡ STARS needs lyrics; run on transcribed ones. transcPybe v2 is the landmark
+network release (one model, three interchangeable pitch trackers; settings chosen on vocadito, Molina and RWC-P dev,
+with SSVD test and MIR-ST500 test held out); v1 is the rules-only decoder this package has shipped so far. v2's networks
+and presets are being folded into the package; until then they run from `boundary/` and in the demo.
 
-That row was measured before the changes in
-[What the realistic corpus says](#what-the-realistic-corpus-says) -- note ends
-trimmed at 15 dB, a third-of-a-semitone decoder, sung-pitch rounding and
-repaired glide handling. On synthetic recordings built to resemble vocadito
-they are worth +0.118 COnPOff on recordings nothing was tuned on, but no
-vocadito figure exists for them yet.
-
-Both systems were run on the same audio and scored against the same references
-with the same tolerances, which is the only way that comparison means anything.
-ROSVOT's row is corrected for a difference in what its references call the
-start of a note; uncorrected it scores 0.359 / 0.262 / 0.184, and the
-correction is stated rather than folded in. The procedure, and how to reproduce
-either row, is in
-[the benchmark repository](https://github.com/dmwhyatt/transcription-benchmarking/blob/main/docs/benchmarking-rosvot.md).
+For scale: vocadito's two annotators, transcribing the same recordings, agree at 0.64 COnPOff@50, so a good share of
+every system's shortfall is disagreement about what counts as a note.
+<!-- results:end -->
 
 ## Install
 
