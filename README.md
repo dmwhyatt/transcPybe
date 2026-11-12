@@ -28,6 +28,7 @@ system are in [the benchmark repository](https://github.com/dmwhyatt/transcripti
 | transcPybe v2, CREPE | 0.473 | 0.573 | 0.670 | 0.347 | 0.568 | 0.354 | 0.587 | 0.350 | **0.492** [0.479, 0.505] | 3.0 | 65.5 |
 | transcPybe v2, PESTO | 0.467 | 0.574 | 0.693 | 0.348 | 0.601 | 0.348 | 0.605 | 0.348 | **0.502** [0.488, 0.516] | 2.1 | 4.4 |
 | transcPybe v2, pYIN | 0.481 | 0.580 | 0.675 | 0.339 | 0.609 | 0.391 | 0.605 | 0.365 | **0.509** [0.495, 0.523] | 10.6 | 10.9 |
+| CTC-CE\* | 0.312 | 0.433 | 0.629 | 0.359 | 0.504 | 0.538 | 0.502 | 0.449 | **0.481** [0.465, 0.496] | 6.8 | 3.6 |
 | MIR-ST500 model\* | 0.320 | 0.443 | 0.534 | 0.371 | 0.453 | 0.474 | 0.456 | 0.422 | **0.443** [0.427, 0.458] | 5.9 | 3.3 |
 | Tony † | 0.686 | 0.654 | 0.466 | 0.266 | 0.582 | 0.276 | 0.524 | 0.271 | **0.397**† [0.383, 0.412] | – | 1.1 |
 | YourMT3+\* | 0.275 | 0.350 | 0.464 | 0.328 | 0.410 | 0.426 | 0.395 | 0.377 | **0.388** [0.373, 0.403] | 3.0 | 21.8 |
@@ -42,7 +43,6 @@ system are in [the benchmark repository](https://github.com/dmwhyatt/transcripti
 | ROSVOT | 0.184 | 0.204 | 0.189 | 0.154 | 0.082 | 0.109 | 0.155 | 0.132 | **0.146** [0.137, 0.155] | 1.6 | – |
 | aubio | 0.061 | 0.060 | 0.086 | 0.019 | 0.106 | 0.026 | 0.084 | 0.022 | **0.059** [0.055, 0.064] | – | 0.4 |
 | STARS ‡ | 0.064 | 0.076 | 0.068 | 0.038 | 0.084 | 0.088 | 0.074 | 0.063 | **0.070** [0.062, 0.078] | – | – |
-| CTC-CE | … | … | … | … | … | … | … | … | … | 6.8 | 3.6 |
 
 \* Trained on other recordings from one of the test datasets. † vocadito's references were made by correcting Tony's
 output, so its mean leaves vocadito out. ‡ STARS needs lyrics; run on transcribed ones. transcPybe v2 is the landmark
