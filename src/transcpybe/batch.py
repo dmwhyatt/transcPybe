@@ -297,6 +297,9 @@ def _write_outputs(
     result: TranscriptionResult, outputs: dict, config: TranscriptionConfig,
     midi: bool, json_: bool, csv: bool,
 ) -> None:
+    # The config the transcription ran with: a preset's decoder settings, the
+    # device CREPE actually used.
+    config = result.config
     if midi:
         write_midi(result.notes, outputs["midi"], config)
     if json_:
