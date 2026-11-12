@@ -1,7 +1,7 @@
 """A learned note-boundary detector for transcPybe, and the pipeline that trains it.
 
-Not part of the installed package. The stages, each a module with its own
-command line, run in this order:
+Not part of the installed package; what it trained ships as ``transcpybe.landmarks``.
+The stages, each a module with its own command line, run in this order:
 
     sources   labelled singing -> a manifest of vocals with their notes
     mix       each vocal over an accompaniment, as a pop mix would have it

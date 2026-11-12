@@ -4,8 +4,10 @@ Transcribes monophonic singing — typically a source-separated lead vocal stem 
 into note events with **integer MIDI pitches (0–127)** and **floating-point
 onset times in seconds**.
 
-No GPU required and no checkpoint downloads: both pitch models ship their
-weights inside their PyPI wheels.
+No GPU required and no checkpoint downloads: the pitch models ship their
+weights inside their PyPI wheels, and transcPybe v2's three note-start networks
+ship inside this package. Those weights are licensed CC BY-NC-SA 4.0, not MIT
+(see [Licence](#licence)).
 
 ```
 audio ──▶ f0 + voicing ──▶ note HMM ──▶ glide handling ──▶ onset refinement ──▶ notes ──▶ note ends ──▶ .mid
@@ -58,6 +60,9 @@ The `pip install transcpybe` form in this section is what it will look like if
 this is ever released; `pyproject.toml` carries a classifier that makes PyPI
 reject an upload until someone removes it on purpose.
 
+transcPybe v2 (`--preset acappella` or `--preset pop`, below) needs torch
+too, so install the `crepe` extra for it.
+
 CREPE is the default and the most accurate, but it wants torch. The plain
 install works without it; pass `--f0-backend pyin`. PESTO (Riou et al., ISMIR
 2023) is a far smaller network than CREPE; pass `--f0-backend pesto`. Every
@@ -89,6 +94,10 @@ transcpybe lead-vocal.wav --f0-backend pesto
 # Whole equal-tempered semitones only (see below)
 transcpybe lead-vocal.wav --12tet
 
+# transcPybe v2: note starts from three small neural networks (needs torch)
+transcpybe solo.wav --preset acappella         # solo singing
+transcpybe lead-vocal.wav --preset pop         # a lead vocal separated from a mix
+
 # Check the install against the built-in synthetic benchmark
 transcpybe --self-test
 ```
@@ -100,6 +109,44 @@ and a notation program that ignores bends still shows the nearest note.
 `--12tet` writes whole semitones only. The JSON and CSV files carry both
 (`pitch`, `pitch_midi_float`) either way, and `transcpybe.midi_io.read_midi_notes`
 reads a file back with its bends applied.
+
+## transcPybe v2: note starts from networks
+
+`--preset rules`, the default, is transcPybe v1: note starts come from the
+pitch track and spectral flux, and nothing but the pitch tracker is a neural
+network. The two other presets are transcPybe v2. Three small neural networks
+(a convolutional front end over log-mel and a bidirectional GRU, 0.8M
+parameters each, trained with three seeds) read the audio and the pitch track,
+and mark every 10 ms where a syllable starts sounding and where its vowel
+starts. Their outputs are averaged, each note start is placed between a
+syllable's two landmarks, and the same note decoder makes the notes.
+
+| Preset | For | Note start, from articulation (0) to vowel (1) | Checked on |
+|---|---|---|---|
+| `acappella` | solo singing, nothing else in the recording | 0.875 | SSVD's 127 test recordings |
+| `pop` | a lead vocal separated from a pop mix | 0.5 | 82 MIR-ST500 test songs |
+
+Each preset was fixed on development sets and then run once on test
+recordings nothing had been tuned on. A preset also sets the decoder settings
+it was scored with (`--min-note`, `--p-self`, `--note-level-floor`,
+`--onset-delta`, `--onset-split-strength`, `--release-drop`); the command line
+says so if you pass one of them. From Python:
+
+```python
+from transcpybe import TranscriptionConfig, transcribe_file
+
+result = transcribe_file("solo.wav", TranscriptionConfig(preset="acappella"))
+```
+
+The networks were trained on CREPE full's pitch tracks. PESTO and pYIN
+(`--f0-backend pesto` or `pyin`) work as well: their confidence runs lower
+than CREPE's, so the note decoder gets their track through a voicing map, a
+quantile map onto CREPE's scale fitted on the training data. The networks run
+on the CPU, as they did when the presets were scored: the three take about
+3.6 s per minute of audio on an Apple M-series laptop with torch's default four
+threads. The code is `transcpybe.landmarks`; the weights and maps
+are in `src/transcpybe/landmarks/weights/`, whose README says how they were
+made and what they were trained on.
 
 ## Monitoring a run
 
@@ -758,5 +805,32 @@ substantive ideas and all pretrained weights come from the work below.
 - **NumPy** (BSD-3-Clause), **SciPy** (BSD-3-Clause), **soundfile**
   (BSD-3-Clause), **PyTorch** (BSD-3-Clause / Apache-2.0).
 
+**Training data for the v2 networks**
+
+- **M4Singer** — Lichao Zhang et al., "M4Singer: A Multi-Style, Multi-Singer
+  and Musical Score Provided Mandarin Singing Corpus", NeurIPS 2022 Datasets
+  and Benchmarks. CC BY-NC-SA 4.0. <https://doi.org/10.52202/068431-0501>
+- **GTSinger** — Yu Zhang et al., "GTSinger: A Global Multi-Technique Singing
+  Corpus with Realistic Music Scores for All Singing Tasks", NeurIPS 2024
+  Datasets and Benchmarks. CC BY-NC-SA 4.0.
+  <https://doi.org/10.52202/079017-0034>
+- **MUSDB18-HQ** — Zafar Rafii, Antoine Liutkus, Fabian-Robert Stöter,
+  Stylianos Ioannis Mimilakis, Rachel Bittner, 2019; the accompaniment the
+  vocals were mixed over. Educational, non-commercial use.
+  <https://doi.org/10.5281/zenodo.3338373>
+
 Licences were read from the installed distributions at the versions pinned in
 `requirements.txt`.
+
+## Licence
+
+The code is MIT: see `LICENSE`.
+
+The v2 networks' weights and the voicing maps, in
+`src/transcpybe/landmarks/weights/`, are licensed
+[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/): see that
+folder's `LICENSE` and `README.md`. They learnt from singing licensed CC
+BY-NC-SA 4.0, so they carry the same terms: credit, no commercial use, and
+anything built from them shared alike. transcPybe v1 (`--preset rules`, the
+default) uses none of them. The pitch trackers' own weights come with their
+packages under their own licences.
