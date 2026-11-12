@@ -8,3 +8,4 @@ dist/
 .f0-cache*/
 .bench-cache*/
 .tune-cache*/
+.corpus-cache*/

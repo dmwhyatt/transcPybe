@@ -100,6 +100,30 @@ def test_hz_to_midi_rejects_non_positive_and_propagates_nan():
     assert np.isnan(out).all()
 
 
+def test_contour_median_removes_a_spike_and_carries_across_gaps():
+    """One gap-aware running median, shared by the f0 track and the glide walk.
+
+    Each used to carry its own copy. It must remove a single-frame spike, hold
+    a step where it is, leave unvoiced frames unvoiced, and smooth the frames
+    beside a gap against the contour carried across it rather than against
+    NaN.
+    """
+    from transcpybe.f0 import _median_filter_f0, median_filter_contour
+
+    contour = np.array([60.0, 60.0, 67.0, 60.0, 60.0, np.nan, np.nan,
+                        60.0, 60.0, 62.0, 62.0, 62.0])
+    out = median_filter_contour(contour, 3)
+    np.testing.assert_allclose(out[:5], 60.0)
+    assert np.isnan(out[5:7]).all()
+    np.testing.assert_allclose(out[7:], contour[7:])
+    assert median_filter_contour(contour, 1) is contour
+
+    # MIDI is a linear rescale of log2 Hz and a median commutes with that, so
+    # filtering f0 in Hz is the same filter as filtering the contour in MIDI.
+    via_hz = hz_to_midi(_median_filter_f0(midi_to_hz(contour), 3))
+    np.testing.assert_allclose(via_hz, out, equal_nan=True)
+
+
 def test_note_name_uses_scientific_pitch_notation():
     assert note_name(60) == "C4"
     assert note_name(69) == "A4"
@@ -194,6 +218,541 @@ def test_viterbi_recovers_notes_from_a_vibrato_contour():
     for segment, (start, end, _) in zip(segments, spans):
         assert abs(segment.start_frame - start) <= 2
         assert abs(segment.end_frame - end) <= 2
+
+
+def _hand_track(midi, loudness_db=None):
+    """An F0Track built from a fractional-MIDI contour; NaN is unvoiced."""
+    midi = np.asarray(midi, dtype=float)
+    voiced = np.isfinite(midi)
+    voicing = np.where(voiced, 0.95, 0.0)
+    loudness = (np.where(voiced, -20.0, -80.0) if loudness_db is None
+                else np.asarray(loudness_db, dtype=float))
+    return F0Track(
+        times=np.arange(midi.shape[0]) / 100.0,
+        f0_hz=np.where(voiced, midi_to_hz(np.nan_to_num(midi, nan=60.0)), np.nan),
+        periodicity=voicing, loudness_db=loudness,
+        loudness_gate=np.where(voiced, 1.0, 0.0), voicing=voicing,
+    )
+
+
+def test_a_note_sung_between_two_semitones_is_one_note():
+    """Vibrato around x.5 flipped a one-state-per-semitone decoder.
+
+    A note at 61.48 is equally well explained by 61 and 62, and +/-80 cents of
+    vibrato hands it to each in turn several times a second. A singer with no
+    reference pitch puts notes there routinely. On a third-of-a-semitone grid
+    it has a state of its own.
+    """
+    rng = np.random.default_rng(2)
+    t = np.arange(150) / 100.0
+    midi = np.full(200, np.nan)
+    midi[25:175] = (61.48 + 0.8 * np.sin(2 * np.pi * 5.8 * t)
+                    + rng.normal(0.0, 0.05, 150))
+    track = _hand_track(midi)
+
+    coarse = segment_notes(track, TranscriptionConfig(pitch_states_per_semitone=1))
+    fine = segment_notes(track, TranscriptionConfig())
+
+    assert len(coarse) >= 5
+    assert len(fine) == 1
+    assert abs(fine[0].start_frame - 25) <= 2 and abs(fine[0].end_frame - 175) <= 2
+
+
+def test_fine_grid_still_splits_a_narrow_semitone_step():
+    """A finer grid must not make the decoder hold a compromise state.
+
+    Two notes a semitone apart, sung 0.85 apart. A fine grid has states
+    between them; if a change to any one sub-state cost more than a change to
+    a semitone did, holding one of those in-between states across both notes
+    would be cheaper than changing, and the step would vanish.
+    """
+    midi = np.full(160, np.nan)
+    midi[20:60] = 64.1
+    midi[60:140] = 64.95
+    segments = segment_notes(_hand_track(midi), TranscriptionConfig())
+    assert [s.pitch for s in segments] == [64, 65]
+    assert abs(segments[1].start_frame - 60) <= 2
+
+
+def test_fine_grid_does_not_split_a_drifting_note():
+    """A note that drifts by a fifth of a semitone is still one note."""
+    midi = np.full(160, np.nan)
+    midi[20:140] = np.linspace(62.0, 62.2, 120)
+    assert len(segment_notes(_hand_track(midi), TranscriptionConfig())) == 1
+
+
+def test_path_to_segments_cuts_where_the_semitone_changes_not_the_state():
+    """Two states that lie nearest one semitone are one note, not two.
+
+    Segments used to be cut at every change of state. At three states per
+    semitone, 60.67 and 61.33 are both nearest 61, so a path moving from one
+    to the other produced two contiguous segments both labelled 61.
+    """
+    # pitch_lo 60, three to the semitone: state 3 is 60.67, 5 is 61.33 and 6
+    # is 61.67 -- labelled 61, 61 and 62.
+    path = np.array([0, 3, 3, 5, 5, 0, 5, 6, 6])
+    segments = path_to_segments(path, pitch_lo=60, steps=3)
+    assert [(s.start_frame, s.end_frame, s.pitch) for s in segments] == [
+        (1, 5, 61), (6, 7, 61), (7, 9, 62),
+    ]
+
+
+def test_a_note_drifting_across_its_semitone_is_one_segment():
+    """Intonation drift of 0.6 inside one held note split it in two.
+
+    A change of two thirds of a semitone is allowed, and 60.67 to 61.33 is
+    one that stays on the same semitone. A note held at 60.7 that settles to
+    61.3 moved the decoder between them, and came out as two segments both
+    labelled 61 with a boundary in the middle of the note.
+    """
+    for drift in (np.linspace(60.7, 61.3, 20), np.full(20, 61.3)):
+        midi = np.full(160, np.nan)
+        midi[20:70] = 60.7
+        midi[70:90] = drift
+        midi[90:140] = 61.3
+        segments = segment_notes(_hand_track(midi), TranscriptionConfig())
+        assert [s.pitch for s in segments] == [61]
+        assert abs(segments[0].start_frame - 20) <= 2
+        assert abs(segments[0].end_frame - 140) <= 2
+
+
+def test_a_weak_onset_does_not_split_a_note_that_drifts_across_its_semitone():
+    """A boundary inside a held note was treated as a note start downstream.
+
+    The drift above left a segment boundary where the decoder changed state.
+    Snapping moved it back onto a weak onset nearby -- an accent, a diphthong
+    -- and merging then saw that onset between the two halves and took it as
+    a re-articulation, so one held note was reported as two. The same onset
+    on a note that did not drift is too weak to split anything.
+    """
+    from transcpybe.core import decode_notes
+    from transcpybe.onsets import OnsetTrack
+
+    drifting = np.full(160, np.nan)
+    drifting[20:70] = 60.7
+    drifting[70:90] = np.linspace(60.7, 61.3, 20)
+    drifting[90:140] = 61.3
+    steady = np.where(np.isfinite(drifting), 61.0, np.nan)
+
+    for name, midi in (("steady", steady), ("drifting", drifting)):
+        track = _hand_track(midi)
+        # The note's own attack, and a much weaker one 40 ms before the
+        # drifting note's decoder changes state.
+        onsets = OnsetTrack(np.array([0.20, 0.76]), np.array([5.0, 1.0]),
+                            np.zeros(160), track.times)
+        notes, _, _, _ = decode_notes(track, TranscriptionConfig(), onsets=onsets)
+        assert [n.pitch for n in notes] == [61], name
+
+
+def test_an_accent_does_not_split_a_drifting_note_in_audio():
+    """The same failure end to end, from audio, with a pYIN track and real onsets.
+
+    A held note rising from 60.7 to 61.3, swelling by 10 dB just before it
+    arrives, inside a phrase of plainly attacked notes. The swell's onset is
+    too weak to split a note on its own -- a steady 61 with the same swell is
+    one note -- and the drifting one used to come out as two.
+    """
+    from transcpybe.synth import synth_voice
+
+    sr = 16000
+
+    def voice(pitch_curve, rng, swell_at=None):
+        out = synth_voice(midi_to_hz(pitch_curve), sr, rng=rng)
+        ramp = int(0.02 * sr)
+        out[:ramp] *= np.linspace(0.0, 1.0, ramp)
+        out[-ramp:] *= np.linspace(1.0, 0.0, ramp)
+        if swell_at is not None:
+            # 10 dB up over 20 ms, and held there.
+            t = np.arange(out.size) / sr
+            out *= 10.0 ** (-0.5 + 0.5 * np.clip((t - swell_at) / 0.02, 0.0, 1.0))
+        return out
+
+    def phrase(held):
+        rng = np.random.default_rng(0)
+        gap = np.zeros(int(0.15 * sr))
+        parts = [np.zeros(int(0.3 * sr))]
+        for pitch in (64.0, None, 62.0, 65.0):
+            if pitch is None:
+                parts.append(voice(held, rng, swell_at=0.56))
+            else:
+                parts.append(voice(np.full(int(0.5 * sr), pitch), rng))
+            parts.append(gap)
+        parts.append(np.zeros(int(0.3 * sr)))
+        audio = np.concatenate(parts)
+        audio /= np.abs(audio).max()
+        audio += rng.normal(0.0, 1e-3, audio.size)
+        return audio.astype(np.float32)
+
+    drifting = np.concatenate([np.full(int(0.6 * sr), 60.7),
+                               np.linspace(60.7, 61.3, int(0.05 * sr)),
+                               np.full(int(0.6 * sr), 61.3)])
+    steady = np.full(drifting.size, 61.0)
+
+    for name, held in (("steady", steady), ("drifting", drifting)):
+        notes = transcribe_audio(phrase(held), pyin_config()).notes
+        assert [n.pitch for n in notes] == [64, 61, 62, 65], name
+
+
+def test_one_state_per_semitone_is_the_old_decoder():
+    config = TranscriptionConfig(pitch_states_per_semitone=1)
+    log_a = build_transition_matrix(10, config)
+    assert np.allclose(np.exp(log_a).sum(axis=1), 1.0)
+
+
+@pytest.mark.parametrize("steps,min_interval,tau", [
+    (1, 0.5, 7.0), (2, 0.5, 7.0), (3, 0.5, 7.0), (3, 0.9, 20.0), (4, 0.3, 7.0),
+])
+def test_banded_decode_finds_the_dense_decodes_path(steps, min_interval, tau):
+    """The fast decode must agree with the dense one, not merely be fast.
+
+    It reads the change cost from the matrix, so the matrix it reads must be
+    rebuilt exactly from that cost; and on emissions with no exact ties --
+    where the most likely path is unique -- it must find the same path.
+    """
+    from transcpybe.segment import change_cost, viterbi, viterbi_banded
+
+    config = TranscriptionConfig(pitch_states_per_semitone=steps,
+                                 min_note_interval_semitones=min_interval,
+                                 interval_tau_semitones=tau)
+    lo, hi = pitch_range(config)
+    n_pitches = (hi - lo) * steps + 1
+    log_a = build_transition_matrix(n_pitches, config, steps)
+    cost = change_cost(log_a)
+    assert cost is not None
+
+    states = np.arange(n_pitches)
+    distance = np.abs(states[:, None] - states[None, :])
+    rebuilt = np.where(distance >= cost.band,
+                       cost.row[:, None] - cost.slope * distance, log_a[1:, 1:])
+    assert np.allclose(rebuilt, log_a[1:, 1:], rtol=0.0, atol=1e-9)
+
+    for seed in range(3):
+        log_e = 3.0 * np.random.default_rng(seed).normal(size=(300, n_pitches + 1))
+        assert np.array_equal(viterbi_banded(log_e, log_a, cost), viterbi(log_e, log_a))
+
+
+def test_banded_decode_is_as_likely_as_the_dense_one_on_exact_ties():
+    """Where two paths are exactly equally likely either may come back."""
+    from transcpybe.segment import _log_initial, change_cost, viterbi, viterbi_banded
+
+    config = TranscriptionConfig()
+    lo, hi = pitch_range(config)
+    n_pitches = (hi - lo) * 3 + 1
+    log_a = build_transition_matrix(n_pitches, config, 3)
+    log_e = 3.0 * np.random.default_rng(1).normal(size=(300, n_pitches + 1))
+    log_e[100:200] = 0.0
+
+    def likelihood(path):
+        steps = log_a[path[:-1], path[1:]] + log_e[np.arange(1, path.size), path[1:]]
+        return _log_initial(n_pitches + 1)[path[0]] + log_e[0, path[0]] + steps.sum()
+
+    banded = viterbi_banded(log_e, log_a, change_cost(log_a))
+    assert likelihood(banded) == pytest.approx(likelihood(viterbi(log_e, log_a)), abs=1e-9)
+
+
+def test_a_matrix_without_the_banded_shape_is_decoded_densely():
+    """A cost the matrix does not have must not be read into it."""
+    from transcpybe.segment import change_cost
+
+    # A narrow interval prior puts the far weights on the _EPS floor, which
+    # the distance cost cannot express.
+    config = TranscriptionConfig(interval_tau_semitones=0.5)
+    lo, hi = pitch_range(config)
+    n_pitches = (hi - lo) * 3 + 1
+    assert change_cost(build_transition_matrix(n_pitches, config, 3)) is None
+    assert change_cost(np.random.default_rng(0).normal(size=(20, 20))) is None
+
+
+# --------------------------------------------------------------------------
+# Glides
+# --------------------------------------------------------------------------
+
+def test_glide_backtrack_stops_at_a_note_held_off_its_semitone():
+    """The walk must not march back through a held note.
+
+    It used to stop only on arriving within 0.35 of the previous note's
+    *integer* pitch. A note held at 60.4 never does, and sits inside the
+    corridor up to 62, so the next onset was pulled 300 ms early and the held
+    note cut short by the same amount.
+    """
+    from transcpybe.glide import backtrack_glide_onsets
+
+    midi = np.full(160, np.nan)
+    midi[10:90] = 60.4
+    midi[90:150] = 62.0
+    track = _hand_track(midi)
+    segments = [Segment(10, 90, 60), Segment(90, 150, 62)]
+
+    out = backtrack_glide_onsets(segments, track, TranscriptionConfig())
+    assert abs(out[1].start_frame - 90) <= 2
+    assert abs(out[0].end_frame - 90) <= 2
+
+
+@pytest.mark.parametrize("tail", ["held", "drifting"])
+def test_glide_backtrack_stops_at_a_tail_held_off_the_note_s_measured_pitch(tail):
+    """What the plateau test is for: a tail that never comes back to the note.
+
+    The note before is measured at 60.0, its median, but its last half second
+    sits off that towards the next note -- held at 60.5, or drifting up to
+    60.6 -- inside the corridor and never within tolerance of 60.0. Only the
+    plateau test stops the walk there. Without it the walk marches back
+    through the tail, to its 300 ms limit or nearly, and takes the tail from
+    the note it belongs to.
+    """
+    from transcpybe.glide import backtrack_glide_onsets
+
+    midi = np.full(260, np.nan)
+    midi[10:100] = 60.0
+    midi[100:150] = 60.5 if tail == "held" else np.linspace(60.0, 60.6, 50)
+    midi[150:156] = np.linspace(midi[149], 62.0, 6)
+    midi[156:240] = 62.0
+    track = _hand_track(midi)
+    segments = [Segment(10, 153, 60), Segment(153, 240, 62)]
+
+    config = TranscriptionConfig(glide_onset_position=0.0)
+    out = backtrack_glide_onsets(segments, track, config)
+    assert out[1].start_frame >= 148 and out[0].end_frame >= 148
+
+    no_plateau = dataclasses.replace(config, glide_plateau_frames=1000)
+    assert backtrack_glide_onsets(segments, track, no_plateau)[1].start_frame <= 130
+
+
+def test_glide_backtrack_still_finds_the_start_of_a_glide():
+    from transcpybe.glide import backtrack_glide_onsets
+
+    midi = np.full(160, np.nan)
+    midi[10:80] = 60.0
+    midi[80:95] = np.linspace(60.0, 62.0, 15)    # a 150 ms slide
+    midi[95:150] = 62.0
+    track = _hand_track(midi)
+    segments = [Segment(10, 90, 60), Segment(90, 150, 62)]
+
+    # The walk itself: where in the glide the onset then goes is tested below.
+    config = TranscriptionConfig(glide_onset_position=0.0)
+    out = backtrack_glide_onsets(segments, track, config)
+    assert out[1].start_frame <= 84
+
+
+def test_glide_backtrack_follows_a_slow_glide():
+    """A slow glide is still a glide, not a held note.
+
+    The plateau test read any five frames spanning less than a quarter of a
+    semitone as held. A semitone sung over 400 ms moves a tenth of a
+    semitone in five frames, so the walk stopped on its first five, gave them
+    back, and left the onset where the decoder had put it, halfway up the
+    glide.
+    """
+    from transcpybe.glide import backtrack_glide_onsets
+
+    midi = np.full(220, np.nan)
+    midi[10:80] = 60.0
+    midi[80:120] = np.linspace(60.0, 61.0, 40)   # a semitone over 400 ms
+    midi[120:200] = 61.0
+    track = _hand_track(midi)
+    # The decoder's boundary, halfway up the glide.
+    segments = [Segment(10, 100, 60), Segment(100, 200, 61)]
+
+    config = TranscriptionConfig(glide_onset_position=0.0)
+    out = backtrack_glide_onsets(segments, track, config)
+    # The contour leaves 60's tolerance of 0.35 at frame 94.
+    assert 90 <= out[1].start_frame <= 95
+
+
+def test_glide_backtrack_walks_back_through_a_late_switch():
+    """Frames already at the new pitch are the new note, not a plateau.
+
+    Where the decoder switched only after the glide had arrived, the frames
+    just before the boundary hold the new note's pitch. They sit inside the
+    corridor, so they read as a held plateau and the walk gave them back: the
+    onset stayed 70 ms after the pitch arrived and 170 ms after it set off.
+    """
+    from transcpybe.glide import backtrack_glide_onsets
+
+    midi = np.full(200, np.nan)
+    midi[10:80] = 60.0
+    midi[80:90] = np.linspace(60.0, 62.0, 10)    # a 100 ms slide
+    midi[90:180] = 62.0
+    track = _hand_track(midi)
+    segments = [Segment(10, 97, 60), Segment(97, 180, 62)]   # switched 70 ms late
+
+    config = TranscriptionConfig(glide_onset_position=0.0)
+    out = backtrack_glide_onsets(segments, track, config)
+    assert out[1].start_frame <= 84
+
+
+def test_glide_walk_crosses_a_single_frame_of_jitter_on_an_unfiltered_track():
+    """The walk smooths its own contour rather than trusting the f0 filter.
+
+    The f0 track is usually median-filtered already, but that filter is a
+    setting (``f0_median_filter_frames=1`` turns it off) and a hand-built
+    track is never filtered. One frame jumping half a semitone the wrong way
+    in the middle of a glide would otherwise read as the contour turning
+    back: on the raw contour this walk stops at frame 88, two frames in.
+    """
+    from transcpybe.glide import backtrack_glide_onsets
+
+    midi = np.full(160, np.nan)
+    midi[10:80] = 60.0
+    midi[80:95] = np.linspace(60.0, 62.0, 15)
+    midi[87] += 0.5
+    midi[95:150] = 62.0
+    track = _hand_track(midi)
+    segments = [Segment(10, 90, 60), Segment(90, 150, 62)]
+
+    config = TranscriptionConfig(glide_onset_position=0.0, f0_median_filter_frames=1)
+    out = backtrack_glide_onsets(segments, track, config)
+    assert out[1].start_frame <= 84
+
+
+def test_glide_onset_position_places_the_onset_within_the_glide():
+    """0 is where the glide left the previous note; 1 is where it arrived."""
+    from transcpybe.glide import backtrack_glide_onsets
+
+    midi = np.full(160, np.nan)
+    midi[10:80] = 60.0
+    midi[80:95] = np.linspace(60.0, 62.0, 15)
+    midi[95:150] = 62.0
+    track = _hand_track(midi)
+
+    def start(position):
+        segments = [Segment(10, 90, 60), Segment(90, 150, 62)]
+        config = TranscriptionConfig(glide_onset_position=position)
+        return backtrack_glide_onsets(segments, track, config)[1].start_frame
+
+    departure, middle, arrival = start(0.0), start(0.5), start(1.0)
+    assert arrival == 90
+    assert departure < middle < arrival
+
+
+def test_a_short_note_between_rests_is_not_a_passing_tone():
+    """A glide crossing touches both notes it joins; this one touches neither."""
+    from transcpybe.glide import absorb_passing_tones
+
+    segments = [Segment(0, 30, 60), Segment(45, 56, 62), Segment(71, 120, 64)]
+    assert len(absorb_passing_tones(list(segments), TranscriptionConfig())) == 3
+    # The same note with no rests around it is a glide crossing.
+    contiguous = [Segment(0, 30, 60), Segment(30, 41, 62), Segment(41, 90, 64)]
+    assert len(absorb_passing_tones(list(contiguous), TranscriptionConfig())) == 2
+
+
+def test_snapping_can_move_a_legato_boundary_onto_the_attack():
+    """Snapping used to be forbidden from moving a contiguous start earlier."""
+    from transcpybe.onsets import OnsetTrack, snap_segment_starts
+
+    config = TranscriptionConfig()
+    frame_times = np.arange(200) / 100.0
+    onsets = OnsetTrack(np.array([0.96]), np.array([5.0]), np.zeros(200), frame_times)
+    segments = [Segment(20, 100, 60), Segment(100, 180, 62)]
+
+    out = snap_segment_starts(segments, onsets, frame_times, config)
+    assert out[1].start_frame == 96 and out[0].end_frame == 96
+
+
+def test_snapping_earlier_only_measures_from_a_later_attack_without_moving_the_start():
+    """A later attack sets where the pitch is measured, not where the note starts."""
+    from transcpybe.onsets import OnsetTrack, snap_segment_starts
+
+    frame_times = np.arange(200) / 100.0
+    onsets = OnsetTrack(np.array([0.54]), np.array([5.0]), np.zeros(200), frame_times)
+    segments = [Segment(50, 150, 60)]
+
+    earlier = snap_segment_starts(segments, onsets, frame_times,
+                                  TranscriptionConfig(onset_snap_direction="earlier"))
+    assert earlier[0].start_frame == 50 and earlier[0].measure_from == 54
+
+    both = snap_segment_starts(segments, onsets, frame_times,
+                               TranscriptionConfig(onset_snap_direction="both"))
+    assert both[0].start_frame == 54
+
+
+def test_snapping_one_way_is_not_hidden_by_a_nearer_onset_the_other_way():
+    """A nearer onset on the wrong side used to stop a start from snapping.
+
+    The nearest onset was chosen from both sides before the direction was
+    checked. The decoder lags an attack by 40 ms and a second flux peak -- the
+    vowel after a consonant -- sits 10 ms after the start: the peak was the
+    nearer, so snapping earlier only measured the pitch from it, and the start
+    was never pulled back onto the attack, which is what snapping earlier is
+    for. Snapping later was hidden the same way by a nearer onset before the
+    start.
+    """
+    from transcpybe.onsets import OnsetTrack, snap_segment_starts
+
+    frame_times = np.arange(200) / 100.0
+    segments = [Segment(100, 180, 60)]
+
+    def snapped(times, direction):
+        onsets = OnsetTrack(np.array(times), np.full(len(times), 5.0),
+                            np.zeros(200), frame_times)
+        config = TranscriptionConfig(onset_snap_direction=direction)
+        return snap_segment_starts(segments, onsets, frame_times, config)[0]
+
+    earlier = snapped([0.96, 1.01], "earlier")
+    assert earlier.start_frame == 96 and earlier.measure_from is None
+    assert snapped([0.99, 1.03], "later").start_frame == 103
+    # Both ways, the nearest onset either side still wins.
+    assert snapped([0.96, 1.01], "both").start_frame == 101
+
+    # An earlier onset inside the previous note is that note's, and the start
+    # cannot move onto it: the attack after the start is still measured from.
+    onsets = OnsetTrack(np.array([0.97, 1.03]), np.full(2, 5.0), np.zeros(200), frame_times)
+    out = snap_segment_starts([Segment(40, 98, 57), Segment(100, 180, 60)], onsets,
+                              frame_times, TranscriptionConfig(onset_snap_direction="earlier"))
+    assert out[0].end_frame == 98
+    assert out[1].start_frame == 100 and out[1].measure_from == 103
+
+
+def test_moving_a_shared_boundary_keeps_the_previous_notes_attack():
+    """Pulling the next start back must not forget where this note's attack was.
+
+    The first note starts before its attack, so snapping records the attack
+    for its pitch to be measured from. The second note's start then moves back
+    onto its own attack, taking the shared boundary with it, and the first note
+    was rebuilt from its start, end and pitch alone: its attack was lost, and
+    its pitch measured from the frames before it again.
+    """
+    from transcpybe.onsets import OnsetTrack, snap_segment_starts
+
+    frame_times = np.arange(400) / 100.0
+    onsets = OnsetTrack(np.array([1.04, 1.96]), np.array([5.0, 5.0]),
+                        np.zeros(400), frame_times)
+    segments = [Segment(100, 200, 60), Segment(200, 300, 62)]
+
+    out = snap_segment_starts(segments, onsets, frame_times, TranscriptionConfig())
+    assert out[1].start_frame == 196 and out[0].end_frame == 196
+    assert out[0].start_frame == 100 and out[0].measure_from == 104
+
+
+def test_merging_a_note_keeps_measuring_it_from_its_attack():
+    """A merged note used to be remeasured from its start, not its attack.
+
+    Snapping leaves this note's start 50 ms before its attack, and its pitch
+    is measured from the attack instead. A dropout splits it in two, and
+    merging the halves rebuilt the note from its start and end alone: the
+    scoop up from the attack was measured into it again, as if snapping had
+    never found the attack.
+    """
+    from transcpybe.notes import merge_same_pitch, segments_to_notes
+
+    midi = np.full(200, np.nan)
+    midi[100:105] = 58.0                         # before the attack
+    midi[105:111] = np.linspace(58.5, 59.9, 6)   # the scoop up from it
+    midi[111:130] = np.linspace(60.0, 60.2, 19)
+    midi[133:160] = np.linspace(60.2, 60.4, 27)  # after a 30 ms dropout
+    track = _hand_track(midi)
+    config = TranscriptionConfig()
+
+    halves = [Segment(100, 130, 60, measure_from=105), Segment(133, 160, 60)]
+    merged = merge_same_pitch(segments_to_notes(halves, track, config), track, config)
+
+    from_attack = segments_to_notes([Segment(100, 160, 60, measure_from=105)], track, config)
+    from_start = segments_to_notes([Segment(100, 160, 60)], track, config)
+    assert from_attack[0].pitch_midi_float != from_start[0].pitch_midi_float
+    assert len(merged) == 1 and merged[0].start_frame == 100
+    assert merged[0].pitch_midi_float == from_attack[0].pitch_midi_float
+    assert merged[0].measure_from_frame == 105
+    # Bookkeeping for the pipeline: the written JSON does not change.
+    assert "measure_from_frame" not in merged[0].to_dict()
 
 
 # --------------------------------------------------------------------------
@@ -294,6 +853,20 @@ def test_crepe_backend_transcribes_the_scale():
     pytest.importorskip("torchcrepe")
     audio, ground_truth = case_scale()
     config = TranscriptionConfig(f0_backend="crepe", crepe_model="tiny")
+    assert score(transcribe_audio(audio, config).notes, ground_truth).note_f1 > 0.9
+
+
+@pytest.mark.slow
+def test_crepe_accepts_an_fmin_below_its_lowest_bin():
+    """An fmin under CREPE's 31.8 Hz floor used to silence every frame.
+
+    torchcrepe turns fmin into a bin index without clamping it, and a negative
+    index masks nearly the whole pitch range -- so lowering --fmin to reach a
+    bass guitar's low E transcribed nothing at all, from any instrument.
+    """
+    pytest.importorskip("torchcrepe")
+    audio, ground_truth = case_scale()
+    config = TranscriptionConfig(f0_backend="crepe", crepe_model="tiny", fmin_hz=30.0)
     assert score(transcribe_audio(audio, config).notes, ground_truth).note_f1 > 0.9
 
 
@@ -441,6 +1014,66 @@ def test_split_threshold_comes_from_onsets_not_the_envelope():
     assert len(out) == 5, "four onsets inside one segment must yield five notes"
 
 
+def _sung_twice(onset_times):
+    """One pitch sung twice, 20 ms apart; the second starts on breath noise.
+
+    The decoder starts the second note at frame 122, and the attack that
+    re-sings it is 20 ms later -- unless ``onset_times`` leaves it out, which
+    makes the gap a dropout in one held note.
+    """
+    from transcpybe.onsets import OnsetTrack
+
+    midi = np.full(260, np.nan)
+    midi[50:120] = 62.0
+    midi[122:200] = 62.0
+    track = _hand_track(midi)
+    onsets = OnsetTrack(np.array(onset_times), np.full(len(onset_times), 5.0),
+                        np.zeros(260), track.times)
+    return track, onsets
+
+
+def test_an_attack_just_inside_the_next_note_blocks_a_same_pitch_merge():
+    """Only an onset in the gap used to count as re-articulation.
+
+    Snapping both ways moved the second note's start onto its attack, and the
+    attack then sat in the gap, where the merge looks for one. Snapping
+    earlier leaves the start on the breath noise before it and records the
+    attack for the pitch to be measured from, so the attack is inside the
+    note, the gap is empty, and the two notes were merged into one.
+    """
+    from transcpybe.notes import merge_same_pitch, segments_to_notes
+
+    track, onsets = _sung_twice([0.50, 1.24])
+    config = TranscriptionConfig()
+    notes = segments_to_notes([Segment(50, 120, 62), Segment(122, 200, 62, measure_from=124)],
+                              track, config)
+    merged = merge_same_pitch(notes, track, config, onsets)
+    assert [(n.start_frame, n.end_frame) for n in merged] == [(50, 120), (122, 200)]
+
+    # A dropout with no attack after it is one note, and is still rejoined.
+    track, onsets = _sung_twice([0.50])
+    notes = segments_to_notes([Segment(50, 120, 62), Segment(122, 200, 62)], track, config)
+    merged = merge_same_pitch(notes, track, config, onsets)
+    assert [(n.start_frame, n.end_frame) for n in merged] == [(50, 200)]
+
+
+def test_a_note_sung_twice_stays_two_notes_when_snapping_earlier_only():
+    """The same, through decoding, snapping and post-processing together."""
+    from transcpybe.core import decode_notes
+
+    track, onsets = _sung_twice([0.50, 1.24])
+    for direction in ("earlier", "both"):
+        config = TranscriptionConfig(onset_snap_direction=direction)
+        notes = decode_notes(track, config, onsets=onsets)[0]
+        assert len(notes) == 2, direction
+        assert notes[0].pitch == notes[1].pitch == 62
+
+    track, onsets = _sung_twice([0.50])
+    notes = decode_notes(track, TranscriptionConfig(), onsets=onsets)[0]
+    assert len(notes) == 1
+    assert notes[0].start_frame == 50 and notes[0].end_frame == 200
+
+
 # ---------------------------------------------------------------------------
 # Note ends.
 #
@@ -448,22 +1081,38 @@ def test_split_threshold_comes_from_onsets_not_the_envelope():
 # on note starts, and the end was wherever the Viterbi path left the pitch
 # state -- which the adaptive gate holds open until a frame is 45 dB below the
 # whole performance. A note with a release was reported for as long as it
-# remained audible rather than for as long as it was a note.
+# remained audible rather than for as long as it was a note, and in a room the
+# reverberation after it is audible, and periodic, for longer still.
 # ---------------------------------------------------------------------------
+
+
+def _reverberate(audio, rt60, sample_rate=16000, seed=0):
+    """Convolve with an exponentially decaying noise tail: a plain room."""
+    from scipy.signal import fftconvolve
+
+    rng = np.random.default_rng(seed)
+    n = int(1.2 * rt60 * sample_rate)
+    t = np.arange(n) / sample_rate
+    tail = rng.normal(0.0, 1.0, n) * np.exp(-6.9 * t / rt60)
+    tail *= np.sqrt(10 ** (-6.0 / 10) / np.sum(tail ** 2))   # 6 dB direct-to-reverb
+    tail[0] += 1.0
+    wet = fftconvolve(audio, tail)[: audio.shape[0]]
+    return (wet / np.abs(wet).max()).astype(np.float32)
 
 
 def test_release_is_not_counted_as_note():
     """Sound continuing past the annotation must not extend the note.
 
-    Opt-in, because the trim is off by default: it ends notes at the top of the
-    decay, and vocadito's annotators mark them later -- enabling it cost 0.161
-    COnPOff there, on all forty recordings. What this test pins is that the
-    mechanism works, not that the default should use it.
+    This case annotates each end at the top of its 180 ms decay, which is what
+    a 1 dB threshold locates. That is a convention the default does not assume
+    -- see ``test_reverberant_tail_is_not_counted_as_note`` -- so the threshold
+    is set here, and what the test pins is that the mechanism can find the top
+    of a decay when asked to.
     """
     from transcpybe.synth import case_release_tails
 
     audio, ground_truth = case_release_tails()
-    notes = transcribe_audio(audio, pyin_config(trim_note_releases=True)).notes
+    notes = transcribe_audio(audio, pyin_config(release_drop_db=1.0)).notes
 
     assert len(notes) == len(ground_truth)
     for note, (_, true_end, _) in zip(notes, ground_truth):
@@ -476,7 +1125,7 @@ def test_breath_after_a_note_is_not_part_of_it():
     from transcpybe.synth import case_breath_ends
 
     audio, ground_truth = case_breath_ends()
-    notes = transcribe_audio(audio, pyin_config(trim_note_releases=True)).notes
+    notes = transcribe_audio(audio, pyin_config()).notes
 
     assert len(notes) == len(ground_truth)
     for note, (_, true_end, _) in zip(notes, ground_truth):
@@ -500,21 +1149,53 @@ def test_release_trim_only_ever_shortens():
         assert after.duration >= config.min_note_duration_s
 
 
-def test_release_trim_is_off_by_default():
-    """The default must leave note ends where the decoder put them.
+def test_reverberant_tail_is_not_counted_as_note():
+    """A room keeps a note sounding, and periodic, after the singer stops.
 
-    Trimming them scored better on every synthetic case and worse on every one
-    of vocadito's forty recordings, so the default follows the real corpus.
+    No annotation convention puts a note's end at the end of the room's decay,
+    and that is where the decoder leaves it: CREPE and pYIN both report the
+    reverberant tail of a held vowel as pitched. The default trim ends each
+    note where its level has fallen well away from its own sustain.
     """
-    from transcpybe.synth import case_release_tails
+    audio, ground_truth = case_scale()
+    audio = _reverberate(audio, rt60=0.6)
 
-    assert TranscriptionConfig().trim_note_releases is False
+    untrimmed = transcribe_audio(audio, pyin_config(trim_note_releases=False)).notes
+    trimmed = transcribe_audio(audio, pyin_config()).notes
+    assert len(trimmed) == len(ground_truth)
 
-    audio, ground_truth = case_release_tails()
-    kept = transcribe_audio(audio, pyin_config()).notes
+    def ends_within_tolerance(notes):
+        # COnPOff's offset tolerance: 50 ms or 20% of the note, the larger.
+        return sum(abs(n.offset - end) <= max(0.05, 0.2 * (end - start))
+                   for n, (start, end, _) in zip(notes, ground_truth))
 
-    overshoot = [n.offset - end for n, (_, end, _) in zip(kept, ground_truth)]
-    assert min(overshoot) > 0.11, "untrimmed, these run long -- and that is the default"
+    # Untrimmed, the room adds 130 ms to every note and none of the ends count.
+    # This is a live room -- 0.6 s RT60, reverberation only 6 dB below the
+    # voice -- so a trim set well down the decay cannot reach every end, but it
+    # must reach most of them.
+    assert ends_within_tolerance(untrimmed) == 0
+    assert ends_within_tolerance(trimmed) >= 10
+
+
+def test_default_trim_leaves_held_notes_whole():
+    """The trim must take a release, not the body of a note.
+
+    At 1 dB it did: a phrase sagging by a few decibels, or a vibrato rippling
+    the level, put frames below the bar long before the end, and the walk went
+    back through them. That is the setting that cost vocadito 0.161 COnPOff.
+    The default threshold must leave notes whose level wanders but does not
+    end exactly as the decoder found them.
+    """
+    from transcpybe.synth import case_dynamics, case_vibrato
+
+    assert TranscriptionConfig().trim_note_releases is True
+    for make_case in (case_vibrato, case_dynamics):
+        audio, _ = make_case()
+        untrimmed = transcribe_audio(audio, pyin_config(trim_note_releases=False)).notes
+        trimmed = transcribe_audio(audio, pyin_config()).notes
+        assert len(trimmed) == len(untrimmed)
+        for before, after in zip(untrimmed, trimmed):
+            assert before.offset - after.offset <= 0.03
 
 
 # ---------------------------------------------------------------------------
@@ -627,18 +1308,59 @@ def test_a_phrase_on_the_grid_is_left_alone():
 
 
 def test_tuning_correction_recovers_notes_lost_to_rounding():
-    """The point of the whole exercise: the notes the singer meant.
+    """The notes the singer meant, when that is what is asked for.
 
     A third of a semitone off the grid, with ordinary intonation scatter on
-    top, is enough to round a share of notes to the neighbouring semitone.
+    top, is enough to round a share of notes to the neighbouring semitone of
+    A440. Scored against the intended pitches, rounding on the recording's own
+    grid gets them back.
     """
     audio, truth = _detuned_phrase(35.0, scatter_cents=15.0, seed=11)
 
-    corrected = score(transcribe_audio(audio, pyin_config()).notes, truth)
-    forced = score(
-        transcribe_audio(audio, pyin_config(estimate_tuning=False)).notes, truth)
+    corrected = score(transcribe_audio(
+        audio, pyin_config(pitch_reference="tuned")).notes, truth)
+    forced = score(transcribe_audio(
+        audio, pyin_config(pitch_reference="tuned", estimate_tuning=False)).notes, truth)
 
     assert corrected.note_f1 > forced.note_f1
+
+
+def test_sung_pitch_reference_never_rounds_away_from_what_was_sung():
+    """Against a reference annotated in sung pitch, round to the sung pitch.
+
+    That is how vocadito and most sung-melody corpora annotate: each note
+    carries the fractional pitch that was sung, and an integer within 50 cents
+    of it scores. The nearest integer to the sung pitch is always within 50
+    cents of it, so 'sung' cannot lose a note to rounding; 'tuned' reports the
+    intended note, which for a performance 35 cents sharp is at least 50 cents
+    from what was sung whenever the two roundings disagree.
+    """
+    from transcpybe.synth import _sequence, synth_phrase
+
+    # A performance 30 cents sharp, with three notes pushed a further 35 cents:
+    # sung at x.65, which is x+1 to the ear and x on the performance's grid.
+    pitches = [62, 64, 66, 67, 69, 67, 66, 64, 62, 60, 62, 64]
+    detune = [30.0, 30.0, 65.0, 30.0, 30.0, 65.0, 30.0, 30.0, 30.0, 65.0, 30.0, 30.0]
+    intended = _sequence(pitches, 0.5, 0.15)
+    audio, _ = synth_phrase(intended, 16000, vibrato_cents=20.0,
+                            detune_cents=detune, seed=11)
+    sung_truth = [(a, b, p + d / 100.0) for (a, b, p), d in zip(intended, detune)]
+
+    def note_f(reference):
+        import mir_eval
+
+        notes = transcribe_audio(audio, pyin_config(pitch_reference=reference)).notes
+        est = [(n.onset, n.offset, float(n.pitch)) for n in notes]
+        hz = lambda p: 440.0 * 2.0 ** ((np.asarray(p) - 69.0) / 12.0)
+        _, _, f, _ = mir_eval.transcription.precision_recall_f1_overlap(
+            np.array([[a, b] for a, b, _ in sung_truth]), hz([p for *_, p in sung_truth]),
+            np.array([[a, b] for a, b, _ in est]), hz([p for *_, p in est]),
+            onset_tolerance=0.05, pitch_tolerance=50.0, offset_ratio=None)
+        return f
+
+    assert TranscriptionConfig().pitch_reference == "sung"
+    assert note_f("sung") == pytest.approx(1.0)
+    assert note_f("tuned") < note_f("sung")
 
 
 def test_scattered_intonation_is_not_a_tuning_offset():

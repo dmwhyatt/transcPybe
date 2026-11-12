@@ -161,13 +161,12 @@ DEFAULT_SPACE: Dict[str, Tuple[float, float]] = {
     "pitch_sigma_semitones": (0.35, 0.80),
 }
 
-# Only worth searching with trim_note_releases enabled, and only against a
-# reference whose note ends are meant seriously -- pass it explicitly along
-# with --objective offset. It is not in DEFAULT_SPACE because with the trim off
-# it is inert, and an inert parameter in a random search spends trials to learn
-# nothing.
+# Only worth searching against a reference whose note ends are meant seriously
+# -- pass it explicitly along with --objective offset. It is not in
+# DEFAULT_SPACE because an onset objective cannot see it, and an inert
+# parameter in a random search spends trials to learn nothing.
 RELEASE_SPACE: Dict[str, Tuple[float, float]] = {
-    "release_drop_db": (0.5, 20.0),
+    "release_drop_db": (3.0, 30.0),
 }
 
 

@@ -34,6 +34,11 @@ class Note:
     hmm_pitch: int        # pitch the Viterbi decoder assigned, before remeasuring
     start_frame: int
     end_frame: int
+    # The attack the pitch was measured from, when that is later than the
+    # start (see Segment.measure_from); None when measured from the start.
+    # Kept so that re-measuring the note, after a merge, measures it the same
+    # way.
+    measure_from_frame: Optional[int] = None
 
     @property
     def duration(self) -> float:
@@ -41,6 +46,9 @@ class Note:
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
+        # Pipeline bookkeeping rather than something the note reports: the
+        # written formats stay as they were.
+        data.pop("measure_from_frame")
         data["duration"] = self.duration
         return data
 
@@ -74,6 +82,13 @@ def weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
     return weighted_quantile(values, weights, 0.5)
 
 
+def _attack_frame(seg: Segment) -> Optional[int]:
+    """The segment's ``measure_from``, if it lies inside the segment."""
+    if seg.measure_from is not None and seg.start_frame < seg.measure_from < seg.end_frame:
+        return int(seg.measure_from)
+    return None
+
+
 def _measure_frames(seg: Segment, track: F0Track, config: TranscriptionConfig) -> np.ndarray:
     """Frame indices to use when measuring a segment's pitch.
 
@@ -82,11 +97,14 @@ def _measure_frames(seg: Segment, track: F0Track, config: TranscriptionConfig) -
     f0. Falls back progressively so that a measurement is always possible.
     """
     hop_s = config.hop_length / config.sample_rate
+    attack = _attack_frame(seg)
+    start = seg.start_frame if attack is None else attack
+    n_frames = seg.end_frame - start
     max_trim = int(round(config.attack_trim_max_s / hop_s))
-    trim = min(int(seg.n_frames * config.attack_trim_frac), max_trim)
-    trim = min(trim, max(seg.n_frames - 1, 0))
+    trim = min(int(n_frames * config.attack_trim_frac), max_trim)
+    trim = min(trim, max(n_frames - 1, 0))
 
-    indices = np.arange(seg.start_frame + trim, seg.end_frame)
+    indices = np.arange(start + trim, seg.end_frame)
     if indices.size == 0:
         indices = np.arange(seg.start_frame, seg.end_frame)
 
@@ -130,12 +148,16 @@ def segments_to_notes(
     """Measure pitch, timing, confidence and velocity for each segment.
 
     ``tuning_offset`` is the recording's own pitch centre, in semitones away
-    from the A440 grid (see ``f0.estimate_tuning_offset``). Rounding happens
-    relative to it, so a performance sung consistently a third of a semitone
-    flat reports the notes it meant rather than the ones it was nearest to.
-    ``pitch_midi_float`` stays as measured, in absolute MIDI, so the deviation
-    a caller reads off it remains the real distance from A440.
+    from the A440 grid (see ``estimate_tuning_offset``). With
+    ``pitch_reference='tuned'`` rounding happens relative to it, so a
+    performance sung consistently a third of a semitone flat reports the notes
+    it meant rather than the ones it was nearest to; with the default 'sung'
+    each note is the nearest semitone to what was sung, which is what a
+    reference annotated in sung pitch scores against. ``pitch_midi_float``
+    stays as measured, in absolute MIDI, so the deviation a caller reads off it
+    remains the real distance from A440.
     """
+    grid = tuning_offset if config.pitch_reference == "tuned" else 0.0
     hop_s = config.hop_length / config.sample_rate
     n_frames = track.n_frames
 
@@ -156,7 +178,7 @@ def segments_to_notes(
             # No usable f0 anywhere in the segment; trust the decoder's state.
             measured = float(seg.pitch)
 
-        pitch = int(np.clip(round(measured - tuning_offset), 0, 127))
+        pitch = int(np.clip(round(measured - grid), 0, 127))
         voiced = track.voicing[indices]
         hz = track.f0_hz[indices]
         hz_valid = hz[np.isfinite(hz)]
@@ -182,6 +204,7 @@ def segments_to_notes(
                 hmm_pitch=int(seg.pitch),
                 start_frame=seg.start_frame,
                 end_frame=seg.end_frame,
+                measure_from_frame=_attack_frame(seg),
             )
         )
     return notes
@@ -274,12 +297,17 @@ def merge_same_pitch(
     track: F0Track,
     config: TranscriptionConfig,
     onsets: Optional[OnsetTrack] = None,
+    tuning_offset: float = 0.0,
 ) -> List[Note]:
     """Rejoin consecutive notes of equal pitch separated by only a brief gap.
 
     A short unvoiced dropout mid-note (a breathy patch, a consonant) otherwise
     splits one sung note into two. A detected onset in the gap is taken as
     evidence that the singer really did re-articulate, and blocks the merge.
+    So does an attack the second note carries just after its start
+    (``measure_from_frame``): a start the decoder put on breath noise before
+    the attack stays there when snapping only pulls starts earlier, and the
+    attack that would have been in the gap is inside the note.
     """
     if len(notes) < 2:
         return notes
@@ -291,7 +319,9 @@ def merge_same_pitch(
         previous = merged[-1]
         gap = note.onset - previous.offset
 
-        rearticulated = bool(
+        # The attack snapping recorded after the start is the one that, snapped
+        # both ways, would have become the start and so been found in the gap.
+        rearticulated = note.measure_from_frame is not None or bool(
             onset_times.size
             and np.any(
                 (onset_times > previous.offset - 1e-9)
@@ -304,12 +334,19 @@ def merge_same_pitch(
             and 0 <= gap <= config.merge_same_pitch_gap_s
             and not rearticulated
         ):
+            # The merged note starts where the previous one did, so its pitch
+            # is measured from wherever the previous one's was: from its
+            # attack, when snapping left its start before one.
             combined = Segment(
                 start_frame=previous.start_frame,
                 end_frame=note.end_frame,
                 pitch=previous.hmm_pitch,
+                measure_from=previous.measure_from_frame,
             )
-            remeasured = segments_to_notes([combined], track, config)
+            # Measured on the same grid as every other note. Without the
+            # offset, a merged note was rounded on A440 while its neighbours
+            # were rounded on the recording's own grid.
+            remeasured = segments_to_notes([combined], track, config, tuning_offset)
             if remeasured:
                 merged[-1] = remeasured[0]
                 continue
@@ -334,13 +371,21 @@ def trim_note_releases(
     second long.
 
     So: find the note's sustained level, walk back from its end while frames
-    sit below that level by ``release_drop_db``, and end the note there. The
-    threshold is per-note because a quiet note's release is quiet too, and it
-    is small because what it has to find is where the level *departed* from
-    sustain rather than where it became inaudible. A threshold set further down
-    the ramp lands at a fixed fraction of the release instead of at its top, so
-    the error it leaves grows with the release and long ones overshoot whatever
-    value is chosen.
+    sit more than ``release_drop_db`` below it, and end the note there. The
+    threshold is per-note because a quiet note's release is quiet too. What it
+    is after is where the level *departed* from sustain rather than where it
+    became inaudible, but it cannot look for that just below sustain: a held
+    note's level moves a long way without the note ending -- singers sag
+    across a phrase and ripple with their vibrato, and reverberation beating
+    against a moving pitch swings the level by 5 dB or more. A threshold
+    inside that range cannot tell those from a release, and walks back
+    through the note itself: at 1 dB it often ended notes half way through,
+    and cost vocadito 0.16 COnPOff, worse on all forty recordings. The price
+    of a deeper threshold is that it lands part of the way down the release
+    rather than at its top, so a long release leaves more of itself in the
+    note than a short one does. Where on that ramp a note's end belongs is an
+    annotation convention, and the 15 dB default is the compromise across the
+    conventions measured (see ``TranscriptionConfig.release_drop_db``).
 
     Two things this deliberately does not do. It never lengthens a note, only
     shortens one, so a decoder that already ended a note early is left alone.
@@ -430,6 +475,7 @@ def postprocess_notes(
     track: F0Track,
     config: TranscriptionConfig,
     onsets: Optional[OnsetTrack] = None,
+    tuning_offset: float = 0.0,
 ) -> List[Note]:
     """Merge fragments first, then trim releases, then drop what is too short.
 
@@ -441,7 +487,7 @@ def postprocess_notes(
     a note which is only long enough because of its release is judged on the
     length it is actually reported with.
     """
-    notes = merge_same_pitch(notes, track, config, onsets)
+    notes = merge_same_pitch(notes, track, config, onsets, tuning_offset)
     notes = trim_note_releases(notes, track, config)
     notes = drop_short_notes(notes, config)
     notes = drop_quiet_notes(notes, config)
