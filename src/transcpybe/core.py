@@ -167,13 +167,21 @@ def transcribe_audio(
 
     The stages are: estimate f0 and voicing, decode notes with the pitch HMM,
     absorb edge fragments, correct glides, refine boundaries against
-    spectral-flux onsets, measure each note's pitch, then clean up.
+    spectral-flux onsets, measure each note's pitch, then clean up. With
+    ``config.preset`` set to 'acappella' or 'pop', the onsets come from the
+    networks in ``transcpybe.landmarks`` instead (transcPybe v2).
 
     Pass a ``ProgressReporter`` to see progress on long inputs; without one the
     call is silent apart from ordinary logging.
     """
     config = config or TranscriptionConfig()
     config.validate()
+    if config.preset != "rules":
+        from .landmarks import preset_config
+
+        # Before anything runs, so the result records the decoder settings
+        # actually used. None of them touches the pitch track.
+        config = preset_config(config)
 
     started = time.time()
     duration = len(audio) / config.sample_rate
@@ -191,8 +199,14 @@ def transcribe_audio(
     voiced_fraction = 100.0 * float(np.mean(track.voicing >= config.voicing_threshold))
     progress.log(f"  {track.n_frames} frames, {voiced_fraction:.1f}% voiced")
 
-    with progress.stage("note decoding", announce=False):
-        notes, onsets, n_segments, tuning_offset = decode_notes(track, config, audio=audio)
+    if config.preset == "rules":
+        with progress.stage("note decoding", announce=False):
+            notes, onsets, n_segments, tuning_offset = decode_notes(track, config, audio=audio)
+    else:
+        from .landmarks import landmark_notes
+
+        with progress.stage(f"note starts from the networks, {config.preset} preset", announce=False):
+            notes, onsets, n_segments, tuning_offset = landmark_notes(audio, track, config)
     progress.log(f"  {n_segments} raw segments")
     if tuning_offset:
         progress.log(f"  tuning centre {100.0 * tuning_offset:+.0f} cents from A440")

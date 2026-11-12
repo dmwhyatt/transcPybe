@@ -1,7 +1,8 @@
 """Command-line interface for vocal melody transcription.
 
     python -m transcpybe lead-vocal.wav -o out/
-    python -m transcpybe stems/ -o midi/ --log-file run.log
+    python -m transcpybe solo.wav --preset acappella
+    python -m transcpybe stems/ -o midi/ --preset pop --log-file run.log
     python -m transcpybe --self-test
 """
 
@@ -57,6 +58,16 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Include debug-level detail in the log")
     monitoring.add_argument("-q", "--quiet", action="store_true",
                             help="Suppress the closing summary")
+
+    starts = parser.add_argument_group("note starts")
+    starts.add_argument("--preset", choices=("rules", "acappella", "pop"), default="rules",
+                        help="rules: transcPybe v1, no networks. acappella (solo "
+                             "singing) or pop (a lead vocal separated from a mix): "
+                             "transcPybe v2, note starts from three small neural "
+                             "networks; needs torch, and sets the decoder flags it "
+                             "was scored with (--min-note, --p-self, "
+                             "--note-level-floor, --onset-delta, "
+                             "--onset-split-strength, --release-drop)")
 
     model = parser.add_argument_group("pitch model")
     model.add_argument("--f0-backend", choices=f0_backends(), default="crepe",
@@ -172,8 +183,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# The flags whose config fields a v2 preset sets itself (landmarks.DECODER_FIELDS).
+PRESET_FLAGS = {"min_note_duration_s": "--min-note", "p_self": "--p-self",
+                "note_level_floor_db": "--note-level-floor", "onset_delta_ratio": "--onset-delta",
+                "onset_split_strength_ratio": "--onset-split-strength", "release_drop_db": "--release-drop"}
+
+
 def config_from_args(args: argparse.Namespace) -> TranscriptionConfig:
+    if args.preset != "rules":
+        if args.no_onsets:
+            raise SystemExit(f"error: --preset {args.preset} takes its note starts from the networks; "
+                             "drop --no-onsets")
+        defaults = build_parser()
+        ignored = [flag for dest, flag in PRESET_FLAGS.items()
+                   if getattr(args, dest) != defaults.get_default(dest)]
+        if ignored:
+            print(f"warning: --preset {args.preset} sets {', '.join(ignored)} itself; "
+                  "the values given are not used", file=sys.stderr)
     config = TranscriptionConfig(
+        preset=args.preset,
         f0_backend=args.f0_backend,
         crepe_model=args.crepe_model,
         crepe_batch_size=args.crepe_batch_size,
@@ -244,10 +272,10 @@ def _run_single(args, config, progress) -> int:
     written = []
 
     if not args.no_midi:
-        written.append(write_midi(result.notes, output_dir / f"{stem}.mid", config))
+        written.append(write_midi(result.notes, output_dir / f"{stem}.mid", result.config))
     if not args.no_json:
         written.append(write_json(
-            result.notes, output_dir / f"{stem}.notes.json", config,
+            result.notes, output_dir / f"{stem}.notes.json", result.config,
             extra={"source": str(audio_path), "duration": result.duration,
                    "device": result.device,
                    # In cents, because that is the unit the note table's own

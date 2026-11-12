@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]   # 77: PEP 639 licence expressions
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,11 @@ version = "0.1.0"
 description = "Transcribe sung melody to MIDI: onsets and pitches from monophonic vocal audio"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { file = "LICENSE" }
+# Split: the code is MIT; the v2 networks' weights and the voicing maps, in
+# src/transcpybe/landmarks/weights/, are CC BY-NC-SA 4.0, because the singing
+# they were trained on is (see that folder's README.md).
+license = "MIT AND CC-BY-NC-SA-4.0"
+license-files = ["LICENSE", "src/transcpybe/landmarks/weights/LICENSE"]
 authors = [{ name = "David Whyatt" }]
 keywords = ["music information retrieval", "transcription", "midi", "singing",
             "melody", "pitch tracking"]
@@ -37,6 +41,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# CREPE, and the v2 presets' networks, which need only torch.
 crepe = ["torch>=2.0", "torchcrepe>=0.0.20"]
 # LGPL-3.0, which is why it is an extra and never a dependency.
 pesto = ["torch>=2.0", "pesto-pitch>=2.0"]
@@ -61,6 +66,10 @@ Issues = "https://github.com/dmwhyatt/transcpybe/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# The v2 networks (3 x 3.3 MB) and the voicing maps, with their licence.
+"transcpybe.landmarks" = ["weights/*.pt", "weights/*.json", "weights/LICENSE", "weights/README.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

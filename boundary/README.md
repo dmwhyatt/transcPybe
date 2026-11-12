@@ -8,7 +8,11 @@ trains a small network that marks where notes start and end, frame by frame on
 transcPybe's own 10 ms f0 grid, so its output can be fed to the existing
 decoder as an `OnsetTrack`. Pitch tracking is left as it is.
 
-Not part of the installed package, and nothing in `src/` depends on it.
+This training pipeline is not part of the installed package, and nothing in `src/` depends on it. What it
+trained ships there: the networks, their inference code and the two presets are `transcpybe.landmarks`
+(`--preset acappella` or `pop`), with round 2's landmark networks (`r2-lm`) and the PESTO and pYIN voicing
+maps as package data under CC BY-NC-SA 4.0. `model.py`, `features.py`, `infer.py` and `voicing_map.py` here
+are where that code was copied from; a change to the inference code belongs in both.
 
 ## Stages
 

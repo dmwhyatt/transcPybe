@@ -64,6 +64,17 @@ class TranscriptionConfig:
     """Median filter width on the f0 contour; suppresses isolated octave errors.
     Must be odd. Set to 1 to disable."""
 
+    # ---------------- Note starts ----------------
+    preset: str = "rules"
+    """Where note starts come from. 'rules' is transcPybe v1: the pitch track
+    and spectral-flux onsets, no networks, no torch needed. 'acappella' (solo
+    singing) and 'pop' (a lead vocal separated from a mix) are transcPybe v2:
+    three small neural networks mark each syllable's start and vowel, and a
+    note starts between the two (``transcpybe.landmarks``). A v2 preset also
+    sets the decoder fields in ``landmarks.DECODER_FIELDS`` to the values it
+    was scored with, overriding those given here; it needs PyTorch, and its
+    weights are licensed CC BY-NC-SA 4.0."""
+
     # ---------------- Voicing ----------------
     voicing_threshold: float = 0.30
     """Minimum combined voicing probability for a frame to inform note pitch."""
@@ -717,6 +728,16 @@ class TranscriptionConfig:
                              f"got {self.f0_backend!r}")
         if self.crepe_model not in ("full", "tiny"):
             raise ValueError(f"crepe_model must be 'full' or 'tiny', got {self.crepe_model!r}")
+        if self.preset not in ("rules", "acappella", "pop"):
+            raise ValueError(f"preset must be 'rules', 'acappella' or 'pop', got {self.preset!r}")
+        if self.preset != "rules":
+            # The networks' frames are the f0 frames, at the rate they were trained at.
+            if self.sample_rate != 16000 or self.hop_ms != 10.0:
+                raise ValueError(f"preset {self.preset!r} needs sample_rate 16000 and hop_ms 10, "
+                                 f"got {self.sample_rate} and {self.hop_ms}")
+            if not self.use_onsets:
+                raise ValueError(f"preset {self.preset!r} takes its note starts from the networks, "
+                                 "so use_onsets must stay on")
         if self.fmin_hz <= 0 or self.fmax_hz <= self.fmin_hz:
             raise ValueError("Require 0 < fmin_hz < fmax_hz")
         if self.f0_median_filter_frames % 2 == 0:
