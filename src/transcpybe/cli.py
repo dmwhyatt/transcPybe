@@ -67,6 +67,11 @@ def build_parser() -> argparse.ArgumentParser:
                              "scored with (--min-note, --p-self, --note-level-floor, "
                              "--onset-delta, --onset-split-strength, --release-drop). "
                              "rules: transcPybe v1, no networks, every flag as given")
+    starts.add_argument("--onset-position", type=float, default=None, metavar="F",
+                        help="version 2 only: where a note starts, from the start of "
+                             "its syllable (0) to the start of its vowel (1). 0 suits "
+                             "references that start notes at the consonant, 1 at the "
+                             "vowel. Default: the preset's (pop 0.5, acappella 0.875)")
 
     model = parser.add_argument_group("pitch model")
     model.add_argument("--f0-backend", choices=f0_backends(), default="pyin",
@@ -206,6 +211,8 @@ def config_from_args(args: argparse.Namespace) -> TranscriptionConfig:
         print(f"warning: {', '.join(unused)} {'does' if len(unused) == 1 else 'do'} nothing with "
               f"--f0-backend {args.f0_backend} (the default is pyin; CREPE needs --f0-backend crepe)",
               file=sys.stderr)
+    if args.preset == "rules" and args.onset_position is not None:
+        raise SystemExit("error: --onset-position places version 2's note starts; --preset rules has none")
     if args.preset != "rules":
         if args.no_onsets:
             raise SystemExit(f"error: --preset {args.preset} takes its note starts from the networks; "
@@ -217,6 +224,7 @@ def config_from_args(args: argparse.Namespace) -> TranscriptionConfig:
                   "the values given are not used (--preset rules uses them)", file=sys.stderr)
     config = TranscriptionConfig(
         preset=args.preset,
+        onset_position=args.onset_position,
         f0_backend=args.f0_backend,
         crepe_model=args.crepe_model,
         crepe_batch_size=args.crepe_batch_size,
