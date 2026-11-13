@@ -113,18 +113,6 @@ def test_validation_names_the_fix_for_the_default_preset():
     TranscriptionConfig(preset="rules", use_onsets=False, sample_rate=22050).validate()
 
 
-def test_tuning_defaults_to_pyin_and_names_the_benchmark_install(monkeypatch, capsys):
-    import sys
-
-    from transcpybe import tuning
-
-    assert tuning.build_parser().parse_args(["audio"]).f0_backend == "pyin"
-    monkeypatch.setitem(sys.modules, "transcription_benchmarking.dataset", None)     # as if not installed
-    assert tuning.main(["audio"]) == 1
-    err = capsys.readouterr().err
-    assert "transcription-benchmarking.git" in err and "[tune]" not in err
-
-
 def test_the_version_is_set_in_one_place():
     import re
 

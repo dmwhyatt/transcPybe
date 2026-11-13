@@ -39,13 +39,10 @@ dependencies = [
 crepe = ["torchcrepe>=0.0.20"]
 # LGPL-3.0, which is why it is an extra and never a dependency.
 pesto = ["pesto-pitch>=2.0"]
-# transcpybe-tune also needs the benchmark package, which is not on PyPI:
-# pip install git+https://github.com/dmwhyatt/transcription-benchmarking.git
 dev = ["pytest>=7.0", "build>=1.0", "twine>=5.0"]
 
 [project.scripts]
 transcpybe = "transcpybe.cli:main"
-transcpybe-tune = "transcpybe.tuning:main"
 
 [project.urls]
 Homepage = "https://github.com/dmwhyatt/transcpybe"

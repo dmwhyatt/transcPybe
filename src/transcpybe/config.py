@@ -550,8 +550,7 @@ class TranscriptionConfig:
     gaps are closed up to the next onset, the convention that cost 1 dB its
     0.173. COn and COnP do not move. It is still unmeasured on vocadito, and
     should be measured there before it is believed: ``--no-release-trim``
-    restores the old behaviour, and ``transcpybe-tune --objective offset``
-    fits ``release_drop_db`` to a corpus."""
+    restores the old behaviour."""
 
     release_drop_db: float = 15.0
     """How far below the note's own sustained level a frame must sit to count

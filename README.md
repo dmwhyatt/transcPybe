@@ -249,15 +249,6 @@ With `--preset rules`, the decoder's parameters may be adjusted. The most common
 | Note ends too early | `--release-drop` | increase, or `--no-release-trim` |
 | Voice outside the tracked range | `--fmin`, `--fmax` | widen |
 
-`transcpybe-tune` searches these parameters on part of an annotated corpus, and reports the result on a part that
-neither the search nor the selection used. With `--cv K`, it reports a K-fold cross-validated estimate instead. It
-requires the transcription-benchmarking package, which is installed from its repository:
-
-```shell
-pip install git+https://github.com/dmwhyatt/transcription-benchmarking.git
-transcpybe-tune corpus/audio --annotations corpus/annotations --trials 60
-```
-
 ## Tests
 
 ```shell
@@ -265,8 +256,6 @@ pytest tests/                 # the test suite
 pytest tests/ -m slow         # the tests that run CREPE
 transcpybe --self-test        # the synthetic suite
 ```
-
-The tuning tests require the transcription-benchmarking package, and are skipped without it.
 
 ## Limitations
 
