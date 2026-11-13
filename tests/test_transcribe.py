@@ -1,6 +1,8 @@
 """Tests for the vocal melody transcriber.
 
-End-to-end tests use the pYIN backend, which needs no torch and runs quickly.
+These test transcPybe v1, the rules decoder (``preset="rules"``); v2's presets
+are tested in test_landmarks.py. End-to-end tests use the pYIN backend, which
+runs quickly.
 The CREPE backend is exercised by a single test marked ``slow``; run the full
 synthetic benchmark with ``python -m transcpybe --self-test`` to
 evaluate it properly.
@@ -39,6 +41,7 @@ from transcpybe.synth import ALL_CASES, case_legato, case_scale
 
 
 def pyin_config(**overrides) -> TranscriptionConfig:
+    overrides.setdefault("preset", "rules")         # v1's decoder, which these tests are about
     config = TranscriptionConfig(f0_backend="pyin", **overrides)
     config.validate()
     return config

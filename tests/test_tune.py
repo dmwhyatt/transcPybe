@@ -130,7 +130,7 @@ def test_replay_from_cached_tracks_matches_the_full_transcription():
     from transcpybe.core import decode_notes, transcribe_audio
     from transcpybe.synth import case_rearticulated, case_scale
 
-    config = TranscriptionConfig(f0_backend="pyin", device="cpu")
+    config = TranscriptionConfig(preset="rules", f0_backend="pyin", device="cpu")
     for make_case in (case_scale, case_rearticulated):
         audio, _ = make_case()
         full = transcribe_audio(audio, config)
@@ -158,7 +158,7 @@ def test_search_recovers_a_detuned_parameter_on_held_out_recordings(tmp_path):
         items.append(Item(item_id=item_id, audio=path, annotation=path))
         references[item_id] = [(a, b, float(p)) for a, b, p in truth]
 
-    detuned = TranscriptionConfig(f0_backend="pyin", device="cpu",
+    detuned = TranscriptionConfig(preset="rules", f0_backend="pyin", device="cpu",
                                   onset_split_strength_ratio=1.6)
     split = make_split([i.item_id for i in items], fractions=(0.5, 0.25, 0.25), seed=0)
     by_id = {i.item_id: i for i in items}
@@ -251,7 +251,7 @@ def test_tuning_can_optimise_the_sequence_objective(tmp_path):
         references[item_id] = [(a * 1.04 + 1.5, b * 1.04 + 1.5, float(p))
                                for a, b, p in truth]
 
-    detuned = TranscriptionConfig(f0_backend="pyin", device="cpu",
+    detuned = TranscriptionConfig(preset="rules", f0_backend="pyin", device="cpu",
                                   onset_split_strength_ratio=1.6)
     split = make_split([i.item_id for i in items], fractions=(0.5, 0.25, 0.25), seed=0)
     by_id = {i.item_id: i for i in items}
@@ -442,7 +442,7 @@ def test_a_small_refusal_share_is_reported_without_the_lecture(tmp_path):
 
 # Detuned the same way as the single-split test: a split gate so strict that
 # repeated notes all merge, which the search can recover.
-_BASE = TranscriptionConfig(f0_backend="pyin", device="cpu",
+_BASE = TranscriptionConfig(preset="rules", f0_backend="pyin", device="cpu",
                             onset_split_strength_ratio=1.6)
 _SMALL_SPACE = {"onset_split_strength_ratio": (0.2, 1.6)}
 
@@ -673,7 +673,7 @@ def test_cached_tracks_are_reused_by_a_second_cache_object(tmp_path):
     path = tmp_path / "song.wav"
     sf.write(path, audio, 16000)
     item = Item(item_id="song", audio=path, annotation=path)
-    config = TranscriptionConfig(f0_backend="pyin", device="cpu")
+    config = TranscriptionConfig(preset="rules", f0_backend="pyin", device="cpu")
 
     StageCache(tmp_path / "cache", config).get(item, config)
     written = sorted(p.name for p in (tmp_path / "cache").glob("*.npz"))

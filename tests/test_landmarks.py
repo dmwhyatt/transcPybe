@@ -50,7 +50,7 @@ def test_voicing_maps():
 
 
 def test_preset_config_sets_only_the_decoder_fields():
-    base = TranscriptionConfig(f0_backend="pyin", twelve_tet=True, voicing_threshold=0.25)
+    base = TranscriptionConfig(preset="rules", f0_backend="pyin", twelve_tet=True, voicing_threshold=0.25)
     assert preset_config(base) is base
     for name, p in PRESETS.items():
         given = dataclasses.replace(base, preset=name)
@@ -82,6 +82,13 @@ def test_cli_preset_says_which_flags_it_overrides(capsys):
     assert "--min-note" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         config_from_args(build_parser().parse_args(["x.wav", "--preset", "pop", "--no-onsets"]))
+
+
+def test_the_default_is_v2_pop_with_pyin():
+    from transcpybe.cli import build_parser, config_from_args
+
+    for cfg in (TranscriptionConfig(), config_from_args(build_parser().parse_args(["x.wav"]))):
+        assert cfg.preset == "pop" and cfg.f0_backend == "pyin"
 
 
 def test_networks_load():

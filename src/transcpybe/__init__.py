@@ -2,6 +2,8 @@
 
 Transcribes monophonic singing -- typically a source-separated lead vocal stem
 -- into note events with integer MIDI pitches and floating-point onset times.
+By default this is transcPybe v2's pop preset with pYIN pitch tracking; see
+``TranscriptionConfig.preset`` and ``transcpybe.landmarks``.
 
     from transcpybe import transcribe_file, write_midi
 
@@ -58,4 +60,4 @@ __all__ = [
     "note_name",
 ]
 
-__version__ = "0.1.0"
+__version__ = "2.0.0"

@@ -58,33 +58,34 @@ every system's shortfall is disagreement about what counts as a note.
 
 ## Install
 
-Not published. Install it from a checkout:
-
 ```shell
-pip install -e .              # pYIN backend, no torch
-pip install -e ".[crepe]"     # adds the CREPE backend, which is better
-pip install -e ".[pesto]"     # adds PESTO: small, fast, LGPL-3.0
+pip install transcpybe              # transcPybe v2 with pYIN
+pip install "transcpybe[crepe]"     # adds the CREPE pitch tracker
+pip install "transcpybe[pesto]"     # adds PESTO: small, fast, LGPL-3.0
 ```
 
-The `pip install transcpybe` form in this section is what it will look like if
-this is ever released; `pyproject.toml` carries a classifier that makes PyPI
-reject an upload until someone removes it on purpose.
+Python 3.9 or newer. torch is a dependency, for the v2 networks. On a machine
+without a GPU, `pip install torch --index-url https://download.pytorch.org/whl/cpu`
+first avoids downloading CUDA libraries. From a checkout, `pip install -e ".[dev]"`.
 
-transcPybe v2 (`--preset acappella` or `--preset pop`, below) needs torch
-too, so install the `crepe` extra for it.
-
-CREPE is the default and the most accurate, but it wants torch. The plain
-install works without it; pass `--f0-backend pyin`. PESTO (Riou et al., ISMIR
-2023) is a far smaller network than CREPE; pass `--f0-backend pesto`. Every
-threshold here was set on CREPE's output, so the other trackers run on
-settings chosen for a different one. Any other tracker plugs in with
-`transcpybe.f0.register_f0_backend`.
+The default pitch tracker is pYIN, with which v2 scores best on the benchmark.
+CREPE (`--f0-backend crepe`) is faster on a GPU and far slower on a CPU. PESTO
+(Riou et al., ISMIR 2023) is a much smaller network than CREPE
+(`--f0-backend pesto`). v1's thresholds were set on CREPE's output. Any other
+tracker plugs in with `transcpybe.f0.register_f0_backend`.
 
 ## Use
 
 ```shell
-# Transcribe a stem; writes lead-vocal.mid, .notes.json and .notes.csv
+# Transcribe a separated lead vocal (v2, pop preset, pYIN);
+# writes lead-vocal.mid, .notes.json and .notes.csv
 transcpybe lead-vocal.wav -o out/
+
+# Solo singing, with nothing else in the recording
+transcpybe solo.wav --preset acappella
+
+# transcPybe v1: no networks, the rules decoder
+transcpybe lead-vocal.wav --preset rules
 
 # Print the whole transcription as a table
 transcpybe lead-vocal.wav --print-notes
@@ -92,21 +93,15 @@ transcpybe lead-vocal.wav --print-notes
 # Transcribe a whole folder, logging to a file you can tail
 transcpybe stems/ -o midi/ --log-file runs/transcribe.log
 
-# Fast pass (~14x quicker, less accurate)
-transcpybe lead-vocal.wav --crepe-model tiny
+# CREPE instead of pYIN (the crepe extra); tiny is ~14x quicker on a CPU
+transcpybe lead-vocal.wav --f0-backend crepe
+transcpybe lead-vocal.wav --f0-backend crepe --crepe-model tiny
 
-# No torch installed
-transcpybe lead-vocal.wav --f0-backend pyin
-
-# A much smaller pitch network
+# PESTO, a much smaller pitch network (the pesto extra)
 transcpybe lead-vocal.wav --f0-backend pesto
 
 # Whole equal-tempered semitones only (see below)
 transcpybe lead-vocal.wav --12tet
-
-# transcPybe v2: note starts from three small neural networks (needs torch)
-transcpybe solo.wav --preset acappella         # solo singing
-transcpybe lead-vocal.wav --preset pop         # a lead vocal separated from a mix
 
 # Check the install against the built-in synthetic benchmark
 transcpybe --self-test
@@ -122,9 +117,10 @@ reads a file back with its bends applied.
 
 ## transcPybe v2: note starts from networks
 
-`--preset rules`, the default, is transcPybe v1: note starts come from the
-pitch track and spectral flux, and nothing but the pitch tracker is a neural
-network. The two other presets are transcPybe v2. Three small neural networks
+`--preset pop`, the default, and `--preset acappella` are transcPybe v2.
+`--preset rules` is transcPybe v1: note starts come from the pitch track and
+spectral flux, and nothing but the pitch tracker is a neural network. In v2,
+three small neural networks
 (a convolutional front end over log-mel and a bidirectional GRU, 0.8M
 parameters each, trained with three seeds) read the audio and the pitch track,
 and mark every 10 ms where a syllable starts sounding and where its vowel
@@ -148,10 +144,11 @@ from transcpybe import TranscriptionConfig, transcribe_file
 result = transcribe_file("solo.wav", TranscriptionConfig(preset="acappella"))
 ```
 
-The networks were trained on CREPE full's pitch tracks. PESTO and pYIN
-(`--f0-backend pesto` or `pyin`) work as well: their confidence runs lower
-than CREPE's, so the note decoder gets their track through a voicing map, a
-quantile map onto CREPE's scale fitted on the training data. The networks run
+The networks were trained on CREPE full's pitch tracks. pYIN, the default,
+and PESTO work as well, and scored higher than CREPE on the benchmark's five
+datasets. Their confidence runs lower than CREPE's, so the note decoder gets
+their track through a voicing map, a quantile map onto CREPE's scale fitted on
+the training data. The networks run
 on the CPU, as they did when the presets were scored: the three take about
 3.6 s per minute of audio on an Apple M-series laptop with torch's default four
 threads. The code is `transcpybe.landmarks`; the weights and maps
@@ -608,7 +605,7 @@ so did ROSVOT's.
 
 ```shell
 pip install git+https://github.com/dmwhyatt/transcription-benchmarking.git
-# (both repositories are private; from local checkouts,
+# (not on PyPI; from a local checkout,
 #  pip install -e ../transcription-benchmarking does the same)
 
 # Score a directory of transcriptions this package already wrote
@@ -649,10 +646,11 @@ worth reaching for most often, and the rest are available through
 
 `transcpybe-tune` fits the parameters on one part of a corpus and reports what
 the fit is worth on a part no trial and no selection touched. It needs the
-benchmark package for its metrics and its dataset loading:
+benchmark package for its metrics and its dataset loading. It tunes v1's
+decoder (`--preset rules`); v2's presets are fixed.
 
 ```shell
-pip install -e ".[tune]"
+pip install git+https://github.com/dmwhyatt/transcription-benchmarking.git
 
 transcpybe-tune bimmuda/audio --annotations bimmuda/midi \
     --align --trials 60 --beta 1.5
@@ -841,6 +839,6 @@ The v2 networks' weights and the voicing maps, in
 [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/): see that
 folder's `LICENSE` and `README.md`. They learnt from singing licensed CC
 BY-NC-SA 4.0, so they carry the same terms: credit, no commercial use, and
-anything built from them shared alike. transcPybe v1 (`--preset rules`, the
-default) uses none of them. The pitch trackers' own weights come with their
+anything built from them shared alike. The default preset uses them;
+transcPybe v1 (`--preset rules`) does not. The pitch trackers' own weights come with their
 packages under their own licences.

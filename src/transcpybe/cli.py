@@ -2,7 +2,7 @@
 
     python -m transcpybe lead-vocal.wav -o out/
     python -m transcpybe solo.wav --preset acappella
-    python -m transcpybe stems/ -o midi/ --preset pop --log-file run.log
+    python -m transcpybe stems/ -o midi/ --log-file run.log
     python -m transcpybe --self-test
 """
 
@@ -60,19 +60,19 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Suppress the closing summary")
 
     starts = parser.add_argument_group("note starts")
-    starts.add_argument("--preset", choices=("rules", "acappella", "pop"), default="rules",
-                        help="rules: transcPybe v1, no networks. acappella (solo "
-                             "singing) or pop (a lead vocal separated from a mix): "
-                             "transcPybe v2, note starts from three small neural "
-                             "networks; needs torch, and sets the decoder flags it "
-                             "was scored with (--min-note, --p-self, "
-                             "--note-level-floor, --onset-delta, "
-                             "--onset-split-strength, --release-drop)")
+    starts.add_argument("--preset", choices=("pop", "acappella", "rules"), default="pop",
+                        help="pop (a lead vocal separated from a mix) or acappella "
+                             "(solo singing): transcPybe v2, note starts from three "
+                             "small neural networks; sets the decoder flags it was "
+                             "scored with (--min-note, --p-self, --note-level-floor, "
+                             "--onset-delta, --onset-split-strength, --release-drop). "
+                             "rules: transcPybe v1, no networks, every flag as given")
 
     model = parser.add_argument_group("pitch model")
-    model.add_argument("--f0-backend", choices=f0_backends(), default="crepe",
-                       help="crepe: neural, most accurate. pyin: no torch needed. "
-                            "pesto: neural, small and fast (pip install pesto-pitch)")
+    model.add_argument("--f0-backend", choices=f0_backends(), default="pyin",
+                       help="pyin: the default, and v2's best scoring. crepe: "
+                            "neural, fast on a GPU (pip install \"transcpybe[crepe]\"). "
+                            "pesto: neural, small and fast (pip install \"transcpybe[pesto]\")")
     model.add_argument("--crepe-model", choices=("full", "tiny"), default="full",
                        help="tiny is roughly 14x faster on CPU and less accurate")
     model.add_argument("--device", default="auto",
@@ -193,13 +193,13 @@ def config_from_args(args: argparse.Namespace) -> TranscriptionConfig:
     if args.preset != "rules":
         if args.no_onsets:
             raise SystemExit(f"error: --preset {args.preset} takes its note starts from the networks; "
-                             "drop --no-onsets")
+                             "--no-onsets needs --preset rules")
         defaults = build_parser()
         ignored = [flag for dest, flag in PRESET_FLAGS.items()
                    if getattr(args, dest) != defaults.get_default(dest)]
         if ignored:
             print(f"warning: --preset {args.preset} sets {', '.join(ignored)} itself; "
-                  "the values given are not used", file=sys.stderr)
+                  "the values given are not used (--preset rules uses them)", file=sys.stderr)
     config = TranscriptionConfig(
         preset=args.preset,
         f0_backend=args.f0_backend,

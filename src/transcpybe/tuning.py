@@ -315,8 +315,9 @@ def run_tuning(pairing, args, progress) -> int:
     from .tune import (DEFAULT_SPACE, StageCache, Split, make_split, random_search,
                        score_config)
 
+    # Tuning searches v1's decoder settings, which a v2 preset would override.
     config = TranscriptionConfig(
-        f0_backend=args.f0_backend, crepe_model=args.crepe_model,
+        preset="rules", f0_backend=args.f0_backend, crepe_model=args.crepe_model,
         device=args.device, seed=args.seed)
     cache = StageCache(Path(args.f0_cache), config)
 

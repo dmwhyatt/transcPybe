@@ -30,10 +30,11 @@ class TranscriptionConfig:
     """Highest f0 considered (~C#6), comfortably above soprano belt range."""
 
     # ---------------- f0 estimation ----------------
-    f0_backend: str = "crepe"
-    """'crepe' (torchcrepe, neural, most accurate), 'pyin' (librosa, no torch)
-    or 'pesto' (pesto-pitch, neural, small and fast), or any name added with
-    ``f0.register_f0_backend``. Thresholds in this file were set on CREPE."""
+    f0_backend: str = "pyin"
+    """'pyin' (librosa; the default), 'crepe' (torchcrepe, neural; the crepe
+    extra) or 'pesto' (pesto-pitch, neural, small and fast; the pesto extra),
+    or any name added with ``f0.register_f0_backend``. transcPybe v2 scored
+    best with pYIN; v1's thresholds in this file were set on CREPE."""
 
     crepe_model: str = "full"
     """torchcrepe capacity: 'full' (best) or 'tiny' (fast)."""
@@ -65,15 +66,15 @@ class TranscriptionConfig:
     Must be odd. Set to 1 to disable."""
 
     # ---------------- Note starts ----------------
-    preset: str = "rules"
-    """Where note starts come from. 'rules' is transcPybe v1: the pitch track
-    and spectral-flux onsets, no networks, no torch needed. 'acappella' (solo
-    singing) and 'pop' (a lead vocal separated from a mix) are transcPybe v2:
-    three small neural networks mark each syllable's start and vowel, and a
-    note starts between the two (``transcpybe.landmarks``). A v2 preset also
-    sets the decoder fields in ``landmarks.DECODER_FIELDS`` to the values it
-    was scored with, overriding those given here; it needs PyTorch, and its
-    weights are licensed CC BY-NC-SA 4.0."""
+    preset: str = "pop"
+    """Where note starts come from. 'pop' (the default; a lead vocal separated
+    from a mix) and 'acappella' (solo singing) are transcPybe v2: three small
+    neural networks mark each syllable's start and vowel, and a note starts
+    between the two (``transcpybe.landmarks``). A v2 preset also sets the
+    decoder fields in ``landmarks.DECODER_FIELDS`` to the values it was scored
+    with, overriding those given here, and its weights are licensed
+    CC BY-NC-SA 4.0. 'rules' is transcPybe v1: the pitch track and
+    spectral-flux onsets, no networks, and every decoder field as given."""
 
     # ---------------- Voicing ----------------
     voicing_threshold: float = 0.30

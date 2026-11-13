@@ -11,13 +11,12 @@ Two presets, each fixed on tuning sets and then checked once on test recordings 
 - ``"acappella"``, for solo singing with nothing else in the recording: checked on SSVD's 127 test recordings;
 - ``"pop"``, for a lead vocal separated from a pop mix: checked on 82 MIR-ST500 test songs.
 
-``TranscriptionConfig(preset=...)`` selects one; ``"rules"`` (the default) is transcPybe v1, with no networks.
+``TranscriptionConfig(preset=...)`` selects one, ``"pop"`` by default; ``"rules"`` is transcPybe v1, with no networks.
 
 The networks were trained on CREPE full's pitch tracks. PESTO and pYIN work too: their confidence runs lower than
 CREPE's, so the decoder gets their track through a voicing map (``voicing``), and the networks get it as it is.
 
-The networks need PyTorch (``pip install "transcpybe[crepe]"``) and run on the CPU, as they did when the presets were
-scored. Their weights and the voicing maps (``weights/``) are licensed CC BY-NC-SA 4.0, not MIT: see
+The networks run on the CPU, as they did when the presets were scored. Their weights and the voicing maps (``weights/``) are licensed CC BY-NC-SA 4.0, not MIT: see
 ``weights/README.md``.
 """
 from __future__ import annotations
@@ -82,7 +81,7 @@ def _needs_torch():
         import torch  # noqa: F401
     except ImportError:
         raise ImportError("the acappella and pop presets run three small neural networks, which need PyTorch: "
-                          "pip install \"transcpybe[crepe]\"") from None
+                          "pip install torch") from None
 
 
 @functools.lru_cache(maxsize=1)

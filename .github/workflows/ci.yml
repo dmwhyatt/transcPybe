@@ -22,9 +22,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: sudo apt-get update && sudo apt-get install -y libsndfile1
+      # torch is a dependency (the v2 networks); its CPU build keeps CUDA's
+      # libraries out of every run. CREPE is an extra, not installed here: its
+      # tests are marked slow and deselected.
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -e ".[dev]"
-      # Without the crepe extra, so CI does not download torch on every run.
-      # The tests that need it are marked slow and deselected here.
       - run: pytest -q -m "not slow"
 
   tune:
@@ -59,6 +61,8 @@ jobs:
       # Installed from the checkout rather than the git URL in the tune extra,
       # which would need credentials pip does not have here.
       - if: steps.benchmark.outcome == 'success'
-        run: pip install -e .benchmark && pip install -e ".[dev]"
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e .benchmark && pip install -e ".[dev]"
       - if: steps.benchmark.outcome == 'success'
         run: pytest -q -m "not slow" tests/test_tune.py
