@@ -14,6 +14,9 @@ trained ships there: the networks, their inference code and the two presets are 
 maps as package data under CC BY-NC-SA 4.0. `model.py`, `features.py`, `infer.py` and `voicing_map.py` here
 are where that code was copied from; a change to the inference code belongs in both.
 
+Comments in this folder cite the development plans behind each change by file name (for example
+`ROUND2-PLAN.md`). The plans are kept by the authors and are not part of the repository.
+
 ## Stages
 
 Each is `python -m boundary.<stage> --help`. Every stage reads the previous
