@@ -68,8 +68,9 @@ def test_a_registered_backend_is_used_and_named_on_its_track(fixed_backend):
 
 
 def test_each_track_records_the_tracker_that_made_it():
-    assert backend_label(TranscriptionConfig()) == "crepe-full"
-    assert backend_label(TranscriptionConfig(crepe_model="tiny")) == "crepe-tiny"
+    assert backend_label(TranscriptionConfig()) == "pyin"
+    assert backend_label(TranscriptionConfig(f0_backend="crepe")) == "crepe-full"
+    assert backend_label(TranscriptionConfig(f0_backend="crepe", crepe_model="tiny")) == "crepe-tiny"
     assert backend_label(TranscriptionConfig(f0_backend="pesto")) == "pesto"
     track = estimate_f0(_sine(), TranscriptionConfig(f0_backend="pyin"))
     assert track.backend == "pyin"

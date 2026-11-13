@@ -1,6 +1,8 @@
 """Tests for the vocal melody transcriber.
 
-End-to-end tests use the pYIN backend, which needs no torch and runs quickly.
+These test transcPybe v1, the rules decoder (``preset="rules"``); v2's presets
+are tested in test_landmarks.py. End-to-end tests use the pYIN backend, which
+runs quickly.
 The CREPE backend is exercised by a single test marked ``slow``; run the full
 synthetic benchmark with ``python -m transcpybe --self-test`` to
 evaluate it properly.
@@ -39,6 +41,7 @@ from transcpybe.synth import ALL_CASES, case_legato, case_scale
 
 
 def pyin_config(**overrides) -> TranscriptionConfig:
+    overrides.setdefault("preset", "rules")         # v1's decoder, which these tests are about
     config = TranscriptionConfig(f0_backend="pyin", **overrides)
     config.validate()
     return config
@@ -896,7 +899,7 @@ def test_quiet_note_rejection_can_be_disabled():
 def test_crepe_backend_transcribes_the_scale():
     pytest.importorskip("torchcrepe")
     audio, ground_truth = case_scale()
-    config = TranscriptionConfig(f0_backend="crepe", crepe_model="tiny")
+    config = TranscriptionConfig(preset="rules", f0_backend="crepe", crepe_model="tiny")
     assert score(transcribe_audio(audio, config).notes, ground_truth).note_f1 > 0.9
 
 
@@ -910,7 +913,7 @@ def test_crepe_accepts_an_fmin_below_its_lowest_bin():
     """
     pytest.importorskip("torchcrepe")
     audio, ground_truth = case_scale()
-    config = TranscriptionConfig(f0_backend="crepe", crepe_model="tiny", fmin_hz=30.0)
+    config = TranscriptionConfig(preset="rules", f0_backend="crepe", crepe_model="tiny", fmin_hz=30.0)
     assert score(transcribe_audio(audio, config).notes, ground_truth).note_f1 > 0.9
 
 
@@ -1475,7 +1478,7 @@ def test_self_test_uses_the_requested_backend():
     """--self-test built its own default config and ignored every flag.
 
     That made the one command offered for checking an install fail with an
-    ImportError on the torch-free install the pyin flag exists to serve.
+    ImportError on the install without CREPE the pyin flag exists to serve.
     """
     from transcpybe.cli import build_parser, config_from_args
 

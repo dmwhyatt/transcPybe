@@ -280,6 +280,66 @@ def test_batch_skips_files_already_done(audio_dir, tmp_path):
     assert len(again.skipped) == 2 and not again.done
 
 
+def _logged(tmp_path, name="batch"):
+    """A reporter whose permanent lines land in a string, for reading what a batch said."""
+    stream = io.StringIO()
+    log = logging.getLogger(f"test-{name}-{id(stream)}")
+    log.handlers[:] = [logging.StreamHandler(stream)]
+    log.setLevel(logging.INFO)
+    log.propagate = False
+    return ProgressReporter(enabled=True, logger=log, stream=io.StringIO()), stream
+
+
+def test_a_rerun_with_other_settings_redoes_the_files(audio_dir, tmp_path):
+    """Upgrading or changing a setting and rerunning must not leave a folder of mixed transcriptions."""
+    out = tmp_path / "out"
+    rules = TranscriptionConfig(preset="rules", f0_backend="pyin")
+    transcribe_batch(find_audio_files(audio_dir), out, rules)
+
+    progress, log = _logged(tmp_path)
+    again = transcribe_batch(find_audio_files(audio_dir), out, TranscriptionConfig(f0_backend="pyin"),
+                             progress=progress)
+    assert len(again.done) == 2 and not again.skipped
+    assert "made with other settings (preset 'rules' -> 'pop'" in log.getvalue()
+
+    third = transcribe_batch(find_audio_files(audio_dir), out, TranscriptionConfig(f0_backend="pyin"))
+    assert len(third.skipped) == 2, "the same settings again: nothing to redo"
+
+
+def test_settings_that_do_not_change_the_notes_do_not_force_a_redo(audio_dir, tmp_path):
+    out = tmp_path / "out"
+    transcribe_batch(find_audio_files(audio_dir), out, TranscriptionConfig(preset="rules", f0_backend="pyin"))
+    again = transcribe_batch(find_audio_files(audio_dir), out,
+                             TranscriptionConfig(preset="rules", f0_backend="pyin", device="cpu",
+                                                 crepe_batch_size=64, gpu_memory_log_every=3))
+    assert len(again.skipped) == 2
+
+
+def test_an_output_from_before_presets_is_redone(audio_dir, tmp_path):
+    """A 0.1.0 .notes.json has no preset: it was v1, and a v2 run must not keep it."""
+    import json as jsonlib
+
+    out = tmp_path / "out"
+    transcribe_batch(find_audio_files(audio_dir), out, TranscriptionConfig(preset="rules", f0_backend="pyin"))
+    for path in out.glob("*.notes.json"):
+        payload = jsonlib.loads(path.read_text())
+        del payload["config"]["preset"]
+        path.write_text(jsonlib.dumps(payload))
+    again = transcribe_batch(find_audio_files(audio_dir), out, TranscriptionConfig(preset="rules", f0_backend="pyin"))
+    assert len(again.done) == 2
+
+
+def test_outputs_without_a_record_are_skipped_and_said_so_once(audio_dir, tmp_path):
+    out = tmp_path / "out"
+    config = TranscriptionConfig(preset="rules", f0_backend="pyin")
+    transcribe_batch(find_audio_files(audio_dir), out, config, write_json_files=False)
+
+    progress, log = _logged(tmp_path, "unverified")
+    again = transcribe_batch(find_audio_files(audio_dir), out, config, write_json_files=False, progress=progress)
+    assert len(again.skipped) == 2
+    assert log.getvalue().count("cannot be checked") == 1
+
+
 def test_overwrite_reprocesses_everything(audio_dir, tmp_path):
     out = tmp_path / "out"
     config = TranscriptionConfig(f0_backend="pyin")

@@ -30,10 +30,11 @@ class TranscriptionConfig:
     """Highest f0 considered (~C#6), comfortably above soprano belt range."""
 
     # ---------------- f0 estimation ----------------
-    f0_backend: str = "crepe"
-    """'crepe' (torchcrepe, neural, most accurate), 'pyin' (librosa, no torch)
-    or 'pesto' (pesto-pitch, neural, small and fast), or any name added with
-    ``f0.register_f0_backend``. Thresholds in this file were set on CREPE."""
+    f0_backend: str = "pyin"
+    """'pyin' (librosa; the default), 'crepe' (torchcrepe, neural; the crepe
+    extra) or 'pesto' (pesto-pitch, neural, small and fast; the pesto extra),
+    or any name added with ``f0.register_f0_backend``. transcPybe v2 scored
+    best with pYIN; v1's thresholds in this file were set on CREPE."""
 
     crepe_model: str = "full"
     """torchcrepe capacity: 'full' (best) or 'tiny' (fast)."""
@@ -65,15 +66,15 @@ class TranscriptionConfig:
     Must be odd. Set to 1 to disable."""
 
     # ---------------- Note starts ----------------
-    preset: str = "rules"
-    """Where note starts come from. 'rules' is transcPybe v1: the pitch track
-    and spectral-flux onsets, no networks, no torch needed. 'acappella' (solo
-    singing) and 'pop' (a lead vocal separated from a mix) are transcPybe v2:
-    three small neural networks mark each syllable's start and vowel, and a
-    note starts between the two (``transcpybe.landmarks``). A v2 preset also
-    sets the decoder fields in ``landmarks.DECODER_FIELDS`` to the values it
-    was scored with, overriding those given here; it needs PyTorch, and its
-    weights are licensed CC BY-NC-SA 4.0."""
+    preset: str = "pop"
+    """Where note starts come from. 'pop' (the default; a lead vocal separated
+    from a mix) and 'acappella' (solo singing) are transcPybe v2: three small
+    neural networks mark each syllable's start and vowel, and a note starts
+    between the two (``transcpybe.landmarks``). A v2 preset also sets the
+    decoder fields in ``landmarks.DECODER_FIELDS`` to the values it was scored
+    with, overriding those given here, and its weights are licensed
+    CC BY-NC-SA 4.0. 'rules' is transcPybe v1: the pitch track and
+    spectral-flux onsets, no networks, and every decoder field as given."""
 
     # ---------------- Voicing ----------------
     voicing_threshold: float = 0.30
@@ -549,8 +550,7 @@ class TranscriptionConfig:
     gaps are closed up to the next onset, the convention that cost 1 dB its
     0.173. COn and COnP do not move. It is still unmeasured on vocadito, and
     should be measured there before it is believed: ``--no-release-trim``
-    restores the old behaviour, and ``transcpybe-tune --objective offset``
-    fits ``release_drop_db`` to a corpus."""
+    restores the old behaviour."""
 
     release_drop_db: float = 15.0
     """How far below the note's own sustained level a frame must sit to count
@@ -732,12 +732,14 @@ class TranscriptionConfig:
             raise ValueError(f"preset must be 'rules', 'acappella' or 'pop', got {self.preset!r}")
         if self.preset != "rules":
             # The networks' frames are the f0 frames, at the rate they were trained at.
+            # The default preset is 'pop', so these can fire for a config that never named one.
             if self.sample_rate != 16000 or self.hop_ms != 10.0:
-                raise ValueError(f"preset {self.preset!r} needs sample_rate 16000 and hop_ms 10, "
-                                 f"got {self.sample_rate} and {self.hop_ms}")
+                raise ValueError(f"sample_rate {self.sample_rate} and hop_ms {self.hop_ms} need "
+                                 f"preset='rules': preset {self.preset!r} (the default is 'pop') runs "
+                                 "networks that work at sample_rate 16000 and hop_ms 10")
             if not self.use_onsets:
-                raise ValueError(f"preset {self.preset!r} takes its note starts from the networks, "
-                                 "so use_onsets must stay on")
+                raise ValueError(f"use_onsets=False needs preset='rules': preset {self.preset!r} "
+                                 "(the default is 'pop') takes its note starts from the networks")
         if self.fmin_hz <= 0 or self.fmax_hz <= self.fmin_hz:
             raise ValueError("Require 0 < fmin_hz < fmax_hz")
         if self.f0_median_filter_frames % 2 == 0:

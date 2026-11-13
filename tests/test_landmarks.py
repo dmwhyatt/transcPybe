@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import pathlib
 from importlib import resources
 
 import numpy as np
@@ -50,7 +51,7 @@ def test_voicing_maps():
 
 
 def test_preset_config_sets_only_the_decoder_fields():
-    base = TranscriptionConfig(f0_backend="pyin", twelve_tet=True, voicing_threshold=0.25)
+    base = TranscriptionConfig(preset="rules", f0_backend="pyin", twelve_tet=True, voicing_threshold=0.25)
     assert preset_config(base) is base
     for name, p in PRESETS.items():
         given = dataclasses.replace(base, preset=name)
@@ -82,6 +83,45 @@ def test_cli_preset_says_which_flags_it_overrides(capsys):
     assert "--min-note" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         config_from_args(build_parser().parse_args(["x.wav", "--preset", "pop", "--no-onsets"]))
+
+
+def test_the_default_is_v2_pop_with_pyin():
+    from transcpybe.cli import build_parser, config_from_args
+
+    for cfg in (TranscriptionConfig(), config_from_args(build_parser().parse_args(["x.wav"]))):
+        assert cfg.preset == "pop" and cfg.f0_backend == "pyin"
+
+
+def test_the_cli_says_when_a_flag_does_nothing_with_the_tracker(capsys):
+    from transcpybe.cli import build_parser, config_from_args
+
+    config_from_args(build_parser().parse_args(["x.wav", "--crepe-model", "tiny", "--device", "cuda"]))
+    err = capsys.readouterr().err
+    assert "--crepe-model, --device do nothing with --f0-backend pyin" in err
+    config_from_args(build_parser().parse_args(["x.wav", "--f0-backend", "crepe", "--crepe-model", "tiny",
+                                                "--device", "cpu"]))
+    assert capsys.readouterr().err == ""
+    config_from_args(build_parser().parse_args(["x.wav", "--f0-backend", "pesto", "--device", "cpu"]))
+    assert capsys.readouterr().err == ""
+
+
+def test_validation_names_the_fix_for_the_default_preset():
+    with pytest.raises(ValueError, match=r"needs? preset='rules'.*the default is 'pop'"):
+        TranscriptionConfig(use_onsets=False).validate()
+    with pytest.raises(ValueError, match=r"needs? preset='rules'.*the default is 'pop'"):
+        TranscriptionConfig(sample_rate=22050).validate()
+    TranscriptionConfig(preset="rules", use_onsets=False, sample_rate=22050).validate()
+
+
+def test_the_version_is_set_in_one_place():
+    import re
+
+    import transcpybe
+
+    pyproject = (pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+    project = pyproject.split("[project]", 1)[1].split("\n[", 1)[0]          # the [project] table alone
+    assert 'dynamic = ["version"]' in project and not re.search(r"^version\s*=", project, re.M)
+    assert re.fullmatch(r"\d+\.\d+\.\d+", transcpybe.__version__)
 
 
 def test_networks_load():

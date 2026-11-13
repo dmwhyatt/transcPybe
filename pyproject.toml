@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "transcpybe"
-version = "0.1.0"
+dynamic = ["version"]                    # transcpybe.__version__, the one place it is set
 description = "Transcribe sung melody to MIDI: onsets and pitches from monophonic vocal audio"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -17,20 +17,14 @@ authors = [{ name = "David Whyatt" }]
 keywords = ["music information retrieval", "transcription", "midi", "singing",
             "melody", "pitch tracking"]
 classifiers = [
-    # PyPI refuses any upload carrying this classifier. It is here on purpose:
-    # the package is not published, and until someone decides otherwise a
-    # mistaken "twine upload" should fail rather than claim the name. Remove
-    # this line deliberately, as the act of deciding to publish.
-    "Private :: Do Not Upload",
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
     "Topic :: Multimedia :: Sound/Audio :: Analysis",
 ]
 
-# The pYIN backend needs none of torch, so the default install stays light.
-# CREPE is more accurate and is an extra rather than a default, because pulling
-# torch into every environment that wants a melody is not a kindness.
+# The default is transcPybe v2 with pYIN: the networks need torch, the pitch
+# tracker only librosa. CREPE and PESTO are extras.
 dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
@@ -38,31 +32,24 @@ dependencies = [
     "soundfile>=0.12",
     "pretty_midi>=0.2.10",
     "mir_eval>=0.7",      # the synthetic self-test
+    "torch>=2.0",         # the v2 networks
 ]
 
 [project.optional-dependencies]
-# CREPE, and the v2 presets' networks, which need only torch.
-crepe = ["torch>=2.0", "torchcrepe>=0.0.20"]
+crepe = ["torchcrepe>=0.0.20"]
 # LGPL-3.0, which is why it is an extra and never a dependency.
-pesto = ["torch>=2.0", "pesto-pitch>=2.0"]
-# Scoring lives in its own package, and so does anything that needs it. Tuning
-# borrows its metrics and dataset loading; this package ships no benchmark.
-tune = [
-    # Not on PyPI, so named by where it actually is. That repository is
-    # private, so this resolves only for someone whose git already has access
-    # to it; from a local checkout, "pip install -e ../transcription-benchmarking"
-    # does the same job.
-    "transcription-benchmarking @ git+https://github.com/dmwhyatt/transcription-benchmarking.git",
-]
+pesto = ["pesto-pitch>=2.0"]
 dev = ["pytest>=7.0", "build>=1.0", "twine>=5.0"]
 
 [project.scripts]
 transcpybe = "transcpybe.cli:main"
-transcpybe-tune = "transcpybe.tuning:main"
 
 [project.urls]
 Homepage = "https://github.com/dmwhyatt/transcpybe"
 Issues = "https://github.com/dmwhyatt/transcpybe/issues"
+
+[tool.setuptools.dynamic]
+version = { attr = "transcpybe.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -9,3 +9,11 @@ dist/
 .bench-cache*/
 .tune-cache*/
 .corpus-cache*/
+
+# Development plans, amendments and checks for the boundary networks: kept
+# locally by the authors, not distributed. Code comments cite them by name.
+boundary/*.md
+!boundary/README.md
+boundary/*.md.sha256
+docs/handoff-*.md
+/dev-plans/
