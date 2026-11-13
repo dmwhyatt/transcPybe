@@ -106,6 +106,11 @@ transcpybe --self-test
 | `acappella` | 2 | solo singing, with nothing else in the recording | 127 SSVD test recordings |
 | `rules` | 1 | either; no neural networks besides the pitch tracker | |
 
+`--onset-position F` (`TranscriptionConfig(onset_position=F)`) moves version 2's note starts: from the start of each
+syllable (0) to the start of its vowel (1). Annotation conventions differ on where a sung note begins, and this matches
+the output to one: 0 suits references that start a note at its consonant, 1 those that start it at the vowel. Left
+unset, each preset uses the value it was evaluated with (0.5 for `pop`, 0.875 for `acappella`).
+
 The two version 2 presets were fixed on development sets and then evaluated once on recordings that had not been used
 for tuning. Each preset also sets the decoder parameters with which it was evaluated: `--min-note`, `--p-self`,
 `--note-level-floor`, `--onset-delta`, `--onset-split-strength` and `--release-drop`. The command line warns if one of
@@ -165,7 +170,8 @@ Three networks with the same architecture were trained with different random see
 - **Training data:** singing from M4Singer and GTSinger, mixed with accompaniment from MUSDB18-HQ.
 
 The three networks' outputs are averaged. Each vowel onset is paired with the nearest preceding syllable onset, and the
-note onset is placed between them: at 0.5 of the interval in the `pop` preset, and at 0.875 in the `acappella` preset.
+note onset is placed between them: at 0.5 of the interval in the `pop` preset, at 0.875 in the `acappella` preset, or
+wherever `--onset-position` sets it.
 The decoder described below then forms notes from the pitch track, with these onsets.
 
 The networks run on the CPU. On an Apple M-series laptop with PyTorch's default four threads, the three together take

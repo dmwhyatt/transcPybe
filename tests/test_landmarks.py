@@ -124,6 +124,47 @@ def test_the_version_is_set_in_one_place():
     assert re.fullmatch(r"\d+\.\d+\.\d+", transcpybe.__version__)
 
 
+def test_onset_position_is_validated():
+    TranscriptionConfig(onset_position=0.0).validate()
+    TranscriptionConfig(preset="acappella", onset_position=1.0).validate()
+    with pytest.raises(ValueError, match="onset_position must be in"):
+        TranscriptionConfig(onset_position=1.5).validate()
+    with pytest.raises(ValueError, match="needs a version 2 preset"):
+        TranscriptionConfig(preset="rules", onset_position=0.5).validate()
+
+
+def test_cli_onset_position():
+    from transcpybe.cli import build_parser, config_from_args
+
+    assert config_from_args(build_parser().parse_args(["x.wav"])).onset_position is None
+    assert config_from_args(build_parser().parse_args(["x.wav", "--onset-position", "0.25"])).onset_position == 0.25
+    with pytest.raises(SystemExit):
+        config_from_args(build_parser().parse_args(["x.wav", "--preset", "rules", "--onset-position", "0.25"]))
+
+
+@pytest.mark.parametrize("preset,position,frame", [("pop", None, 110), ("acappella", None, 118), ("pop", 0.0, 100),
+                                                   ("pop", 1.0, 120), ("acappella", 0.25, 105)])
+def test_onset_position_places_the_start_between_syllable_and_vowel(monkeypatch, preset, position, frame):
+    """A syllable start at frame 100 and its vowel at 120: the note starts at 100 + F x 20, F the preset's unless set."""
+    pytest.importorskip("torch")
+    import transcpybe.landmarks as L
+    import transcpybe.landmarks.infer as infer
+    from transcpybe.f0 import estimate_f0
+    from transcpybe.synth import case_scale
+
+    def posteriors(models, mel, aux, device="cpu"):
+        post = np.zeros((len(mel), 5))
+        post[100, 0] = post[120, 4] = 0.9
+        return post
+
+    monkeypatch.setattr(infer, "averaged_posteriors", posteriors)
+    monkeypatch.setattr(L, "networks", lambda: ())
+    audio, _ = case_scale()
+    config = L.preset_config(TranscriptionConfig(preset=preset, f0_backend="pyin", onset_position=position))
+    _, onsets, _, _ = L.landmark_notes(audio, estimate_f0(audio, config), config)
+    assert list(np.round(onsets.times / 0.01).astype(int)) == [frame]
+
+
 def test_networks_load():
     pytest.importorskip("torch")
     from transcpybe.landmarks import networks

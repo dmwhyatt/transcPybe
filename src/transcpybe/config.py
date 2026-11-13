@@ -76,6 +76,13 @@ class TranscriptionConfig:
     CC BY-NC-SA 4.0. 'rules' is transcPybe v1: the pitch track and
     spectral-flux onsets, no networks, and every decoder field as given."""
 
+    onset_position: Optional[float] = None
+    """Version 2 only: where a note starts between the start of its syllable (0)
+    and the start of the syllable's vowel (1). Annotation conventions differ on
+    this; 0 suits references that start a note at its consonant, 1 those that
+    start it at the vowel. None uses the preset's value: 0.5 for 'pop', 0.875
+    for 'acappella', the values each was evaluated with."""
+
     # ---------------- Voicing ----------------
     voicing_threshold: float = 0.30
     """Minimum combined voicing probability for a frame to inform note pitch."""
@@ -740,6 +747,12 @@ class TranscriptionConfig:
             if not self.use_onsets:
                 raise ValueError(f"use_onsets=False needs preset='rules': preset {self.preset!r} "
                                  "(the default is 'pop') takes its note starts from the networks")
+        if self.onset_position is not None:
+            if self.preset == "rules":
+                raise ValueError("onset_position needs a version 2 preset ('pop' or 'acappella'): "
+                                 "preset 'rules' takes its note starts from spectral flux")
+            if not 0.0 <= self.onset_position <= 1.0:
+                raise ValueError(f"onset_position must be in [0, 1], got {self.onset_position!r}")
         if self.fmin_hz <= 0 or self.fmax_hz <= self.fmin_hz:
             raise ValueError("Require 0 < fmin_hz < fmax_hz")
         if self.f0_median_filter_frames % 2 == 0:

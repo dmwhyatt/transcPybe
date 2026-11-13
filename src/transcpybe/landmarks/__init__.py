@@ -109,7 +109,8 @@ def landmark_notes(audio, track, config):
     """Notes for ``audio`` (16 kHz mono) from its pitch ``track``, with the preset ``config.preset`` names.
 
     Returns what ``transcpybe.core.decode_notes`` returns: (notes, the networks' onset track, raw segments, tuning
-    offset). This is the sequence the presets were scored with.
+    offset). This is the sequence the presets were scored with. ``config.onset_position``, if set, replaces the
+    preset's ``fraction``: where a note starts between its syllable's start (0) and its vowel's (1).
     """
     from ..core import decode_notes
     from .features import frame_features
@@ -117,9 +118,10 @@ def landmark_notes(audio, track, config):
     from .voicing import apply
 
     p = PRESETS[config.preset]
+    fraction = p.fraction if config.onset_position is None else config.onset_position
     mel, aux = frame_features(audio, track)                   # the networks always get the tracker's own track
     post = averaged_posteriors(networks(), mel, aux, "cpu")
-    onsets = landmark_track(post, p.fraction, p.threshold, sounding=post[:, 2], lone=p.lone)
+    onsets = landmark_track(post, fraction, p.threshold, sounding=post[:, 2], lone=p.lone)
     m = voicing_map(getattr(track, "backend", "") or TRAINED_ON_TRACKER)
     decode_with = apply(track, m) if m is not None else track
     return decode_notes(decode_with, preset_config(config), audio=audio, onsets=onsets)
