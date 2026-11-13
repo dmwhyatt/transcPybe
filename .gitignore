@@ -15,4 +15,5 @@ dist/
 boundary/*.md
 !boundary/README.md
 boundary/*.md.sha256
+docs/handoff-*.md
 /dev-plans/
