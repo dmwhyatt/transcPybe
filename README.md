@@ -267,8 +267,6 @@ transcpybe --self-test        # the synthetic suite
 ```
 
 The tuning tests require the transcription-benchmarking package, and are skipped without it.
-[docs/v1-development.md](https://github.com/dmwhyatt/transcPybe/blob/main/docs/v1-development.md) records how version 1
-was developed and measured on synthetic recordings.
 
 ## Limitations
 
