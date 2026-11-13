@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 from .config import TranscriptionConfig
+from .f0 import f0_backends
 
 
 def build_parser():
@@ -79,7 +80,8 @@ def build_parser():
                              "what makes a search of this size affordable.")
 
     model = parser.add_argument_group("transcriber")
-    model.add_argument("--f0-backend", choices=("crepe", "pyin"), default="crepe")
+    model.add_argument("--f0-backend", choices=f0_backends(), default="pyin",
+                       help="as transcpybe's; crepe needs the crepe extra")
     model.add_argument("--crepe-model", choices=("full", "tiny"), default="full")
     model.add_argument("--device", default="auto")
     model.add_argument("--seed", type=int, default=0)
@@ -94,7 +96,8 @@ def main(argv=None) -> int:
         from transcription_benchmarking.dataset import pair_dataset, pair_from_file
     except ImportError:
         print("error: tuning needs the benchmark package for its metrics and "
-              "dataset loading.\n  pip install 'transcpybe[tune]'", file=sys.stderr)
+              "dataset loading.\n  pip install git+https://github.com/dmwhyatt/transcription-benchmarking.git",
+              file=sys.stderr)
         return 1
 
     from .progress import ProgressReporter, setup_logging

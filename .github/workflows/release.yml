@@ -1,13 +1,13 @@
 name: release
 
-# Builds the wheel and sdist, checks them, and uploads with PyPI's Trusted
-# Publishing: no token is stored anywhere. Before the first run, add this
-# repository as a trusted publisher on each index (owner dmwhyatt, repository
-# transcPybe, workflow release.yml, environment testpypi or pypi), and create
-# those two environments under Settings > Environments.
+# Builds the wheel and sdist, checks them, tests the wheel, and uploads with
+# PyPI's Trusted Publishing: no token is stored anywhere. Before the first run,
+# add this repository as a trusted publisher on each index (owner dmwhyatt,
+# repository transcPybe, workflow release.yml, environment testpypi or pypi),
+# and create those two environments under Settings > Environments.
 #
 #   TestPyPI: Actions > release > Run workflow
-#   PyPI:     publish a GitHub release whose tag is v<version in pyproject.toml>
+#   PyPI:     publish a GitHub release whose tag is v<transcpybe.__version__>
 
 on:
   workflow_dispatch:
@@ -22,15 +22,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y libsndfile1
       - run: pip install build twine
       - run: python -m build
       - run: twine check --strict dist/*
+      # The suite runs against the wheel about to be published, not the checkout:
+      # tests/conftest.py puts the repository root on the path, not src/.
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install dist/*.whl pytest
+      - run: pytest -q -m "not slow"
       - name: The release tag names the version being built
         if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
         run: |
-          version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
-          test "${{ github.event.release.tag_name }}" = "v$version" || {
-            echo "::error::tag ${{ github.event.release.tag_name }} does not match version $version"; exit 1; }
+          version=$(python -c "import importlib.metadata as m; print(m.version('transcpybe'))")
+          test "$TAG" = "v$version" || { echo "::error::tag $TAG does not match version $version"; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
           name: dist
@@ -53,6 +60,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
+          skip-existing: true     # a trial can be rerun without bumping the version
 
   pypi:
     if: github.event_name == 'release'

@@ -18,6 +18,9 @@ the benchmark package use, under each annotation convention the corpus offers,
 so a change that only helps under one of them is visible as such. The
 comparison is a paired bootstrap over recordings, as the benchmark's is.
 
+It scores transcPybe v1 (preset "rules") with CREPE, the configuration it was
+written to measure, on any checkout; --set preset="'pop'" scores v2 instead.
+
 CREPE output is cached by the audio's hash, so the first run costs a few
 minutes of CPU per recording-minute and every later one, of any checkout,
 takes seconds. The held-out set is scored every time; look at it once, after
@@ -129,7 +132,12 @@ def score(out: Path, overrides, cache: Path, split: str = "both", syllabic: bool
     make_recording = corpus.make_recording
 
     cache_f0(cache)
-    config = dataclasses.replace(TranscriptionConfig(), **overrides)
+    # v1 with CREPE whatever the defaults: 2.0.0 made v2 with pYIN the default, and a
+    # checkout from before 2.0.0 has no preset field.
+    base = {"f0_backend": "crepe"}
+    if "preset" in TranscriptionConfig.__dataclass_fields__:
+        base["preset"] = "rules"
+    config = dataclasses.replace(TranscriptionConfig(**base), **overrides)
     result = {"transcpybe": transcpybe.__file__, "overrides": {k: repr(v) for k, v in overrides.items()},
               "syllabic": syllabic}
     seeds_for = {"development": DEVELOPMENT_SEEDS, "held-out": HELD_OUT_SEEDS}

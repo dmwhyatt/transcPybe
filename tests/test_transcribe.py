@@ -899,7 +899,7 @@ def test_quiet_note_rejection_can_be_disabled():
 def test_crepe_backend_transcribes_the_scale():
     pytest.importorskip("torchcrepe")
     audio, ground_truth = case_scale()
-    config = TranscriptionConfig(f0_backend="crepe", crepe_model="tiny")
+    config = TranscriptionConfig(preset="rules", f0_backend="crepe", crepe_model="tiny")
     assert score(transcribe_audio(audio, config).notes, ground_truth).note_f1 > 0.9
 
 
@@ -913,7 +913,7 @@ def test_crepe_accepts_an_fmin_below_its_lowest_bin():
     """
     pytest.importorskip("torchcrepe")
     audio, ground_truth = case_scale()
-    config = TranscriptionConfig(f0_backend="crepe", crepe_model="tiny", fmin_hz=30.0)
+    config = TranscriptionConfig(preset="rules", f0_backend="crepe", crepe_model="tiny", fmin_hz=30.0)
     assert score(transcribe_audio(audio, config).notes, ground_truth).note_f1 > 0.9
 
 
@@ -1478,7 +1478,7 @@ def test_self_test_uses_the_requested_backend():
     """--self-test built its own default config and ignored every flag.
 
     That made the one command offered for checking an install fail with an
-    ImportError on the torch-free install the pyin flag exists to serve.
+    ImportError on the install without CREPE the pyin flag exists to serve.
     """
     from transcpybe.cli import build_parser, config_from_args
 

@@ -14,9 +14,9 @@ from pathlib import Path
 import pytest
 
 # Tuning borrows the benchmark's metrics and dataset loading, so these tests
-# need it installed. It is an optional extra, and a base install skips them.
+# need it installed. It is not on PyPI, and a base install skips them.
 pytest.importorskip("transcription_benchmarking",
-                    reason="needs transcpybe[tune]")
+                    reason="needs the transcription-benchmarking package")
 
 from transcription_benchmarking.dataset import Item
 from transcpybe.tune import (

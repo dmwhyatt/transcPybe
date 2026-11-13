@@ -112,9 +112,8 @@ def f0_config(device: str = "auto", crepe_model: str = "full", backend: Optional
     from transcpybe.config import TranscriptionConfig
     from transcpybe.core import resolve_config_device
 
-    cfg = TranscriptionConfig(device=device, crepe_model=crepe_model)
-    if backend:
-        cfg = dataclasses.replace(cfg, f0_backend=backend)
+    # CREPE named explicitly: the networks were trained on its tracks, and transcPybe's own default is pYIN.
+    cfg = TranscriptionConfig(device=device, crepe_model=crepe_model, f0_backend=backend or "crepe")
     return resolve_config_device(cfg)[0]
 
 

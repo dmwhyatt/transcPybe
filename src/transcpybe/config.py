@@ -733,12 +733,14 @@ class TranscriptionConfig:
             raise ValueError(f"preset must be 'rules', 'acappella' or 'pop', got {self.preset!r}")
         if self.preset != "rules":
             # The networks' frames are the f0 frames, at the rate they were trained at.
+            # The default preset is 'pop', so these can fire for a config that never named one.
             if self.sample_rate != 16000 or self.hop_ms != 10.0:
-                raise ValueError(f"preset {self.preset!r} needs sample_rate 16000 and hop_ms 10, "
-                                 f"got {self.sample_rate} and {self.hop_ms}")
+                raise ValueError(f"sample_rate {self.sample_rate} and hop_ms {self.hop_ms} need "
+                                 f"preset='rules': preset {self.preset!r} (the default is 'pop') runs "
+                                 "networks that work at sample_rate 16000 and hop_ms 10")
             if not self.use_onsets:
-                raise ValueError(f"preset {self.preset!r} takes its note starts from the networks, "
-                                 "so use_onsets must stay on")
+                raise ValueError(f"use_onsets=False needs preset='rules': preset {self.preset!r} "
+                                 "(the default is 'pop') takes its note starts from the networks")
         if self.fmin_hz <= 0 or self.fmax_hz <= self.fmin_hz:
             raise ValueError("Require 0 < fmin_hz < fmax_hz")
         if self.f0_median_filter_frames % 2 == 0:

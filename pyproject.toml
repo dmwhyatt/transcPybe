@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "transcpybe"
-version = "2.0.0"
+dynamic = ["version"]                    # transcpybe.__version__, the one place it is set
 description = "Transcribe sung melody to MIDI: onsets and pitches from monophonic vocal audio"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -50,6 +50,9 @@ transcpybe-tune = "transcpybe.tuning:main"
 [project.urls]
 Homepage = "https://github.com/dmwhyatt/transcpybe"
 Issues = "https://github.com/dmwhyatt/transcpybe/issues"
+
+[tool.setuptools.dynamic]
+version = { attr = "transcpybe.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

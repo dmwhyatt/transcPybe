@@ -1041,3 +1041,12 @@ def test_a_five_output_network_reports_its_vowel_output():
                  aux=np.zeros((200, 5), np.float32), y=np.zeros((200, 5), np.float32))]
     res = evaluate(BoundaryNet(NetConfig(n_out=5)).eval(), data, "cpu")
     assert "vowel_onset_f" in res and "resung_head_recall" in res
+
+
+def test_features_use_crepe_full_unless_told_otherwise():
+    """The networks were trained on CREPE full's tracks; transcPybe's own default tracker is pYIN since 2.0.0."""
+    from boundary.features import f0_config
+
+    assert f0_config(device="cpu").f0_backend == "crepe"
+    assert f0_config(device="cpu").crepe_model == "full"
+    assert f0_config(device="cpu", backend="pyin").f0_backend == "pyin"

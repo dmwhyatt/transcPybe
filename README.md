@@ -116,7 +116,7 @@ these is given with a version 2 preset. With `--preset rules`, every parameter t
 | Tracker | Option | Requires | Notes |
 |---|---|---|---|
 | pYIN | `--f0-backend pyin` (default) | | Version 2's best five-set mean; runs on the CPU |
-| CREPE | `--f0-backend crepe` | `transcpybe[crepe]` | Fastest on a GPU, slowest on a CPU; `--crepe-model tiny` is about 14 times faster on a CPU, with lower accuracy |
+| CREPE | `--f0-backend crepe` | `transcpybe[crepe]` | Fastest on a GPU, slowest on a CPU. `--crepe-model tiny` is about 14 times faster on a CPU; version 2 has not been evaluated with it |
 | PESTO | `--f0-backend pesto` | `transcpybe[pesto]` | A much smaller network than CREPE |
 
 The version 2 networks were trained on CREPE's pitch tracks. pYIN and PESTO report lower confidence than CREPE. Their

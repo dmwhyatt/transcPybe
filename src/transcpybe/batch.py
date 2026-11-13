@@ -8,15 +8,21 @@ Three properties matter for a run that long, and all three are here: it is
 resumable, so an interrupted run does not start over; a single bad file does
 not end the batch; and the estimated time remaining is weighted by audio
 duration rather than file count, because songs are not all the same length.
+
+A file is skipped only if its outputs exist and its ``.notes.json`` records the
+settings this run would use, so a rerun after a change of settings or version
+(2.0.0 changed the default preset and pitch tracker) redoes the files made
+otherwise rather than leaving a folder of mixed transcriptions.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .config import TranscriptionConfig
 from .core import TranscriptionResult, transcribe_file
@@ -26,6 +32,39 @@ from .progress import ProgressReporter, format_duration, null_reporter
 logger = logging.getLogger(__name__)
 
 AUDIO_EXTENSIONS = (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".aif", ".aiff", ".opus")
+
+# Settings that change how a run goes but not its notes. A file made with other
+# values of these is still current: "auto" resolves to a different device on
+# another machine, and the batch size and memory logging change only speed and logs.
+RUN_ONLY_SETTINGS = frozenset({"device", "crepe_batch_size", "gpu_memory_log_every"})
+_NOT_RECORDED = object()
+
+
+def settings_changed(json_path: Path, config: TranscriptionConfig) -> Optional[List[Tuple[str, object, object]]]:
+    """How the settings recorded in ``json_path`` differ from those ``config`` runs with.
+
+    Returns (setting, recorded, current) for each difference, an empty list if
+    there is none, or None if there is no record to compare against. A setting
+    the record lacks (an older version's output) counts as a difference.
+    """
+    from .landmarks import preset_config
+
+    if not json_path.exists():
+        return None
+    try:
+        recorded = json.loads(json_path.read_text())["config"]
+        if not isinstance(recorded, dict):
+            raise TypeError
+    except (OSError, ValueError, KeyError, TypeError):
+        return [("settings", "unreadable", "this run's")]
+    current = preset_config(config).to_dict()       # what transcription records: the preset's decoder settings applied
+    return [(k, recorded.get(k, _NOT_RECORDED), v) for k, v in current.items()
+            if k not in RUN_ONLY_SETTINGS and recorded.get(k, _NOT_RECORDED) != v]
+
+
+def _describe(changes) -> str:
+    shown = [f"{k} {'(not recorded)' if old is _NOT_RECORDED else repr(old)} -> {new!r}" for k, old, new in changes[:3]]
+    return ", ".join(shown) + (f" and {len(changes) - 3} more" if len(changes) > 3 else "")
 
 
 @dataclass
@@ -210,6 +249,7 @@ def transcribe_batch(
     result = BatchResult()
     started = time.time()
     audio_done = 0.0
+    unverified_noted = False
 
     for index, path in enumerate(paths, start=1):
         outputs = output_paths(path, output_dir, names.get(path))
@@ -221,11 +261,19 @@ def transcribe_batch(
         wanted = [p for p in wanted if p is not None]
 
         if skip_existing and wanted and all(p.exists() for p in wanted):
-            progress.log(f"[{index}/{len(paths)}] {path.name}: already done, skipping")
-            result.items.append(BatchItem(path=path, status="skipped",
-                                          duration=durations.get(path) or 0.0))
-            audio_done += durations.get(path) or 0.0
-            continue
+            changes = settings_changed(outputs["json"], config)
+            if not changes:
+                progress.log(f"[{index}/{len(paths)}] {path.name}: already done, skipping")
+                if changes is None and not unverified_noted:
+                    progress.log("  (no .notes.json beside these outputs, so their settings cannot be "
+                                 "checked; --overwrite redoes them)")
+                    unverified_noted = True
+                result.items.append(BatchItem(path=path, status="skipped",
+                                              duration=durations.get(path) or 0.0))
+                audio_done += durations.get(path) or 0.0
+                continue
+            progress.log(f"[{index}/{len(paths)}] {path.name}: made with other settings "
+                         f"({_describe(changes)}); transcribing again")
 
         header = f"[{index}/{len(paths)}] {path.name}"
         if durations.get(path):

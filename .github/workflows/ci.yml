@@ -58,8 +58,8 @@ jobs:
           echo "::warning::Tuning tests skipped: could not check out \
           dmwhyatt/transcription-benchmarking. Add a token with read access to it \
           as the BENCHMARK_REPO_TOKEN secret to run them."
-      # Installed from the checkout rather than the git URL in the tune extra,
-      # which would need credentials pip does not have here.
+      # Installed from the checkout: the benchmark package is not on PyPI, and
+      # cloning its repository by URL would need credentials pip does not have.
       - if: steps.benchmark.outcome == 'success'
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu

@@ -220,9 +220,9 @@ def _estimate_crepe(
         import torchcrepe
     except ImportError as exc:  # pragma: no cover - depends on environment
         raise ImportError(
-            "The 'crepe' backend needs torch and torchcrepe:\n"
-            "    pip install torch torchcrepe\n"
-            "Or use the torch-free fallback: --f0-backend pyin"
+            "The 'crepe' backend needs torchcrepe:\n"
+            "    pip install \"transcpybe[crepe]\"\n"
+            "Or use the default pitch tracker: --f0-backend pyin"
         ) from exc
 
     from .device import memory_summary, synchronize
@@ -420,9 +420,9 @@ def _estimate_pesto(
         import pesto
     except ImportError as exc:  # pragma: no cover - depends on environment
         raise ImportError(
-            "The 'pesto' backend needs torch and pesto-pitch:\n"
-            "    pip install torch pesto-pitch\n"
-            "Or use the torch-free fallback: --f0-backend pyin"
+            "The 'pesto' backend needs pesto-pitch:\n"
+            "    pip install \"transcpybe[pesto]\"\n"
+            "Or use the default pitch tracker: --f0-backend pyin"
         ) from exc
 
     key = (float(config.hop_ms), int(config.sample_rate), str(config.device))

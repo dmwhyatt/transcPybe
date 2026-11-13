@@ -183,6 +183,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# Flags that only CREPE reads, and --device, which only the neural trackers read.
+CREPE_FLAGS = {"crepe_model": "--crepe-model", "crepe_batch_size": "--crepe-batch-size",
+               "gpu_memory_log_every": "--gpu-memory-every"}
+
 # The flags whose config fields a v2 preset sets itself (landmarks.DECODER_FIELDS).
 PRESET_FLAGS = {"min_note_duration_s": "--min-note", "p_self": "--p-self",
                 "note_level_floor_db": "--note-level-floor", "onset_delta_ratio": "--onset-delta",
@@ -190,11 +194,22 @@ PRESET_FLAGS = {"min_note_duration_s": "--min-note", "p_self": "--p-self",
 
 
 def config_from_args(args: argparse.Namespace) -> TranscriptionConfig:
+    from .f0 import backend_uses_device
+
+    defaults = build_parser()
+    unused = []
+    if args.f0_backend != "crepe":
+        unused += [flag for dest, flag in CREPE_FLAGS.items() if getattr(args, dest) != defaults.get_default(dest)]
+    if not backend_uses_device(args.f0_backend) and args.device != defaults.get_default("device"):
+        unused.append("--device")
+    if unused:
+        print(f"warning: {', '.join(unused)} {'does' if len(unused) == 1 else 'do'} nothing with "
+              f"--f0-backend {args.f0_backend} (the default is pyin; CREPE needs --f0-backend crepe)",
+              file=sys.stderr)
     if args.preset != "rules":
         if args.no_onsets:
             raise SystemExit(f"error: --preset {args.preset} takes its note starts from the networks; "
                              "--no-onsets needs --preset rules")
-        defaults = build_parser()
         ignored = [flag for dest, flag in PRESET_FLAGS.items()
                    if getattr(args, dest) != defaults.get_default(dest)]
         if ignored:
@@ -240,7 +255,7 @@ def run_self_test(progress: ProgressReporter, config: TranscriptionConfig) -> in
     Takes the configuration the command line asked for rather than building a
     default one. Ignoring it meant ``--self-test --f0-backend pyin`` silently
     ran CREPE, so the one command offered for checking an install failed with
-    an ImportError on precisely the torch-free install the flag exists to
+    an ImportError on precisely the install without CREPE the flag exists to
     serve -- and any other flag passed alongside it was quietly discarded.
     """
     from .core import transcribe_audio
