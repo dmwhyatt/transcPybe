@@ -13,46 +13,54 @@ The code is released under the MIT licence. The weights of the version 2 network
 
 ## Comparison to other models
 
-| System | vocadito A1 | vocadito A2 | Molina | RWC-P dev | SSVD test | MIR-ST500 test | A cappella | Pop | Five-set mean [95% CI] | GPU s/min | CPU s/min |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| Phoneme-informed\* | 0.450 | 0.593 | 0.712 | 0.317 | 0.688 | 0.372 | 0.641 | 0.345 | **0.522** [0.507, 0.537] | 13.4 | 12.4 |
-| transcPybe v2, pYIN | 0.481 | 0.580 | 0.675 | 0.339 | 0.609 | 0.391 | 0.605 | 0.365 | **0.509** [0.495, 0.523] | 10.6 | 10.9 |
-| transcPybe v2, PESTO | 0.467 | 0.574 | 0.693 | 0.348 | 0.601 | 0.348 | 0.605 | 0.348 | **0.502** [0.488, 0.516] | 2.1 | 4.4 |
-| transcPybe v2, CREPE | 0.473 | 0.573 | 0.670 | 0.347 | 0.568 | 0.354 | 0.587 | 0.350 | **0.492** [0.479, 0.505] | 3.0 | 65.5 |
-| CTC-CE\* | 0.312 | 0.433 | 0.629 | 0.359 | 0.504 | 0.538 | 0.502 | 0.449 | **0.481** [0.465, 0.496] | 6.8 | 3.6 |
-| MIR-ST500 model\* | 0.320 | 0.443 | 0.534 | 0.371 | 0.453 | 0.474 | 0.456 | 0.422 | **0.443** [0.427, 0.458] | 5.9 | 3.3 |
-| Tony † | 0.686 | 0.654 | 0.466 | 0.266 | 0.582 | 0.276 | 0.524 | 0.271 | **0.397**† [0.383, 0.412] | – | 1.1 |
-| YourMT3+\* | 0.275 | 0.350 | 0.464 | 0.328 | 0.410 | 0.426 | 0.395 | 0.377 | **0.388** [0.373, 0.403] | 3.0 | 21.8 |
-| GAME | 0.264 | 0.364 | 0.506 | 0.348 | 0.332 | 0.406 | 0.384 | 0.377 | **0.381** [0.366, 0.396] | – | 83.6 |
-| Omnizart | 0.440 | 0.494 | 0.512 | 0.180 | 0.533 | 0.178 | 0.504 | 0.179 | **0.374** [0.361, 0.387] | – | 134.6 |
-| transcPybe v1 | 0.496 | 0.480 | 0.419 | 0.231 | 0.449 | 0.237 | 0.452 | 0.234 | **0.365** [0.353, 0.376] | 3.0 | 60.7 |
-| SOME | 0.278 | 0.349 | 0.441 | 0.242 | 0.272 | 0.311 | 0.342 | 0.276 | **0.316** [0.304, 0.327] | 3.9 | 5.7 |
-| Kum et al. | 0.219 | 0.247 | 0.251 | 0.224 | 0.229 | 0.248 | 0.238 | 0.236 | **0.237** [0.227, 0.248] | – | 6.8 |
-| Basic Pitch | 0.307 | 0.325 | 0.345 | 0.133 | 0.254 | 0.137 | 0.305 | 0.135 | **0.237** [0.224, 0.250] | – | 4.6 |
-| Essentia | 0.318 | 0.263 | 0.289 | 0.120 | 0.360 | 0.117 | 0.313 | 0.118 | **0.235** [0.224, 0.247] | – | 1.8 |
-| CREPE Notes | 0.310 | 0.283 | 0.275 | 0.167 | 0.256 | 0.158 | 0.276 | 0.162 | **0.230** [0.219, 0.242] | – | 29.9 |
-| ROSVOT | 0.184 | 0.204 | 0.189 | 0.154 | 0.082 | 0.109 | 0.155 | 0.132 | **0.146** [0.137, 0.155] | 1.6 | – |
-| aubio | 0.061 | 0.060 | 0.086 | 0.019 | 0.106 | 0.026 | 0.084 | 0.022 | **0.059** [0.055, 0.064] | – | 0.4 |
-| STARS ‡ | 0.064 | 0.076 | 0.068 | 0.038 | 0.084 | 0.088 | 0.074 | 0.063 | **0.070** [0.062, 0.078] | – | – |
+| System | Mean | 95% CI |
+|---|---|---|
+| transcPybe v2, PESTO | 0.521 | [0.500, 0.542] |
+| Phoneme-informed | 0.517 | [0.495, 0.539] |
+| transcPybe v2, pYIN | 0.515 | [0.495, 0.536] |
+| transcPybe v2, CREPE | 0.513 | [0.494, 0.533] |
+| CTC-CE | 0.453 | [0.431, 0.476] |
+| MIR-ST500 model | 0.429 | [0.406, 0.451] |
+| GAME | 0.389 | [0.368, 0.411] |
+| Omnizart | 0.386 | [0.368, 0.405] |
+| transcPybe v1 | 0.379 | [0.363, 0.396] |
+| YourMT3+ | 0.368 | [0.347, 0.390] |
+| SOME | 0.332 | [0.315, 0.349] |
+| Basic Pitch | 0.265 | [0.246, 0.284] |
+| CREPE Notes | 0.246 | [0.228, 0.265] |
+| Kum et al. | 0.236 | [0.221, 0.253] |
+| Essentia | 0.233 | [0.216, 0.250] |
+| ROSVOT | 0.179 | [0.165, 0.194] |
+| aubio | 0.055 | [0.049, 0.061] |
+| STARS ‡ | 0.059 | [0.047, 0.071] |
 
-The table compares transcPybe with fifteen published singing transcription systems on five annotated datasets.
+The table compares transcPybe with fifteen published singing transcription systems on the three annotated datasets
+that none of them was trained on: vocadito, Molina and the RWC-P development set (126 recordings). It is the table
+reported in the DMRN+21 abstract.
 
 - **Runs.** Each system ran in its own pinned container on identical audio.
 - **Metric.** COnPOff@50 at whole semitones: a note counts when its onset is within 50 ms, its pitch within 50 cents,
-  and its offset within 20% of the note's duration or 50 ms, whichever is larger.
-- **Intervals.** The five-set mean has a 95% interval from a paired bootstrap over recordings, stratified by dataset.
-- **Time.** Seconds of computation per minute of audio, on an NVIDIA RTX 3080 GPU and on eight CPU cores.
+  and its offset within 20% of the note's duration or 50 ms, whichever is larger. The mean is the mean of the three
+  datasets.
+- **Intervals.** 95% intervals from a paired bootstrap over recordings, stratified by dataset.
 
-The methods, every system's reference and the per-recording scores are in the
-[transcription-benchmarking](https://github.com/dmwhyatt/transcription-benchmarking#results) repository.
+Results on all five datasets of the benchmark, computation times, every system's reference and the per-recording scores
+are in the transcription-benchmarking repository's
+[full results](https://github.com/dmwhyatt/transcription-benchmarking/blob/main/RESULTS.md).
 
 Notes to the table:
 
-- \* Trained on other recordings from one of the evaluation datasets.
-- † vocadito's reference annotations were produced by correcting Tony's output, so Tony's mean excludes vocadito.
+- SSVD and MIR-ST500, the benchmark's other two datasets, are left out because Phoneme-informed, CTC-CE, the MIR-ST500
+  model and YourMT3+ were trained on other recordings from them.
+- Tony is not shown: vocadito's reference annotations were produced by correcting its output.
 - ‡ STARS requires lyrics. They were obtained by automatic speech recognition.
-- transcPybe v2's settings were selected on vocadito, Molina and the RWC-P development set; SSVD test and MIR-ST500
-  test were held out.
+- **transcPybe's defaults.** Version 2's networks were trained only on M4Singer, GTSinger and MUSDB18-HQ. Its
+  presets' default settings, which are where note starts sit between syllable and vowel and the decoder thresholds
+  listed under [Presets](#presets), were chosen on vocadito, Molina, the RWC-P development set and SSVD's training and
+  validation recordings. These are values that any decoder needs, and each can be changed. On the held-out SSVD and
+  MIR-ST500 test sets, transcPybe's mean is lower than on the datasets the defaults were chosen on by 0.015 with pYIN,
+  0.046 with PESTO and 0.052 with CREPE; for comparison, the ten systems that saw none of the five datasets change by
+  between −0.084 and +0.028 (median −0.026).
 
 For reference, vocadito's two annotators agree with each other at 0.64 COnPOff@50.
 
@@ -120,7 +128,7 @@ these is given with a version 2 preset. With `--preset rules`, every parameter t
 
 | Tracker | Option | Requires | Notes |
 |---|---|---|---|
-| pYIN | `--f0-backend pyin` (default) | | Version 2's best five-set mean; runs on the CPU |
+| pYIN | `--f0-backend pyin` (default) | | Version 2's best mean over all five datasets of the benchmark; runs on the CPU |
 | CREPE | `--f0-backend crepe` | `transcpybe[crepe]` | Fastest on a GPU, slowest on a CPU. `--crepe-model tiny` is about 14 times faster on a CPU; version 2 has not been evaluated with it |
 | PESTO | `--f0-backend pesto` | `transcpybe[pesto]` | A much smaller network than CREPE |
 
