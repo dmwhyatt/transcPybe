@@ -60,4 +60,4 @@ __all__ = [
     "note_name",
 ]
 
-__version__ = "2.1.0"
+__version__ = "2.1.1"
