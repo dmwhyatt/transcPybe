@@ -13,35 +13,35 @@ The code is released under the MIT licence. The weights of the version 2 network
 
 ## Comparison to other models
 
-| System | Mean | 95% CI |
-|---|---|---|
-| transcPybe v2, PESTO | 0.521 | [0.500, 0.542] |
-| Phoneme-informed | 0.517 | [0.495, 0.539] |
-| transcPybe v2, pYIN | 0.515 | [0.495, 0.536] |
-| transcPybe v2, CREPE | 0.513 | [0.494, 0.533] |
-| CTC-CE | 0.453 | [0.431, 0.476] |
-| MIR-ST500 model | 0.429 | [0.406, 0.451] |
-| GAME | 0.389 | [0.368, 0.411] |
-| Omnizart | 0.386 | [0.368, 0.405] |
-| transcPybe v1 | 0.379 | [0.363, 0.396] |
-| YourMT3+ | 0.368 | [0.347, 0.390] |
-| SOME | 0.332 | [0.315, 0.349] |
-| Basic Pitch | 0.265 | [0.246, 0.284] |
-| CREPE Notes | 0.246 | [0.228, 0.265] |
-| Kum et al. | 0.236 | [0.221, 0.253] |
-| Essentia | 0.233 | [0.216, 0.250] |
-| ROSVOT | 0.179 | [0.165, 0.194] |
-| aubio | 0.055 | [0.049, 0.061] |
-| STARS ‡ | 0.059 | [0.047, 0.071] |
+| System | vocadito | Molina | RWC-P dev | Mean | 95% CI |
+|---|---|---|---|---|---|
+| transcPybe v2, PESTO | 0.520 | 0.693 | 0.348 | 0.521 | [0.500, 0.542] |
+| Phoneme-informed | 0.522 | 0.712 | 0.317 | 0.517 | [0.495, 0.539] |
+| transcPybe v2, pYIN | 0.531 | 0.675 | 0.339 | 0.515 | [0.495, 0.536] |
+| transcPybe v2, CREPE | 0.523 | 0.670 | 0.347 | 0.513 | [0.494, 0.533] |
+| CTC-CE | 0.372 | 0.629 | 0.359 | 0.453 | [0.431, 0.476] |
+| MIR-ST500 model | 0.381 | 0.534 | 0.371 | 0.429 | [0.406, 0.451] |
+| GAME | 0.314 | 0.506 | 0.348 | 0.389 | [0.368, 0.411] |
+| Omnizart | 0.467 | 0.512 | 0.180 | 0.386 | [0.368, 0.405] |
+| transcPybe v1 | 0.488 | 0.419 | 0.231 | 0.379 | [0.363, 0.396] |
+| YourMT3+ | 0.312 | 0.464 | 0.328 | 0.368 | [0.347, 0.390] |
+| SOME | 0.313 | 0.441 | 0.242 | 0.332 | [0.315, 0.349] |
+| Basic Pitch | 0.316 | 0.345 | 0.133 | 0.265 | [0.246, 0.284] |
+| CREPE Notes | 0.296 | 0.275 | 0.167 | 0.246 | [0.228, 0.265] |
+| Kum et al. | 0.233 | 0.251 | 0.224 | 0.236 | [0.221, 0.253] |
+| Essentia | 0.290 | 0.289 | 0.120 | 0.233 | [0.216, 0.250] |
+| ROSVOT | 0.194 | 0.189 | 0.154 | 0.179 | [0.165, 0.194] |
+| aubio | 0.061 | 0.086 | 0.019 | 0.055 | [0.049, 0.061] |
+| STARS ‡ | 0.070 | 0.068 | 0.038 | 0.059 | [0.047, 0.071] |
 
 The table compares transcPybe with fifteen published singing transcription systems on the three annotated datasets
-that none of them was trained on: vocadito, Molina and the RWC-P development set (126 recordings). It is the table
-reported in the DMRN+21 abstract.
+that none of them was trained on: vocadito, Molina and the RWC-P development set (126 recordings). Its means and
+intervals are those reported in the DMRN+21 abstract.
 
 - **Runs.** Each system ran in its own pinned container on identical audio.
 - **Metric.** COnPOff@50 at whole semitones: a note counts when its onset is within 50 ms, its pitch within 50 cents,
-  and its offset within 20% of the note's duration or 50 ms, whichever is larger. The mean is the mean of the three
-  datasets.
+  and its offset within 20% of the note's duration or 50 ms, whichever is larger. vocadito's column averages the
+  scores against its two annotators' references. The mean is the mean of the three columns.
 - **Intervals.** 95% intervals from a paired bootstrap over recordings, stratified by dataset.
 
 Results on all five datasets of the benchmark, computation times, every system's reference and the per-recording scores
