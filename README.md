@@ -1,5 +1,7 @@
 # transcPybe
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24422942.svg)](https://doi.org/10.5281/zenodo.24422942)
+
 transcPybe transcribes monophonic singing into notes: onset and offset times in seconds, and pitches as MIDI note
 numbers, with the measured pitch retained as a pitch bend. It is intended for solo vocal recordings and for lead vocals
 separated from mixed recordings.
